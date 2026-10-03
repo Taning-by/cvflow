@@ -48,6 +48,7 @@ class ImageView(QGraphicsView):
         self._roi_start: QPointF | None = None
         self._roi_item: QGraphicsRectItem | None = None
         self._fit_pending = True
+        self._rpan: QPointF | None = None
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -210,6 +211,10 @@ class ImageView(QGraphicsView):
         self.fit()
 
     def mousePressEvent(self, event) -> None:
+        if event.button() in (Qt.RightButton, Qt.MiddleButton):
+            self._rpan = event.position()
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         if self._roi_cb is not None and event.button() == Qt.LeftButton:
             self._roi_start = self.mapToScene(event.position().toPoint())
             self._roi_item = QGraphicsRectItem(QRectF(self._roi_start, self._roi_start))
@@ -222,6 +227,12 @@ class ImageView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._rpan is not None:
+            d = event.position() - self._rpan
+            self._rpan = event.position()
+            self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - d.x()))
+            self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y()))
+            return
         pos = self.mapToScene(event.position().toPoint())
         if self._roi_start is not None and self._roi_item is not None:
             self._roi_item.setRect(QRectF(self._roi_start, pos).normalized())
@@ -234,6 +245,10 @@ class ImageView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._rpan is not None and event.button() in (Qt.RightButton, Qt.MiddleButton):
+            self._rpan = None
+            self.unsetCursor()
+            return
         if self._roi_start is not None and self._roi_item is not None and event.button() == Qt.LeftButton:
             r = self._roi_item.rect()
             cb = self._roi_cb

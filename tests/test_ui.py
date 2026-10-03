@@ -126,3 +126,42 @@ def test_camera_dialog_and_comm_test_button(app, tmp_path, monkeypatch):
         w._dirty = False
         w.close()
         _pump(app)
+
+
+def test_right_drag_pans_and_click_opens_menu(app, monkeypatch):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QMenu
+    from cvflow.ui.main_window import MainWindow
+    w = MainWindow(str(DEMO))
+    w.autorun.setChecked(False)
+    w.show()
+    _pump(app)
+    try:
+        view = w.view
+
+        def open_menus():
+            return [m for m in view.findChildren(QMenu) if m.isVisible()]
+
+        def mouse(kind, pos, button, buttons):
+            ev = QMouseEvent(kind, QPointF(*pos), view.mapToGlobal(QPointF(*pos).toPoint()).toPointF(), button, buttons, Qt.NoModifier)
+            app.sendEvent(view.viewport(), ev)
+
+        h0 = view.horizontalScrollBar().value()
+        mouse(QEvent.MouseButtonPress, (300, 200), Qt.RightButton, Qt.RightButton)
+        mouse(QEvent.MouseMove, (240, 200), Qt.NoButton, Qt.RightButton)
+        mouse(QEvent.MouseButtonRelease, (240, 200), Qt.RightButton, Qt.NoButton)
+        assert view.horizontalScrollBar().value() != h0 or view.horizontalScrollBar().maximum() == 0
+        _pump(app)
+        assert not open_menus()                               # a drag must not open the menu
+        mouse(QEvent.MouseButtonPress, (300, 200), Qt.RightButton, Qt.RightButton)
+        mouse(QEvent.MouseButtonRelease, (301, 200), Qt.RightButton, Qt.NoButton)
+        _pump(app)
+        menus = open_menus()
+        assert menus                                          # a plain right click does
+        for m in menus:
+            m.close()
+    finally:
+        w._dirty = False
+        w.close()
+        _pump(app)

@@ -88,7 +88,7 @@ solution, the app reopens the last one; *File → Recent* lists the last eight.
 ## Using the editor
 
 * Drag nodes from the palette (or double-click), drag from an output port to an input port
-  to link, `Delete` removes, `F` fits the view, middle mouse / Alt+drag pans.
+  to link, `Delete` removes, `F` fits the view, right-button (or middle / Alt+left) drag pans, wheel zooms.
 * Select a node to edit its parameters; for ROI parameters press **Draw** and drag a
   rectangle on the image.
 * **Auto-run on change** re-runs the flow on every edit; **Run once** (F5); **Continuous**

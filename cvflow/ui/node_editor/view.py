@@ -23,8 +23,12 @@ class NodeView(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setAcceptDrops(True)
         self.setFrameShape(QGraphicsView.NoFrame)
+        self.setContextMenuPolicy(Qt.NoContextMenu)   # 右键菜单由鼠标释放时手动弹出（区分拖动与点击）
         self._panning = False
         self._pan_start = QPointF()
+        self._pan_button = None
+        self._pan_moved = False
+        self._press_pos = QPointF()
 
     # ---- zoom / pan ----
     def wheelEvent(self, event) -> None:
@@ -34,10 +38,15 @@ class NodeView(QGraphicsView):
             self.scale(factor, factor)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and event.modifiers() & Qt.AltModifier):
+        b = event.button()
+        if b == Qt.RightButton or b == Qt.MiddleButton or (b == Qt.LeftButton and event.modifiers() & Qt.AltModifier):
             self._panning = True
+            self._pan_button = b
+            self._pan_moved = False
             self._pan_start = event.position()
-            self.setCursor(Qt.ClosedHandCursor)
+            self._press_pos = event.position()
+            if b != Qt.RightButton:
+                self.setCursor(Qt.ClosedHandCursor)
             return
         super().mousePressEvent(event)
 
@@ -45,15 +54,22 @@ class NodeView(QGraphicsView):
         if self._panning:
             d = event.position() - self._pan_start
             self._pan_start = event.position()
+            if (event.position() - self._press_pos).manhattanLength() > 4:
+                if not self._pan_moved:
+                    self.setCursor(Qt.ClosedHandCursor)
+                self._pan_moved = True
             self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - d.x()))
             self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y()))
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if self._panning and event.button() in (Qt.MiddleButton, Qt.LeftButton):
+        if self._panning and event.button() == self._pan_button:
             self._panning = False
+            self._pan_button = None
             self.unsetCursor()
+            if event.button() == Qt.RightButton and not self._pan_moved:
+                self._show_context_menu(event.position().toPoint(), event.globalPosition().toPoint())
             return
         super().mouseReleaseEvent(event)
 
@@ -74,8 +90,8 @@ class NodeView(QGraphicsView):
                 self.resetTransform()
 
     # ---- context menu ----
-    def contextMenuEvent(self, event) -> None:
-        scene_pos = self.mapToScene(event.pos())
+    def _show_context_menu(self, pos, global_pos) -> None:
+        scene_pos = self.mapToScene(pos)
         menu = QMenu(self)
         add = menu.addMenu(tr("Add node"))
         for cat, classes in registry.categories().items():
@@ -85,7 +101,7 @@ class NodeView(QGraphicsView):
                 act.setToolTip(tr(cls.description))
                 act.triggered.connect(lambda checked=False, t=cls.type_id, p=scene_pos: self._scene.add_node(t, p))
                 sub.addAction(act)
-        item = self.itemAt(event.pos())
+        item = self.itemAt(pos)
         node_item = item if isinstance(item, NodeItem) else (item.parentItem() if item and isinstance(item.parentItem(), NodeItem) else None)
         if node_item is not None:
             menu.addSeparator()
@@ -99,7 +115,8 @@ class NodeView(QGraphicsView):
             menu.addAction(tr("Delete selected")).triggered.connect(self._scene.remove_selected)
         menu.addSeparator()
         menu.addAction(tr("Fit view (F)")).triggered.connect(self.fit_all)
-        menu.exec(event.globalPos())
+        menu.setAttribute(Qt.WA_DeleteOnClose, True)
+        menu.popup(global_pos)   # 非阻塞弹出
 
     def _duplicate(self, node) -> None:
         new = self._scene.add_node(node.type_id, QPointF(node.position[0] + 30, node.position[1] + 30))
