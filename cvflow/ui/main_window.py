@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, 
                                QToolBar, QVBoxLayout, QWidget)
 
 from ..comm import CommManager, set_manager
-from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, registry
+from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, paths, registry
 from ..core.engine import RunResult
 from ..core.events import EventBus
 from ..core.types import Image, Overlay, Rect
@@ -259,6 +259,7 @@ class MainWindow(QMainWindow):
             return
         sol = Solution("untitled")
         sol.add_flow(Graph("main"))
+        paths.set_base_dir(None)
         self._bind_solution(sol)
 
     def open_solution(self, path: str) -> None:
@@ -426,6 +427,8 @@ class MainWindow(QMainWindow):
         if g is None or node_id not in g.nodes:
             return
         node = g.nodes[node_id]
+        if node.param_def(name).kind in ("file", "dir") and value and Path(str(value)).is_absolute():
+            value = paths.make_relative(value)
         try:
             node.set(name, value)
         except (KeyError, ValueError) as e:

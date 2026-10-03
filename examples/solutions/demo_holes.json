@@ -56,7 +56,7 @@
       "description": "Count the three holes of the part and measure its width.",
       "nodes": [
         {
-          "id": "aeae6b0b",
+          "id": "d930c43c",
           "type": "source.image_folder",
           "name": "Folder",
           "enabled": true,
@@ -65,7 +65,7 @@
             60.0
           ],
           "values": {
-            "directory": "/home/txj/cvsoftware/examples/images",
+            "directory": "../images",
             "mode": "next",
             "index": 0,
             "loop": true,
@@ -73,7 +73,7 @@
           }
         },
         {
-          "id": "07c7299b",
+          "id": "c7ec2d0d",
           "type": "preprocess.color",
           "name": "Gray",
           "enabled": true,
@@ -87,7 +87,7 @@
           }
         },
         {
-          "id": "f89d5981",
+          "id": "7aac1a12",
           "type": "preprocess.threshold",
           "name": "Threshold",
           "enabled": true,
@@ -104,7 +104,7 @@
           }
         },
         {
-          "id": "2870bb7f",
+          "id": "bac395df",
           "type": "preprocess.morphology",
           "name": "Open",
           "enabled": true,
@@ -120,7 +120,7 @@
           }
         },
         {
-          "id": "85ddcdaa",
+          "id": "e79528b5",
           "type": "analysis.blob",
           "name": "Holes",
           "enabled": true,
@@ -139,7 +139,7 @@
           }
         },
         {
-          "id": "a0078570",
+          "id": "19ac40f8",
           "type": "logic.judge",
           "name": "Hole Count",
           "enabled": true,
@@ -156,7 +156,7 @@
           }
         },
         {
-          "id": "e49578f7",
+          "id": "7954d0da",
           "type": "analysis.caliper",
           "name": "Width",
           "enabled": true,
@@ -180,7 +180,7 @@
           }
         },
         {
-          "id": "8b974933",
+          "id": "5073e706",
           "type": "logic.judge",
           "name": "Width OK",
           "enabled": true,
@@ -197,7 +197,7 @@
           }
         },
         {
-          "id": "85bd0609",
+          "id": "7e9bc93f",
           "type": "output.publish",
           "name": "Publish",
           "enabled": true,
@@ -213,7 +213,7 @@
           }
         },
         {
-          "id": "f36ce08b",
+          "id": "90ba84ab",
           "type": "output.render",
           "name": "Render",
           "enabled": true,
@@ -227,7 +227,7 @@
           }
         },
         {
-          "id": "b3d890da",
+          "id": "cbd7ea5c",
           "type": "output.save_image",
           "name": "Save NG",
           "enabled": true,
@@ -236,7 +236,7 @@
             220.0
           ],
           "values": {
-            "directory": "./captures",
+            "directory": "../../captures",
             "when": "ng_only",
             "format": "png",
             "subfolder_by_result": true,
@@ -248,131 +248,131 @@
       "links": [
         {
           "src": [
-            "aeae6b0b",
+            "d930c43c",
             "image"
           ],
           "dst": [
-            "07c7299b",
+            "c7ec2d0d",
             "image"
           ]
         },
         {
           "src": [
-            "07c7299b",
+            "c7ec2d0d",
             "image"
           ],
           "dst": [
-            "f89d5981",
+            "7aac1a12",
             "image"
           ]
         },
         {
           "src": [
-            "f89d5981",
+            "7aac1a12",
             "image"
           ],
           "dst": [
-            "2870bb7f",
+            "bac395df",
             "image"
           ]
         },
         {
           "src": [
-            "2870bb7f",
+            "bac395df",
             "image"
           ],
           "dst": [
-            "85ddcdaa",
+            "e79528b5",
             "image"
           ]
         },
         {
           "src": [
-            "85ddcdaa",
+            "e79528b5",
             "count"
           ],
           "dst": [
-            "a0078570",
+            "19ac40f8",
             "value"
           ]
         },
         {
           "src": [
-            "07c7299b",
+            "c7ec2d0d",
             "image"
           ],
           "dst": [
-            "e49578f7",
+            "7954d0da",
             "image"
           ]
         },
         {
           "src": [
-            "e49578f7",
+            "7954d0da",
             "width"
           ],
           "dst": [
-            "8b974933",
+            "5073e706",
             "value"
           ]
         },
         {
           "src": [
-            "85ddcdaa",
+            "e79528b5",
             "count"
           ],
           "dst": [
-            "85bd0609",
+            "7e9bc93f",
             "a"
           ]
         },
         {
           "src": [
-            "e49578f7",
+            "7954d0da",
             "width"
           ],
           "dst": [
-            "85bd0609",
+            "7e9bc93f",
             "b"
           ]
         },
         {
           "src": [
-            "aeae6b0b",
+            "d930c43c",
             "image"
           ],
           "dst": [
-            "f36ce08b",
+            "90ba84ab",
             "image"
           ]
         },
         {
           "src": [
-            "a0078570",
+            "19ac40f8",
             "ok"
           ],
           "dst": [
-            "f36ce08b",
+            "90ba84ab",
             "after"
           ]
         },
         {
           "src": [
-            "8b974933",
+            "5073e706",
             "ok"
           ],
           "dst": [
-            "b3d890da",
+            "cbd7ea5c",
             "after"
           ]
         },
         {
           "src": [
-            "f36ce08b",
+            "90ba84ab",
             "image"
           ],
           "dst": [
-            "b3d890da",
+            "cbd7ea5c",
             "image"
           ]
         }
@@ -383,7 +383,7 @@
       "description": "Bandit plugin tunes the threshold; reward is highest when 3 holes of nominal area are found.",
       "nodes": [
         {
-          "id": "d9e50aa6",
+          "id": "c095ff69",
           "type": "logic.get_variable",
           "name": "Reward",
           "enabled": true,
@@ -397,7 +397,7 @@
           }
         },
         {
-          "id": "2ae2306b",
+          "id": "baec8539",
           "type": "learning.bandit_threshold",
           "name": "Tuner",
           "enabled": true,
@@ -415,7 +415,7 @@
           }
         },
         {
-          "id": "5006b881",
+          "id": "a01c0a10",
           "type": "source.image_folder",
           "name": "Folder",
           "enabled": true,
@@ -424,7 +424,7 @@
             60.0
           ],
           "values": {
-            "directory": "/home/txj/cvsoftware/examples/images",
+            "directory": "../images",
             "mode": "fixed",
             "index": 0,
             "loop": true,
@@ -432,7 +432,7 @@
           }
         },
         {
-          "id": "93299cbd",
+          "id": "0d3c971f",
           "type": "preprocess.color",
           "name": "Gray",
           "enabled": true,
@@ -446,7 +446,7 @@
           }
         },
         {
-          "id": "9e569093",
+          "id": "a0578801",
           "type": "preprocess.threshold",
           "name": "Threshold",
           "enabled": true,
@@ -463,7 +463,7 @@
           }
         },
         {
-          "id": "76140753",
+          "id": "38e43e9e",
           "type": "analysis.blob",
           "name": "Holes",
           "enabled": true,
@@ -482,7 +482,7 @@
           }
         },
         {
-          "id": "1b25557c",
+          "id": "a191f303",
           "type": "logic.expression",
           "name": "Score",
           "enabled": true,
@@ -495,7 +495,7 @@
           }
         },
         {
-          "id": "8d5946b4",
+          "id": "56a8cd1f",
           "type": "logic.set_variable",
           "name": "Store",
           "enabled": true,
@@ -511,81 +511,81 @@
       "links": [
         {
           "src": [
-            "d9e50aa6",
+            "c095ff69",
             "value"
           ],
           "dst": [
-            "2ae2306b",
+            "baec8539",
             "reward"
           ]
         },
         {
           "src": [
-            "2ae2306b",
+            "baec8539",
             "threshold"
           ],
           "dst": [
-            "9e569093",
+            "a0578801",
             "thresh"
           ]
         },
         {
           "src": [
-            "5006b881",
+            "a01c0a10",
             "image"
           ],
           "dst": [
-            "93299cbd",
+            "0d3c971f",
             "image"
           ]
         },
         {
           "src": [
-            "93299cbd",
+            "0d3c971f",
             "image"
           ],
           "dst": [
-            "9e569093",
+            "a0578801",
             "image"
           ]
         },
         {
           "src": [
-            "9e569093",
+            "a0578801",
             "image"
           ],
           "dst": [
-            "76140753",
+            "38e43e9e",
             "image"
           ]
         },
         {
           "src": [
-            "76140753",
+            "38e43e9e",
             "count"
           ],
           "dst": [
-            "1b25557c",
+            "a191f303",
             "a"
           ]
         },
         {
           "src": [
-            "76140753",
+            "38e43e9e",
             "largest_area"
           ],
           "dst": [
-            "1b25557c",
+            "a191f303",
             "b"
           ]
         },
         {
           "src": [
-            "1b25557c",
+            "a191f303",
             "value"
           ],
           "dst": [
-            "8d5946b4",
+            "56a8cd1f",
             "value"
           ]
         }

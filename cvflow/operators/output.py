@@ -7,6 +7,7 @@ from datetime import datetime
 
 import cv2
 
+from ..core import paths
 from ..core.draw import render_overlays
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
@@ -82,7 +83,7 @@ class SaveImage(Node):
         ng = ctx.judgement is False
         if (when == "ng_only" and not ng) or (when == "ok_only" and ng):
             return {"path": ""}
-        d = self.get("directory") or "."
+        d = paths.resolve(self.get("directory") or ".")
         if self.get("subfolder_by_result"):
             d = os.path.join(d, "NG" if ng else "OK")
         os.makedirs(d, exist_ok=True)

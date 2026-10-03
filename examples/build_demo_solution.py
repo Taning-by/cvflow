@@ -13,12 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from cvflow.core import Graph, Solution, registry  # noqa: E402
+from cvflow.core import Graph, Solution, paths, registry  # noqa: E402
 
 registry.load_builtins()
 registry.load_plugin_dir(ROOT / "examples" / "plugins")
 
-IMAGES = str((ROOT / "examples" / "images").resolve())
+OUT = ROOT / "examples" / "solutions" / "demo_holes.json"
+paths.set_base_dir(OUT.parent)   # relative paths below are relative to the solution file
+IMAGES = "../images"
 
 
 def place(node, col: int, row: int = 0):
@@ -50,7 +52,7 @@ def build_main() -> Graph:
                                            values={"name_a": "holes", "name_b": "width"})), 6)
     rnd = place(g.add_node(registry.create("output.render", name="Render")), 6, 1)
     sav = place(g.add_node(registry.create("output.save_image", name="Save NG",
-                                           values={"directory": "./captures", "when": "ng_only"})), 7, 1)
+                                           values={"directory": "../../captures", "when": "ng_only"})), 7, 1)
     g.add_link(src.id, "image", gray.id, "image")
     g.add_link(gray.id, "image", th.id, "image")
     g.add_link(th.id, "image", mo.id, "image")
@@ -106,10 +108,9 @@ def main() -> None:
         "send_rules": [{"name": "result", "device": "plc", "flow": "main", "when": "always",
                         "template": "{status},{out.holes},{out.width:.1f}\\n", "enabled": True}],
     }
-    out = ROOT / "examples" / "solutions" / "demo_holes.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    sol.save(out)
-    print("saved", out)
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    sol.save(OUT)
+    print("saved", OUT)
 
 
 if __name__ == "__main__":

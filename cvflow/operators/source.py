@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 
 from ..camera import camera_manager, CAMERA_KINDS
+from ..core import paths
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import DataType, Image
@@ -32,7 +33,7 @@ class ImageFile(Node):
         self._cache: tuple[str, float, bool, Image] | None = None
 
     def process(self, ctx, inputs):
-        path = self.get("path")
+        path = paths.resolve(self.get("path"))
         if not path:
             raise NodeError("no image path set")
         if not os.path.isfile(path):
@@ -70,7 +71,7 @@ class ImageFolder(Node):
         self._dir_key = None
 
     def _scan(self):
-        d = self.get("directory")
+        d = paths.resolve(self.get("directory"))
         if not d or not os.path.isdir(d):
             raise NodeError(f"directory not found: {d!r}")
         key = (d, os.path.getmtime(d))
@@ -121,9 +122,12 @@ class CameraSource(Node):
               Param("features", {}, "json", label="Camera features (JSON)", advanced=True)]
 
     def _config(self):
-        cfg = {"source": self.get("source"), "grayscale": self.get("grayscale"), "loop": True}
+        src = self.get("source")
+        if self.get("kind") == "folder":
+            src = paths.resolve(src)
+        cfg = {"source": src, "grayscale": self.get("grayscale"), "loop": True}
         if self.get("cti"):
-            cfg["cti"] = self.get("cti")
+            cfg["cti"] = paths.resolve(self.get("cti"))
         if self.get("features"):
             cfg["features"] = self.get("features")
         return cfg

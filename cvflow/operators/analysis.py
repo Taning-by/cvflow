@@ -7,6 +7,7 @@ import os
 import cv2
 import numpy as np
 
+from ..core import paths
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import Circle, DataType, Image, Line, Overlay, Point, Rect
@@ -138,7 +139,7 @@ class TemplateMatch(Node):
     def _template(self, inp) -> np.ndarray:
         if isinstance(inp, Image):
             return as_gray(inp)
-        path = self.get("template_path")
+        path = paths.resolve(self.get("template_path"))
         if not path:
             raise NodeError("no template image (set template_path or connect 'template')")
         if not os.path.isfile(path):

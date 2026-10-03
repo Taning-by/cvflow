@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import events
+from . import events, paths
 from .engine import Engine, RunResult
 from .events import EventBus
 from .graph import Graph
@@ -287,14 +287,32 @@ class Solution:
             sol.add_flow(Graph.from_dict(gd, reg))
         return sol
 
+    def rebase(self, new_dir: Path) -> None:
+        """Rewrite relative file/dir parameters so they stay valid when the solution moves to ``new_dir``."""
+        old = paths.base_dir()
+        new_dir = Path(new_dir).resolve()
+        if old == new_dir:
+            return
+        for g in self.flows.values():
+            for node in g.nodes.values():
+                for p in node.params:
+                    v = node.values.get(p.name)
+                    if p.kind in ("file", "dir") and v and not Path(str(v)).is_absolute():
+                        node.values[p.name] = paths.make_relative((old / str(v)).resolve(), new_dir)
+        self.plugin_dirs = [paths.make_relative((old / d).resolve(), new_dir) if not Path(d).is_absolute() else d
+                            for d in self.plugin_dirs]
+
     def save(self, path: str | Path) -> None:
-        path = Path(path)
+        path = Path(path).resolve()
+        self.rebase(path.parent)
         path.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         self.path = path
+        paths.set_base_dir(path.parent)
 
     @classmethod
     def load(cls, path: str | Path, reg: NodeRegistry | None = None, bus: EventBus | None = None) -> "Solution":
-        path = Path(path)
+        path = Path(path).resolve()
+        paths.set_base_dir(path.parent)
         sol = cls.from_dict(json.loads(path.read_text(encoding="utf-8")), reg, bus, base_dir=path.parent)
         sol.path = path
         return sol

@@ -13,6 +13,7 @@ import time
 import cv2
 import numpy as np
 
+from ..core import paths
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import DataType, Image, Overlay, Rect
@@ -22,6 +23,7 @@ _COLOR = "#ad1457"
 
 
 def _load_labels(path: str) -> list[str]:
+    path = paths.resolve(path)
     if not path or not os.path.isfile(path):
         return []
     return [ln.strip() for ln in open(path, encoding="utf-8") if ln.strip()]
@@ -47,7 +49,7 @@ class _OnnxBase(Node):
         self._input_name = ""
 
     def _ensure_session(self):
-        path = self.get("model_path")
+        path = paths.resolve(self.get("model_path"))
         if not path:
             raise NodeError("no model_path set")
         if not os.path.isfile(path):

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cvflow.core import DataType, Node, NodeError, Overlay, Param, Port
+from cvflow.core import DataType, Node, NodeError, Overlay, Param, Port, paths
 
 
 class TorchModelNode(Node):
@@ -43,7 +43,7 @@ class TorchModelNode(Node):
             dev = "cuda" if torch.cuda.is_available() else "cpu"
         model = self.build_model(torch)
         if self.get("weights"):
-            model.load_state_dict(torch.load(self.get("weights"), map_location=dev))
+            model.load_state_dict(torch.load(paths.resolve(self.get("weights")), map_location=dev))
         self._model = model.to(dev).eval()
         self._device = dev
 

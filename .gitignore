@@ -1,6 +1,18 @@
+# virtual environments
 .venv/
+venv/
+env/
+# python
 __pycache__/
 *.pyc
-captures/
-.pytest_cache/
 *.egg-info/
+build/
+dist/
+.pytest_cache/
+# runtime output
+captures/
+*.log
+# editors / OS
+.idea/
+.vscode/
+.DS_Store

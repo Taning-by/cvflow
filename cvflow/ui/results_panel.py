@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLabel, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from ..core.engine import RunResult
@@ -52,7 +53,7 @@ class ResultsPanel(QWidget):
             it = QTreeWidgetItem([nr.node_name, nr.error if nr.status in (NodeStatus.ERROR, NodeStatus.SKIPPED) else "",
                                   f"{nr.status.value}  {nr.time_ms:.2f}"])
             it.setForeground(2, Qt.white)
-            it.setBackground(2, __import__("PySide6.QtGui", fromlist=["QColor"]).QColor(STATUS_COLORS[nr.status]))
+            it.setBackground(2, QColor(STATUS_COLORS[nr.status]))
             for k, v in nr.outputs.items():
                 it.addChild(QTreeWidgetItem([k, _fmt(v), ""]))
             self.tree.addTopLevelItem(it)
