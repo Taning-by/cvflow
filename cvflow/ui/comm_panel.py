@@ -55,7 +55,7 @@ class DeviceDialog(QDialog):
         for key, kind, label, default, desc in cls.config_schema:
             val = self._config.get(key, default)
             if kind == "int":
-                w = QSpinBox(); w.setRange(0, 2_000_000_000); w.setValue(int(val))
+                w = QSpinBox(); w.setRange(-1, 2_000_000_000); w.setValue(int(val))
             elif kind == "float":
                 w = QDoubleSpinBox(); w.setRange(0, 1e9); w.setDecimals(3); w.setValue(float(val))
             elif kind == "bool":
