@@ -96,6 +96,21 @@ pytest -q                                             # 35 个测试，界面测
 * **心跳** `heartbeat_address` + `heartbeat_s`：按间隔自增，PLC 看到数值变化就知道视觉在线；文本设备则按间隔发送心跳报文。
 * **结果**：发送规则里的寄存器写入列表，`kind` 支持 int16/uint16/int32/uint32/float32/bool。
 
+## 没有相机和 PLC 时怎么测试
+
+仓库自带两个模拟器，每条链路都是"打开方案 → 进入运行模式 → 运行模拟器"三步：
+
+| 想测什么 | 第一步 | 第二步 |
+|---|---|---|
+| 相机搜索 / 连接测试 / 强制 IP | `python examples/sim_camera.py` | 相机 → 相机管理 → 搜索相机，或"按 IP 添加"填 127.0.0.1 |
+| 相机取图 | 相机节点类型选 `folder`，来源填 `examples/images` | 运行一次 |
+| TCP 报文触发与回复 | `cvflow gui examples/solutions/demo_holes.json`，进入运行模式 | `python examples/sim_plc.py tcp` |
+| Modbus TCP（PLC 做主站） | `cvflow gui examples/solutions/demo_modbus.json`，进入运行模式 | `python examples/sim_plc.py modbus` |
+| 三菱 MC 协议 | `python examples/sim_plc.py mc` | `cvflow gui examples/solutions/demo_mc.json`，进入运行模式 |
+| 西门子 S7 | `python examples/sim_plc.py s7` | `cvflow gui examples/solutions/demo_s7.json`，进入运行模式 |
+
+PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复位、忙标志是否出现、结果寄存器的值和心跳计数，对应软件里通信面板的"监视"页和结果页。模拟相机只实现发现协议，不出图，所以取图用文件夹模拟。
+
 ## 写自己的算法节点
 
 把一个 `.py` 放进插件目录（方案里的 `plugin_dirs`，或菜单 Plugins → Load plugin folder），定义 `Node` 子类即可，无需改平台代码：

@@ -125,6 +125,23 @@ Register devices share one handshake:
   tell the vision PC is alive; text devices send a heartbeat frame instead.
 * **Results** — register writes in a send rule, kinds int16 / uint16 / int32 / uint32 / float32 / bool.
 
+## Testing without a camera or a PLC
+
+Two simulators ship with the repository; every path is "open solution → start run mode → run the simulator":
+
+| What to test | Step 1 | Step 2 |
+|---|---|---|
+| Camera search / connection test / force IP | `python examples/sim_camera.py` | Camera → Camera manager → Search, or *Add by IP* with 127.0.0.1 |
+| Camera grabbing | set the camera node kind to `folder` with source `examples/images` | Run once |
+| TCP trigger and reply | `cvflow gui examples/solutions/demo_holes.json`, start run mode | `python examples/sim_plc.py tcp` |
+| Modbus TCP (PLC as master) | `cvflow gui examples/solutions/demo_modbus.json`, start run mode | `python examples/sim_plc.py modbus` |
+| Mitsubishi MC | `python examples/sim_plc.py mc` | `cvflow gui examples/solutions/demo_mc.json`, start run mode |
+| Siemens S7 | `python examples/sim_plc.py s7` | `cvflow gui examples/solutions/demo_s7.json`, start run mode |
+
+The PLC simulators trigger an inspection periodically and print whether the trigger word was
+reset, whether the busy flag appeared, the result registers and the heartbeat counter. The
+simulated camera implements discovery only, so use the folder camera for grabbing.
+
 ## Writing your own node
 
 Put a `.py` file in a plugin directory (the solution's `plugin_dirs`, or *Plugins → Load
