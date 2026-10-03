@@ -27,15 +27,23 @@ def _wait(cond, timeout=5.0):
     return False
 
 
-def _recv_line(sock, timeout=5.0):
-    sock.settimeout(timeout)
-    buf = b""
-    while not buf.endswith(b"\n"):
-        chunk = sock.recv(1024)
-        if not chunk:
-            break
-        buf += chunk
-    return buf.decode()
+class _LineReader:
+    """Read one line at a time even when several replies arrive in a single TCP segment."""
+
+    def __init__(self, sock, timeout=5.0):
+        sock.settimeout(timeout)
+        self._sock = sock
+        self._buf = b""
+
+    def line(self) -> str:
+        while b"\n" not in self._buf:
+            chunk = self._sock.recv(1024)
+            if not chunk:
+                break
+            self._buf += chunk
+        line, sep, rest = self._buf.partition(b"\n")
+        self._buf = rest
+        return (line + sep).decode()
 
 
 def test_format_template(reg):
@@ -60,16 +68,17 @@ def test_tcp_server_trigger_and_reply(reg):
     runner.start()
     try:
         s = socket.create_connection(("127.0.0.1", dev.bound_port), timeout=3)
+        rd = _LineReader(s)
         assert _wait(lambda: dev.client_count == 1)
         s.sendall(b"TRIG,1\n")
-        assert _recv_line(s) == "OK,3\n"
+        assert rd.line() == "OK,3\n"
         # a message that matches no rule does nothing
         s.sendall(b"HELLO\n")
         time.sleep(0.2)
         assert runner.stats.count == 1
         # two frames in one packet
         s.sendall(b"TRIG\nTRIG\n")
-        assert _recv_line(s) == "OK,3\n" and _recv_line(s) == "OK,3\n"
+        assert rd.line() == "OK,3\n" and rd.line() == "OK,3\n"
         assert runner.stats.count == 3 and dev.stats["rx"] == 4 and dev.stats["tx"] == 3
         s.close()
     finally:
