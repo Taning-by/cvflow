@@ -22,7 +22,7 @@ class OpenCVCamera(Camera):
             pass
         cap = cv2.VideoCapture(src)
         if not cap.isOpened():
-            raise CameraError(f"opencv camera {self.name!r}: cannot open {src!r}")
+            raise CameraError(f"OpenCV 相机 {self.name!r}：无法打开 {src!r}")
         if self.config.get("width"):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.config["width"]))
         if self.config.get("height"):

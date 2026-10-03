@@ -34,7 +34,7 @@ class TcpClientDevice(CommDevice):
 
     def disconnect(self) -> None:
         self._stop.set()
-        self._close("closed by user")
+        self._close("用户关闭")
         if self._thread:
             self._thread.join(2.0)
             self._thread = None
@@ -77,7 +77,7 @@ class TcpClientDevice(CommDevice):
 
     def _send_bytes(self, data: bytes) -> None:
         if self._sock is None:
-            raise CommError("not connected")
+            raise CommError("未连接")
         self._sock.sendall(data)
 
 
@@ -139,7 +139,7 @@ class TcpServerDevice(CommDevice):
         if self._thread:
             self._thread.join(2.0)
             self._thread = None
-        self._set_connected(False, "closed")
+        self._set_connected(False, "已关闭")
 
     def _accept_loop(self) -> None:
         assert self._server is not None
@@ -238,7 +238,7 @@ class UdpDevice(CommDevice):
         if self._thread:
             self._thread.join(2.0)
             self._thread = None
-        self._set_connected(False, "closed")
+        self._set_connected(False, "已关闭")
 
     def _loop(self) -> None:
         while not self._stop.is_set() and self._sock:
@@ -252,5 +252,5 @@ class UdpDevice(CommDevice):
 
     def _send_bytes(self, data: bytes) -> None:
         if not self._sock:
-            raise CommError("not open")
+            raise CommError("未打开")
         self._sock.sendto(data, (self.config["host"], int(self.config["port"])))

@@ -35,9 +35,9 @@ class ImageFile(Node):
     def process(self, ctx, inputs):
         path = paths.resolve(self.get("path"))
         if not path:
-            raise NodeError("no image path set")
+            raise NodeError("未设置图像路径")
         if not os.path.isfile(path):
-            raise NodeError(f"file not found: {path}")
+            raise NodeError(f"文件不存在：{path}")
         mtime = os.path.getmtime(path)
         gray = bool(self.get("grayscale"))
         if self._cache and self._cache[:3] == (path, mtime, gray):
@@ -45,7 +45,7 @@ class ImageFile(Node):
         else:
             data = cv2.imread(path, cv2.IMREAD_GRAYSCALE if gray else cv2.IMREAD_COLOR)
             if data is None:
-                raise NodeError(f"cannot decode {path}")
+                raise NodeError(f"无法解码 {path}")
             img = Image(data=data, source=path)
             self._cache = (path, mtime, gray, img)
         return {"image": Image(img.data, frame_id=ctx.run_id, source=path), "path": path}
@@ -73,13 +73,13 @@ class ImageFolder(Node):
     def _scan(self):
         d = paths.resolve(self.get("directory"))
         if not d or not os.path.isdir(d):
-            raise NodeError(f"directory not found: {d!r}")
+            raise NodeError(f"目录不存在：{d!r}")
         key = (d, os.path.getmtime(d))
         if key != self._dir_key:
             self._files = sorted(str(p) for p in Path(d).iterdir() if p.suffix.lower() in _EXTS)
             self._dir_key = key
         if not self._files:
-            raise NodeError(f"no images in {d}")
+            raise NodeError(f"{d} 中没有图像")
 
     def process(self, ctx, inputs):
         self._scan()
@@ -94,13 +94,13 @@ class ImageFolder(Node):
             i = int(self.state.get("next", 0))
             if i >= n:
                 if not self.get("loop"):
-                    raise NodeError("end of folder reached")
+                    raise NodeError("已到文件夹末尾")
                 i = 0
             self.state["next"] = i + 1
         path = self._files[i]
         data = cv2.imread(path, cv2.IMREAD_GRAYSCALE if self.get("grayscale") else cv2.IMREAD_COLOR)
         if data is None:
-            raise NodeError(f"cannot decode {path}")
+            raise NodeError(f"无法解码 {path}")
         ctx.log(f"{os.path.basename(path)} ({i + 1}/{n})", "debug")
         return {"image": Image(data, frame_id=ctx.run_id, source=path), "path": path, "index": i}
 
@@ -142,7 +142,7 @@ class CameraSource(Node):
         cam = camera_manager.get_or_create(self.get("camera"), self.get("kind"), self._config())
         img = cam.grab(float(self.get("timeout_s")))
         if img is None:
-            raise NodeError(f"camera {cam.name!r}: grab timeout")
+            raise NodeError(f"相机 {cam.name!r}：取图超时")
         return {"image": img, "frame_id": img.frame_id}
 
 

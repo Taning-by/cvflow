@@ -6,6 +6,7 @@ from PySide6.QtGui import QColor, QDrag
 from PySide6.QtWidgets import QLineEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from ..core.registry import registry
+from .i18n import tr
 from .node_editor.view import MIME
 
 
@@ -34,7 +35,7 @@ class NodePalette(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("Filter nodes…")
+        self.filter.setPlaceholderText(tr("Filter nodes…"))
         self.filter.textChanged.connect(self._apply_filter)
         self.tree = _Tree()
         self.tree.itemDoubleClicked.connect(self._activated)
@@ -45,13 +46,13 @@ class NodePalette(QWidget):
     def reload(self) -> None:
         self.tree.clear()
         for cat, classes in registry.categories().items():
-            top = QTreeWidgetItem([cat])
+            top = QTreeWidgetItem([tr(cat)])
             top.setFlags(top.flags() & ~Qt.ItemIsDragEnabled)
             self.tree.addTopLevelItem(top)
             for cls in classes:
-                it = QTreeWidgetItem([cls.label])
+                it = QTreeWidgetItem([tr(cls.label)])
                 it.setData(0, Qt.UserRole, cls.type_id)
-                it.setToolTip(0, f"{cls.type_id}\n{cls.description}")
+                it.setToolTip(0, f"{cls.type_id}\n{tr(cls.description)}")
                 it.setForeground(0, QColor(cls.color).lighter(160))
                 top.addChild(it)
             top.setExpanded(True)
@@ -64,7 +65,7 @@ class NodePalette(QWidget):
             visible = 0
             for j in range(top.childCount()):
                 ch = top.child(j)
-                show = not t or t in ch.text(0).lower() or t in str(ch.data(0, Qt.UserRole)).lower()
+                show = not t or t in ch.text(0).lower() or t in str(ch.data(0, Qt.UserRole)).lower() or t in ch.toolTip(0).lower()
                 ch.setHidden(not show)
                 visible += show
             top.setHidden(visible == 0)

@@ -27,15 +27,15 @@ class GenICamCamera(Camera):
         try:
             from harvesters.core import Harvester
         except ImportError as e:  # pragma: no cover - optional dependency
-            raise CameraError("GenICam support needs `pip install harvesters` and a GenTL .cti producer") from e
+            raise CameraError("GenICam 支持需要 `pip install harvesters` 以及厂商的 GenTL .cti 驱动") from e
         cti = self.config.get("cti")
         if not cti:
-            raise CameraError("genicam camera: config 'cti' (path to GenTL producer) is required")
+            raise CameraError("GenICam 相机：必须配置 'cti'（GenTL 驱动路径）")
         h = Harvester()
         h.add_file(str(cti))
         h.update()
         if not h.device_info_list:
-            raise CameraError("genicam: no devices found")
+            raise CameraError("GenICam：未发现设备")
         sel = self.config.get("source", 0)
         kwargs = {"serial_number": str(sel)} if isinstance(sel, str) and not sel.isdigit() else {"list_index": int(sel)}
         ia = h.create(**kwargs)
@@ -44,7 +44,7 @@ class GenICamCamera(Camera):
             try:
                 setattr(node_map, feat, val)
             except Exception as e:
-                raise CameraError(f"genicam: cannot set {feat}={val!r}: {e}") from e
+                raise CameraError(f"GenICam：无法设置 {feat}={val!r}：{e}") from e
         ia.start()
         self._h, self._ia = h, ia
         self.is_open = True
@@ -81,7 +81,7 @@ class GenICamCamera(Camera):
                 if fmt.startswith("Mono1") and data.dtype != np.uint8:  # Mono10/12/16 -> 8 bit
                     bits = int("".join(c for c in fmt[4:] if c.isdigit()) or 16)
                     return (data.reshape(h, w) >> (bits - 8)).astype(np.uint8)
-                raise CameraError(f"genicam: unsupported pixel format {fmt}")
+                raise CameraError(f"GenICam：不支持的像素格式 {fmt}")
         except Exception as e:
             if "timeout" in str(e).lower():
                 return None

@@ -174,7 +174,7 @@ class Crop(Node):
         img = require_image(inputs["image"])
         roi = inputs.get("roi") if isinstance(inputs.get("roi"), Rect) else self.rect("roi")
         if roi is None:
-            raise NodeError("no ROI set (draw one on the image or connect the 'roi' input)")
+            raise NodeError("未设置 ROI（请在图像上绘制，或连接 'roi' 输入）")
         view, eff = crop(img, roi)
         ctx.add_overlay(Overlay.rect(eff, "#ffa500", "ROI"))
         out = img.derive(np.ascontiguousarray(view))
@@ -272,7 +272,7 @@ class Bitwise(Node):
             return {"image": a.derive(cv2.bitwise_not(a.data))}
         b = require_image(inputs.get("b"), "b")
         if a.data.shape != b.data.shape:
-            raise NodeError(f"image shapes differ: {a.data.shape} vs {b.data.shape}")
+            raise NodeError(f"两张图像尺寸不同：{a.data.shape} 与 {b.data.shape}")
         fn = {"and": cv2.bitwise_and, "or": cv2.bitwise_or, "xor": cv2.bitwise_xor,
               "subtract": cv2.subtract, "absdiff": cv2.absdiff}[op]
         return {"image": a.derive(fn(a.data, b.data))}

@@ -89,7 +89,7 @@ class CommDevice(ABC):
             self._emit(events.COMM_SENT, device=self.name, data=data, text=self._text(data))
             return True
         except Exception as e:
-            self._error(f"send failed: {e}")
+            self._error(f"发送失败：{e}")
             return False
 
     # ---- receive side ----
@@ -103,7 +103,7 @@ class CommDevice(ABC):
             try:
                 cb(self, data)
             except Exception:
-                log.exception("rx callback failed for %s", self.name)
+                log.exception("%s 的接收回调出错", self.name)
 
     def _text(self, data: bytes) -> str:
         try:
@@ -118,10 +118,10 @@ class CommDevice(ABC):
         self.connected = flag
         if flag:
             self.last_error = ""
-            log.info("%s connected", self.name)
+            log.info("%s 已连接", self.name)
             self._emit(events.COMM_CONNECTED, device=self.name)
         else:
-            log.info("%s disconnected %s", self.name, reason)
+            log.info("%s 已断开 %s", self.name, reason)
             self._emit(events.COMM_DISCONNECTED, device=self.name, reason=reason)
 
     def _error(self, msg: str) -> None:

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsScene
 from ...core.graph import Graph, GraphError, Link
 from ...core.node import Node
 from ...core.registry import registry
+from ..i18n import tr
 from .items import LinkItem, NodeItem, PortItem, bezier
 
 
@@ -66,10 +67,10 @@ class NodeScene(QGraphicsScene):
     # ---- editing ----
     def add_node(self, type_id: str, pos: QPointF) -> Node | None:
         if self._locked:
-            self.message.emit("Stop run mode to edit the flow")
+            self.message.emit(tr("Stop run mode to edit the flow"))
             return None
         node = registry.create(type_id)
-        node.name = self.graph.unique_name(node.label)
+        node.name = self.graph.unique_name(tr(node.label))
         node.position = [pos.x(), pos.y()]
         self.graph.add_node(node)
         it = self._add_item(node)
@@ -80,7 +81,7 @@ class NodeScene(QGraphicsScene):
 
     def remove_selected(self) -> None:
         if self._locked:
-            self.message.emit("Stop run mode to edit the flow")
+            self.message.emit(tr("Stop run mode to edit the flow"))
             return
         changed = False
         for it in list(self.selectedItems()):
@@ -164,7 +165,7 @@ class NodeScene(QGraphicsScene):
                     self.graph_changed.emit()
             return
         if src.is_output == target.is_output:
-            self.message.emit("Connect an output to an input")
+            self.message.emit(tr("Connect an output to an input"))
             return
         out, inp = (src, target) if src.is_output else (target, src)
         try:

@@ -46,7 +46,7 @@ class Graph:
     # ---- nodes ----
     def add_node(self, node: Node) -> Node:
         if node.id in self.nodes:
-            raise GraphError(f"duplicate node id {node.id}")
+            raise GraphError(f"节点 id 重复：{node.id}")
         self.nodes[node.id] = node
         return node
 
@@ -58,7 +58,7 @@ class Graph:
         try:
             return self.nodes[node_id]
         except KeyError:
-            raise GraphError(f"no node {node_id!r} in flow {self.name!r}") from None
+            raise GraphError(f"流程 {self.name!r} 中没有节点 {node_id!r}") from None
 
     def find_by_name(self, name: str) -> Node | None:
         return next((n for n in self.nodes.values() if n.name == name), None)
@@ -75,24 +75,24 @@ class Graph:
     # ---- links ----
     def add_link(self, src_node: str, src_port: str, dst_node: str, dst_port: str) -> Link:
         if src_node == dst_node:
-            raise GraphError("cannot link a node to itself")
+            raise GraphError("节点不能连接到自身")
         src = self.get_node(src_node)
         dst = self.get_node(dst_node)
         sp = src.get_output_port(src_port)
         dp = dst.get_input_port(dst_port)
         if sp is None:
-            raise GraphError(f"{src.name!r} has no output {src_port!r}")
+            raise GraphError(f"{src.name!r} 没有输出端口 {src_port!r}")
         if dp is None:
-            raise GraphError(f"{dst.name!r} has no input {dst_port!r}")
+            raise GraphError(f"{dst.name!r} 没有输入端口 {dst_port!r}")
         if not types_compatible(sp.dtype, dp.dtype):
-            raise GraphError(f"type mismatch: {src.name}.{src_port} ({sp.dtype.value}) -> "
+            raise GraphError(f"类型不匹配：{src.name}.{src_port} ({sp.dtype.value}) -> "
                              f"{dst.name}.{dst_port} ({dp.dtype.value})")
         link = Link(src_node, src_port, dst_node, dst_port)
         # an input accepts a single link: replace any existing one
         old = [l for l in self.links if l.dst_node == dst_node and l.dst_port == dst_port]
         trial = [l for l in self.links if l not in old] + [link]
         if self._has_cycle(trial):
-            raise GraphError("link would create a cycle")
+            raise GraphError("该连线会形成环路")
         self.links = trial
         return link
 
@@ -135,7 +135,7 @@ class Graph:
                 if indeg[s] == 0:
                     ready.append(s)
         if len(order) != len(self.nodes):
-            raise GraphError("flow contains a cycle")
+            raise GraphError("流程中存在环路")
         return order
 
     def topological_order(self) -> list[str]:
@@ -150,7 +150,7 @@ class Graph:
             linked = self.input_links(node.id)
             for p in node.inputs:
                 if not p.optional and p.name not in linked:
-                    warnings.append(f"{node.name}: input '{p.name}' is not connected")
+                    warnings.append(f"{node.name}：输入 '{p.name}' 未连接")
         try:
             self.topological_order()
         except GraphError as e:

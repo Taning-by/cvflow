@@ -10,7 +10,7 @@ from ..core.types import Image, Rect
 
 def require_image(value, name: str = "image") -> Image:
     if not isinstance(value, Image):
-        raise NodeError(f"input '{name}' must be an Image, got {type(value).__name__}")
+        raise NodeError(f"输入 '{name}' 必须是图像，实际为 {type(value).__name__}")
     return value
 
 
@@ -29,7 +29,7 @@ def crop(img: Image, roi: Rect | None) -> tuple[np.ndarray, Rect]:
     r = roi.clip(img.width, img.height)
     x, y, w, h = r.as_int()
     if w <= 0 or h <= 0:
-        raise NodeError("ROI lies outside the image")
+        raise NodeError("ROI 在图像范围之外")
     return img.data[y:y + h, x:x + w], Rect(x, y, w, h)
 
 

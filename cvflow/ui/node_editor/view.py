@@ -6,6 +6,7 @@ from PySide6.QtGui import QAction, QPainter
 from PySide6.QtWidgets import QGraphicsView, QMenu
 
 from ...core.registry import registry
+from ..i18n import tr
 from .items import NodeItem
 from .scene import NodeScene
 
@@ -75,12 +76,12 @@ class NodeView(QGraphicsView):
     def contextMenuEvent(self, event) -> None:
         scene_pos = self.mapToScene(event.pos())
         menu = QMenu(self)
-        add = menu.addMenu("Add node")
+        add = menu.addMenu(tr("Add node"))
         for cat, classes in registry.categories().items():
-            sub = add.addMenu(cat)
+            sub = add.addMenu(tr(cat))
             for cls in classes:
-                act = QAction(cls.label, sub)
-                act.setToolTip(cls.description)
+                act = QAction(tr(cls.label), sub)
+                act.setToolTip(tr(cls.description))
                 act.triggered.connect(lambda checked=False, t=cls.type_id, p=scene_pos: self._scene.add_node(t, p))
                 sub.addAction(act)
         item = self.itemAt(event.pos())
@@ -88,15 +89,15 @@ class NodeView(QGraphicsView):
         if node_item is not None:
             menu.addSeparator()
             node = node_item.node
-            tog = menu.addAction("Disable" if node.enabled else "Enable")
+            tog = menu.addAction(tr("Disable") if node.enabled else tr("Enable"))
             tog.triggered.connect(lambda: self._scene.set_node_enabled(node.id, not node.enabled))
-            dup = menu.addAction("Duplicate")
+            dup = menu.addAction(tr("Duplicate"))
             dup.triggered.connect(lambda: self._duplicate(node))
         if self._scene.selectedItems():
             menu.addSeparator()
-            menu.addAction("Delete selected").triggered.connect(self._scene.remove_selected)
+            menu.addAction(tr("Delete selected")).triggered.connect(self._scene.remove_selected)
         menu.addSeparator()
-        menu.addAction("Fit view (F)").triggered.connect(self.fit_all)
+        menu.addAction(tr("Fit view (F)")).triggered.connect(self.fit_all)
         menu.exec(event.globalPos())
 
     def _duplicate(self, node) -> None:

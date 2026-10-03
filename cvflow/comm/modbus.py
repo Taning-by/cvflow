@@ -41,7 +41,7 @@ def value_to_registers(value: Any, kind: str) -> list[int]:
     elif kind == "float32":
         packed = struct.pack(">f", float(value))
     else:
-        raise CommError(f"unknown register kind {kind!r}")
+        raise CommError(f"未知的寄存器类型 {kind!r}")
     return list(struct.unpack(">HH", packed))
 
 
@@ -103,7 +103,7 @@ class ModbusTcpServerDevice(CommDevice, _RegisterWatcher):
     def write_registers(self, address: int, values: list[int]) -> None:
         with self._lock:
             if address < 0 or address + len(values) > len(self.registers):
-                raise CommError("register address out of range")
+                raise CommError("寄存器地址越界")
             olds = self.registers[address:address + len(values)]
             self.registers[address:address + len(values)] = [v & 0xFFFF for v in values]
         for i, (o, n) in enumerate(zip(olds, values)):
@@ -124,7 +124,7 @@ class ModbusTcpServerDevice(CommDevice, _RegisterWatcher):
     def _write_coils(self, address: int, values: list[bool]) -> None:
         with self._lock:
             if address < 0 or address + len(values) > len(self.coils):
-                raise CommError("coil address out of range")
+                raise CommError("线圈地址越界")
             olds = self.coils[address:address + len(values)]
             self.coils[address:address + len(values)] = values
         for i, (o, n) in enumerate(zip(olds, values)):
@@ -167,10 +167,10 @@ class ModbusTcpServerDevice(CommDevice, _RegisterWatcher):
         if self._thread:
             self._thread.join(2.0)
             self._thread = None
-        self._set_connected(False, "closed")
+        self._set_connected(False, "已关闭")
 
     def _send_bytes(self, data: bytes) -> None:
-        raise CommError("Modbus server does not send raw frames; use write_value()")
+        raise CommError("Modbus 从站不发送原始报文，请使用 write_value()")
 
     # ---- protocol ----
     def _accept_loop(self) -> None:
@@ -300,7 +300,7 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
             try:
                 from pymodbus.client import ModbusTcpClient
             except ImportError as e:  # pragma: no cover
-                raise CommError("pymodbus is not installed") from e
+                raise CommError("未安装 pymodbus") from e
             self._client = ModbusTcpClient(self.config["host"], port=int(self.config["port"]),
                                            timeout=float(self.config.get("timeout_s", 1.0)), retries=1)
         return self._client
@@ -324,14 +324,14 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
                 except Exception:
                     pass
                 self._client = None
-        self._set_connected(False, "closed")
+        self._set_connected(False, "已关闭")
 
     def _send_bytes(self, data: bytes) -> None:
-        raise CommError("Modbus client does not send raw frames; use write_value()")
+        raise CommError("Modbus 主站不发送原始报文，请使用 write_value()")
 
     def _check(self, rr):
         if rr is None or rr.isError():
-            raise CommError(f"modbus error: {rr}")
+            raise CommError(f"Modbus 错误：{rr}")
         return rr
 
     def read_registers(self, address: int, count: int = 1) -> list[int]:
@@ -375,7 +375,7 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
                     c = self._ensure_client()
                     if not c.connected:
                         if not c.connect():
-                            raise CommError("connect failed")
+                            raise CommError("连接失败")
                 self._set_connected(True)
                 if poll <= 0:
                     self._stop.wait(0.5)

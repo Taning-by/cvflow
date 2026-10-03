@@ -10,13 +10,14 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from ..comm.manager import DEVICE_KINDS, REGISTER_MATCHES, TEXT_MATCHES, CommManager, ReceiveRule, SendRule
+from .i18n import tr
 
 
 # ------------------------------------------------------------------ dialogs
 class DeviceDialog(QDialog):
     def __init__(self, parent=None, name: str = "", kind: str = "tcp_server", config: dict | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Communication device")
+        self.setWindowTitle(tr("Communication device"))
         self._fields: dict[str, QWidget] = {}
         lay = QVBoxLayout(self)
         top = QFormLayout()
@@ -25,8 +26,8 @@ class DeviceDialog(QDialog):
         self.kind.addItems(sorted(DEVICE_KINDS))
         self.kind.setCurrentText(kind)
         self.kind.setEnabled(not name)
-        top.addRow("Name", self.name)
-        top.addRow("Kind", self.kind)
+        top.addRow(tr("Name"), self.name)
+        top.addRow(tr("Kind"), self.kind)
         lay.addLayout(top)
         self._form_host = QWidget()
         lay.addWidget(self._form_host)
@@ -62,9 +63,9 @@ class DeviceDialog(QDialog):
             else:
                 w = QLineEdit(str(val))
             if desc:
-                w.setToolTip(desc)
+                w.setToolTip(tr(desc))
             self._fields[key] = w
-            form.addRow(label, w)
+            form.addRow(tr(label), w)
 
     def result(self) -> tuple[str, str, dict]:
         cfg = {}
@@ -83,7 +84,7 @@ class DeviceDialog(QDialog):
 class ReceiveRuleDialog(QDialog):
     def __init__(self, parent, rule: ReceiveRule, devices: list[str], flows: list[str]) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Receive rule")
+        self.setWindowTitle(tr("Receive rule"))
         form = QFormLayout(self)
         self.name = QLineEdit(rule.name)
         self.device = QComboBox(); self.device.addItems([""] + devices); self.device.setCurrentText(rule.device)
@@ -98,9 +99,9 @@ class ReceiveRuleDialog(QDialog):
         for lbl, w in [("Name", self.name), ("Device (empty = any)", self.device), ("Match", self.match),
                        ("Text pattern", self.pattern), ("Register address", self.address), ("Register value", self.value),
                        ("Action", self.action), ("Flow", self.flow), ("Variable", self.variable), ("Enabled", self.enabled)]:
-            form.addRow(lbl, w)
-        hint = QLabel("Text matches apply to TCP/UDP/serial frames; register_* matches apply to Modbus devices "
-                      "(rising = 0→non-zero).")
+            form.addRow(tr(lbl), w)
+        hint = QLabel(tr("Text matches apply to TCP/UDP/serial frames; register_* matches apply to Modbus devices "
+                         "(rising = 0→non-zero)."))
         hint.setWordWrap(True); hint.setStyleSheet("color:#888")
         form.addRow(hint)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -117,7 +118,7 @@ class ReceiveRuleDialog(QDialog):
 class SendRuleDialog(QDialog):
     def __init__(self, parent, rule: SendRule, devices: list[str], flows: list[str]) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Send rule")
+        self.setWindowTitle(tr("Send rule"))
         form = QFormLayout(self)
         self.name = QLineEdit(rule.name)
         self.device = QComboBox(); self.device.addItems(devices); self.device.setCurrentText(rule.device)
@@ -126,12 +127,12 @@ class SendRuleDialog(QDialog):
         self.template = QLineEdit(rule.template)
         self.template.setToolTip("{status} {ok} {ng} {run_id} {flow} {duration_ms} {out.name} {var.name} {node[Node Name].port}")
         self.registers = QPlainTextEdit(json.dumps(rule.registers, indent=1) if rule.registers else "")
-        self.registers.setPlaceholderText('Modbus only, JSON list: [{"address": 10, "expr": "{out.count}", "kind": "int16"}]')
+        self.registers.setPlaceholderText(tr('Modbus only, JSON list: [{"address": 10, "expr": "{out.count}", "kind": "int16"}]'))
         self.registers.setMaximumHeight(90)
         self.enabled = QCheckBox(); self.enabled.setChecked(rule.enabled)
         for lbl, w in [("Name", self.name), ("Device", self.device), ("Flow (empty = any)", self.flow), ("When", self.when),
                        ("Text template", self.template), ("Register writes", self.registers), ("Enabled", self.enabled)]:
-            form.addRow(lbl, w)
+            form.addRow(tr(lbl), w)
         self.err = QLabel(""); self.err.setStyleSheet("color:#ff8a65")
         form.addRow(self.err)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -142,7 +143,7 @@ class SendRuleDialog(QDialog):
         try:
             self._regs = json.loads(self.registers.toPlainText()) if self.registers.toPlainText().strip() else []
         except json.JSONDecodeError as e:
-            self.err.setText(f"registers JSON: {e.msg}")
+            self.err.setText(tr("registers JSON: ") + e.msg)
             return
         self.accept()
 
@@ -170,58 +171,58 @@ class CommPanel(QWidget):
         bar = QHBoxLayout()
         for text, slot in [("Add", self._add_device), ("Edit", self._edit_device), ("Remove", self._remove_device),
                            ("Connect", self._connect), ("Disconnect", self._disconnect), ("Connect all", self._connect_all)]:
-            b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
+            b = QPushButton(tr(text)); b.clicked.connect(slot); bar.addWidget(b)
         bar.addStretch(1)
         self.dev_table = QTableWidget(0, 6)
-        self.dev_table.setHorizontalHeaderLabels(["Name", "Kind", "Status", "RX", "TX", "Last error"])
+        self.dev_table.setHorizontalHeaderLabels([tr(h) for h in ("Name", "Kind", "Status", "RX", "TX", "Last error")])
         self.dev_table.horizontalHeader().setStretchLastSection(True)
         self.dev_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.dev_table.setEditTriggers(QTableWidget.NoEditTriggers)
         dl.addLayout(bar); dl.addWidget(self.dev_table)
-        tabs.addTab(dev_w, "Devices")
+        tabs.addTab(dev_w, tr("Devices"))
 
         # receive rules
         rx_w = QWidget(); rl = QVBoxLayout(rx_w); rl.setContentsMargins(2, 2, 2, 2)
         bar = QHBoxLayout()
         for text, slot in [("Add", self._add_rx), ("Edit", self._edit_rx), ("Remove", self._remove_rx)]:
-            b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
+            b = QPushButton(tr(text)); b.clicked.connect(slot); bar.addWidget(b)
         bar.addStretch(1)
         self.rx_table = QTableWidget(0, 6)
-        self.rx_table.setHorizontalHeaderLabels(["Name", "Device", "Match", "Pattern / address", "Action", "Flow / variable"])
+        self.rx_table.setHorizontalHeaderLabels([tr(h) for h in ("Name", "Device", "Match", "Pattern / address", "Action", "Flow / variable")])
         self.rx_table.horizontalHeader().setStretchLastSection(True)
         self.rx_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.rx_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.rx_table.doubleClicked.connect(lambda _: self._edit_rx())
         rl.addLayout(bar); rl.addWidget(self.rx_table)
-        tabs.addTab(rx_w, "Receive rules (triggers)")
+        tabs.addTab(rx_w, tr("Receive rules (triggers)"))
 
         # send rules
         tx_w = QWidget(); tl = QVBoxLayout(tx_w); tl.setContentsMargins(2, 2, 2, 2)
         bar = QHBoxLayout()
         for text, slot in [("Add", self._add_tx), ("Edit", self._edit_tx), ("Remove", self._remove_tx)]:
-            b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
+            b = QPushButton(tr(text)); b.clicked.connect(slot); bar.addWidget(b)
         bar.addStretch(1)
         self.tx_table = QTableWidget(0, 5)
-        self.tx_table.setHorizontalHeaderLabels(["Name", "Device", "Flow", "When", "Template / registers"])
+        self.tx_table.setHorizontalHeaderLabels([tr(h) for h in ("Name", "Device", "Flow", "When", "Template / registers")])
         self.tx_table.horizontalHeader().setStretchLastSection(True)
         self.tx_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.tx_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tx_table.doubleClicked.connect(lambda _: self._edit_tx())
         tl.addLayout(bar); tl.addWidget(self.tx_table)
-        tabs.addTab(tx_w, "Send rules (results)")
+        tabs.addTab(tx_w, tr("Send rules (results)"))
 
         # monitor
         mon_w = QWidget(); ml = QVBoxLayout(mon_w); ml.setContentsMargins(2, 2, 2, 2)
         self.monitor = QListWidget()
         row = QHBoxLayout()
         self.send_dev = QComboBox()
-        self.send_text = QLineEdit(); self.send_text.setPlaceholderText("text to send (\\n etc. allowed)")
-        send_btn = QPushButton("Send"); send_btn.clicked.connect(self._manual_send)
+        self.send_text = QLineEdit(); self.send_text.setPlaceholderText(tr("text to send (\\n etc. allowed)"))
+        send_btn = QPushButton(tr("Send")); send_btn.clicked.connect(self._manual_send)
         self.send_text.returnPressed.connect(self._manual_send)
-        clear = QPushButton("Clear"); clear.clicked.connect(self.monitor.clear)
+        clear = QPushButton(tr("Clear")); clear.clicked.connect(self.monitor.clear)
         row.addWidget(self.send_dev); row.addWidget(self.send_text, 1); row.addWidget(send_btn); row.addWidget(clear)
         ml.addWidget(self.monitor); ml.addLayout(row)
-        tabs.addTab(mon_w, "Monitor")
+        tabs.addTab(mon_w, tr("Monitor"))
         self.refresh()
 
     # ---- refresh ----
@@ -234,7 +235,7 @@ class CommPanel(QWidget):
         self.dev_table.setRowCount(len(devs))
         for r, d in enumerate(devs):
             info = d.info()
-            status = "connected" if d.connected else "disconnected"
+            status = tr("connected") if d.connected else tr("disconnected")
             cells = [d.name, d.kind, status, str(info.get("rx", 0)), str(info.get("tx", 0)), d.last_error]
             for c, text in enumerate(cells):
                 it = QTableWidgetItem(text)
@@ -245,12 +246,12 @@ class CommPanel(QWidget):
         for r, rule in enumerate(self.mgr.receive_rules):
             pat = rule.pattern if rule.match in TEXT_MATCHES else f"addr {rule.address}" + (f" == {rule.value}" if rule.match == "register_equals" else "")
             tgt = rule.flow if rule.action == "trigger_flow" else f"var {rule.variable}"
-            for c, text in enumerate([rule.name + ("" if rule.enabled else " (off)"), rule.device or "*", rule.match, pat, rule.action, tgt]):
+            for c, text in enumerate([rule.name + ("" if rule.enabled else tr(" (off)")), rule.device or "*", rule.match, pat, rule.action, tgt]):
                 self.rx_table.setItem(r, c, QTableWidgetItem(text))
         self.tx_table.setRowCount(len(self.mgr.send_rules))
         for r, rule in enumerate(self.mgr.send_rules):
             payload = rule.template if not rule.registers else json.dumps(rule.registers)
-            for c, text in enumerate([rule.name + ("" if rule.enabled else " (off)"), rule.device, rule.flow or "*", rule.when, payload]):
+            for c, text in enumerate([rule.name + ("" if rule.enabled else tr(" (off)")), rule.device, rule.flow or "*", rule.when, payload]):
                 self.tx_table.setItem(r, c, QTableWidgetItem(text))
         cur = self.send_dev.currentText()
         self.send_dev.clear()

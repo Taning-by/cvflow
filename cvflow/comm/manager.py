@@ -136,7 +136,7 @@ def format_template(template: str, result: RunResult | None = None,
     try:
         return string.Formatter().vformat(tpl, (), m)
     except (ValueError, AttributeError, IndexError, KeyError) as e:
-        raise CommError(f"bad template {template!r}: {e}") from e
+        raise CommError(f"模板 {template!r} 有误：{e}") from e
 
 
 def eval_register_expr(expr: str, result: RunResult | None, variables: dict | None) -> float:
@@ -167,7 +167,7 @@ class CommManager:
     # ---- devices ----
     def add_device(self, name: str, kind: str, config: dict | None = None) -> CommDevice:
         if kind not in DEVICE_KINDS:
-            raise CommError(f"unknown device kind {kind!r}; known: {sorted(DEVICE_KINDS)}")
+            raise CommError(f"未知的设备类型 {kind!r}，可用：{sorted(DEVICE_KINDS)}")
         with self._lock:
             old = self.devices.pop(name, None)
             if old is not None:
@@ -195,7 +195,7 @@ class CommManager:
                 dev.connect()
             except Exception as e:
                 errors.append(f"{dev.name}: {e}")
-                log.error("connect %s failed: %s", dev.name, e)
+                log.error("连接 %s 失败：%s", dev.name, e)
         return errors
 
     def disconnect_all(self) -> None:
@@ -203,25 +203,25 @@ class CommManager:
             try:
                 dev.disconnect()
             except Exception:
-                log.exception("disconnect %s failed", dev.name)
+                log.exception("断开 %s 失败", dev.name)
 
     def send(self, device: str, data: bytes | str) -> bool:
         dev = self.devices.get(device)
         if dev is None:
-            log.warning("send: unknown device %r", device)
+            log.warning("发送：未知设备 %r", device)
             return False
         return dev.send(data)
 
     def modbus_write(self, device: str, address: int, value: Any, kind: str = "int16") -> bool:
         dev = self.devices.get(device)
         if dev is None or not hasattr(dev, "write_value"):
-            log.warning("modbus_write: %r is not a Modbus device", device)
+            log.warning("Modbus 写入：%r 不是 Modbus 设备", device)
             return False
         try:
             dev.write_value(int(address), value, kind)
             return True
         except Exception as e:
-            dev._error(f"write failed: {e}")
+            dev._error(f"写入失败：{e}")
             return False
 
     # ---- rules ----
@@ -284,10 +284,10 @@ class CommManager:
             return
         runner = self.runners.get(rule.flow)
         if runner is None:
-            log.warning("rule %s: flow %r not found", rule.name, rule.flow)
+            log.warning("规则 %s：找不到流程 %r", rule.name, rule.flow)
             return
         if not runner.running:
-            log.info("rule %s: flow %r is not running, trigger ignored", rule.name, rule.flow)
+            log.info("规则 %s：流程 %r 未运行，忽略触发", rule.name, rule.flow)
             return
         runner.trigger(trigger)
 
@@ -313,7 +313,7 @@ class CommManager:
                 elif rule.template:
                     dev.send(format_template(rule.template, result, result.variables))
             except Exception as e:
-                dev._error(f"send rule {rule.name!r}: {e}")
+                dev._error(f"发送规则 {rule.name!r}：{e}")
 
     # ---- persistence ----
     def to_dict(self) -> dict:

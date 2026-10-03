@@ -92,7 +92,7 @@ class SaveImage(Node):
         path = os.path.join(d, name)
         params = [cv2.IMWRITE_JPEG_QUALITY, int(self.get("jpeg_quality"))] if self.get("format") == "jpg" else []
         if not cv2.imwrite(path, img.data, params):
-            raise NodeError(f"cannot write {path}")
+            raise NodeError(f"无法写入 {path}")
         return {"path": path}
 
 
@@ -126,7 +126,7 @@ class CommSend(Node):
         from ..comm.manager import get_manager
         mgr = get_manager()
         if mgr is None:
-            raise NodeError("no communication manager active")
+            raise NodeError("通信管理器未启动")
         text = str(inputs["text"]) + self.get("append").encode().decode("unicode_escape")
         ok = mgr.send(self.get("device"), text)
         return {"sent": bool(ok)}
@@ -149,7 +149,7 @@ class ModbusWrite(Node):
         from ..comm.manager import get_manager
         mgr = get_manager()
         if mgr is None:
-            raise NodeError("no communication manager active")
+            raise NodeError("通信管理器未启动")
         v = inputs["value"]
         if self.get("kind") != "bool":
             v = float(v) * float(self.get("scale"))

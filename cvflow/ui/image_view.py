@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsLin
                                QGraphicsView)
 
 from ..core.types import Image, Overlay, Rect
+from .i18n import tr
 
 
 def to_qimage(data: np.ndarray) -> QImage:
@@ -165,7 +166,7 @@ class ImageView(QGraphicsView):
         self._roi_cb = callback
         self.setDragMode(QGraphicsView.NoDrag)
         self.setCursor(Qt.CrossCursor)
-        self.pixel_info.emit("Draw a rectangle on the image (Esc to cancel)")
+        self.pixel_info.emit(tr("Draw a rectangle on the image (Esc to cancel)"))
 
     def cancel_roi_edit(self) -> None:
         self._roi_cb = None

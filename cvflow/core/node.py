@@ -84,11 +84,11 @@ class Param:
 
     def __post_init__(self) -> None:
         if self.kind not in PARAM_KINDS:
-            raise ValueError(f"Param {self.name!r}: unknown kind {self.kind!r}")
+            raise ValueError(f"参数 {self.name!r}：未知类型 {self.kind!r}")
         if not self.label:
             self.label = self.name.replace("_", " ").title()
         if self.kind == "enum" and not self.choices:
-            raise ValueError(f"Param {self.name!r}: enum needs choices")
+            raise ValueError(f"参数 {self.name!r}：enum 类型需要 choices")
         self.default = self.coerce(self.default)
 
     def coerce(self, value: Any) -> Any:
@@ -116,7 +116,7 @@ class Param:
             if isinstance(value, dict) and {"x", "y", "w", "h"} <= set(value):
                 return {"x": float(value["x"]), "y": float(value["y"]), "w": float(value["w"]),
                         "h": float(value["h"]), "angle": float(value.get("angle", 0.0))}
-            raise ValueError(f"Param {self.name!r}: invalid rect {value!r}")
+            raise ValueError(f"参数 {self.name!r}：无效的矩形 {value!r}")
         if k == "list":
             return list(value) if value is not None else []
         if k == "json":
@@ -169,7 +169,7 @@ class Node:
         for p in self.params:
             if p.name == name:
                 return p
-        raise KeyError(f"{self.type_id}: no parameter {name!r}")
+        raise KeyError(f"{self.type_id}：没有参数 {name!r}")
 
     def get(self, name: str, default: Any = None) -> Any:
         return self.values.get(name, default)

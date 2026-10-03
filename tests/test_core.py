@@ -108,7 +108,7 @@ def test_unconnected_required_input_is_skipped(reg):
     t = g.add_node(reg.create("preprocess.threshold"))
     r = Engine(g).run()
     assert r.ok and r.node_results[t.id].status == NodeStatus.SKIPPED
-    assert "not connected" in r.node_results[t.id].error
+    assert "未连接" in r.node_results[t.id].error
 
 
 def test_runner_threaded_and_timer(reg):

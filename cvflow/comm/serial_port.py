@@ -30,7 +30,7 @@ class SerialDevice(CommDevice):
         try:
             import serial
         except ImportError as e:  # pragma: no cover
-            raise CommError("pyserial is not installed") from e
+            raise CommError("未安装 pyserial") from e
         try:
             self._ser = serial.Serial(port=self.config["port"], baudrate=int(self.config["baudrate"]),
                                       bytesize=int(self.config["bytesize"]), parity=str(self.config["parity"]),
@@ -53,7 +53,7 @@ class SerialDevice(CommDevice):
                 self._ser.close()
             finally:
                 self._ser = None
-        self._set_connected(False, "closed")
+        self._set_connected(False, "已关闭")
 
     def _loop(self) -> None:
         while not self._stop.is_set() and self._ser:
@@ -61,7 +61,7 @@ class SerialDevice(CommDevice):
                 n = self._ser.in_waiting
                 data = self._ser.read(n if n else 1)
             except Exception as e:
-                self._error(f"read failed: {e}")
+                self._error(f"读取失败：{e}")
                 self._set_connected(False, str(e))
                 break
             if data:
@@ -69,5 +69,5 @@ class SerialDevice(CommDevice):
 
     def _send_bytes(self, data: bytes) -> None:
         if not self._ser:
-            raise CommError("not open")
+            raise CommError("未打开")
         self._ser.write(data)

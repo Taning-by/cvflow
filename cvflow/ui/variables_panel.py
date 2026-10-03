@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QInputDialog, QPushButton, QTableWid
                                QWidget)
 
 from ..core.variables import GlobalVariables
+from .i18n import tr
 
 
 class VariablesPanel(QWidget):
@@ -17,15 +18,15 @@ class VariablesPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         bar = QHBoxLayout()
-        add = QPushButton("Add")
-        rem = QPushButton("Remove")
+        add = QPushButton(tr("Add"))
+        rem = QPushButton(tr("Remove"))
         add.clicked.connect(self._add)
         rem.clicked.connect(self._remove)
         bar.addWidget(add)
         bar.addWidget(rem)
         bar.addStretch(1)
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Name", "Value", "Description"])
+        self.table.setHorizontalHeaderLabels([tr("Name"), tr("Value"), tr("Description")])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(0, 140)
         self.table.setColumnWidth(1, 220)
@@ -72,7 +73,7 @@ class VariablesPanel(QWidget):
     def _add(self) -> None:
         if self._vars is None:
             return
-        name, ok = QInputDialog.getText(self, "New variable", "Name:")
+        name, ok = QInputDialog.getText(self, tr("New variable"), tr("Name:"))
         if ok and name.strip():
             self._vars.define(name.strip(), "", "any", "")
             self.refresh()

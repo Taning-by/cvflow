@@ -27,9 +27,9 @@ class NodeRegistry:
     # ---- registration ----
     def register(self, cls: type[Node], source: str = "builtin") -> type[Node]:
         if not cls.type_id:
-            raise ValueError(f"{cls.__name__} has no type_id")
+            raise ValueError(f"{cls.__name__} 没有定义 type_id")
         if cls.type_id in self._classes and self._classes[cls.type_id] is not cls:
-            log.info("replacing node type %s (%s)", cls.type_id, source)
+            log.info("替换节点类型 %s (%s)", cls.type_id, source)
         self._classes[cls.type_id] = cls
         self._sources[cls.type_id] = source
         return cls
@@ -46,7 +46,7 @@ class NodeRegistry:
         try:
             return self._classes[type_id]
         except KeyError:
-            raise KeyError(f"unknown node type {type_id!r}; is the plugin loaded?") from None
+            raise KeyError(f"未知的节点类型 {type_id!r}，插件是否已加载？") from None
 
     def create(self, type_id: str, node_id: str | None = None, name: str | None = None,
                values: dict | None = None) -> Node:
@@ -81,7 +81,7 @@ class NodeRegistry:
         mod_name = f"cvflow_plugin_{path.stem}_{abs(hash(str(path))) & 0xFFFF:04x}"
         spec = importlib.util.spec_from_file_location(mod_name, path)
         if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load plugin {path}")
+            raise ImportError(f"无法加载插件 {path}")
         module = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = module
         try:
@@ -95,14 +95,14 @@ class NodeRegistry:
                     and obj.__module__ == mod_name and obj.type_id:
                 self.register(obj, source=str(path))
                 found.append(obj)
-        log.info("plugin %s: %d node type(s)", path.name, len(found))
+        log.info("插件 %s：%d 个节点类型", path.name, len(found))
         return found
 
     def load_plugin_dir(self, directory: str | Path) -> list[type[Node]]:
         directory = Path(directory)
         found: list[type[Node]] = []
         if not directory.is_dir():
-            log.warning("plugin dir %s does not exist", directory)
+            log.warning("插件目录 %s 不存在", directory)
             return found
         for py in sorted(directory.glob("*.py")):
             if py.name.startswith("_"):
@@ -110,7 +110,7 @@ class NodeRegistry:
             try:
                 found.extend(self.load_plugin_file(py))
             except Exception as e:  # keep loading the others
-                log.error("plugin %s failed: %s", py.name, e)
+                log.error("插件 %s 加载失败：%s", py.name, e)
         return found
 
 

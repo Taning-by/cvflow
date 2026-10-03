@@ -22,14 +22,14 @@ class FolderCamera(Camera):
     def open(self) -> None:
         d = Path(str(self.config.get("source", "")))
         if not d.is_dir():
-            raise CameraError(f"folder camera {self.name!r}: {d} is not a directory")
+            raise CameraError(f"文件夹相机 {self.name!r}：{d} 不是目录")
         patterns = self.config.get("patterns") or DEFAULT_PATTERNS
         files: list[Path] = []
         for p in patterns:
             files.extend(d.glob(p))
         self._files = sorted(set(files))
         if not self._files:
-            raise CameraError(f"folder camera {self.name!r}: no images in {d}")
+            raise CameraError(f"文件夹相机 {self.name!r}：{d} 中没有图像")
         self._index = 0
         self.is_open = True
 
@@ -45,7 +45,7 @@ class FolderCamera(Camera):
         self._index += 1
         img = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if img is None:
-            raise CameraError(f"cannot read {path}")
+            raise CameraError(f"无法读取 {path}")
         return img
 
     @property

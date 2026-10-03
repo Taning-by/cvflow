@@ -23,7 +23,7 @@ def create_camera(kind: str, name: str, config: dict[str, Any] | None = None) ->
     try:
         cls = CAMERA_KINDS[kind]
     except KeyError:
-        raise CameraError(f"unknown camera kind {kind!r}; known: {sorted(CAMERA_KINDS)}") from None
+        raise CameraError(f"未知的相机类型 {kind!r}，可用：{sorted(CAMERA_KINDS)}") from None
     return cls(name, config)
 
 
@@ -61,7 +61,7 @@ class CameraManager:
                 try:
                     cam.close()
                 except Exception:
-                    log.exception("closing camera %s failed", cam.name)
+                    log.exception("关闭相机 %s 失败", cam.name)
             self._cams.clear()
 
 

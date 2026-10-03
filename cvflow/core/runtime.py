@@ -162,11 +162,11 @@ class FlowRunner:
         """Enqueue a run (run mode). Returns the result only when ``wait`` is True."""
         trig = trigger or Trigger(TriggerSource.MANUAL)
         if not self.running:
-            log.warning("flow %s: trigger ignored, runner not started", self.name)
+            log.warning("流程 %s：未启动，忽略触发", self.name)
             return None
         if self._queue.qsize() >= self.max_queue:
             self.stats.dropped += 1
-            log.warning("flow %s: trigger dropped, queue full (%d)", self.name, self.max_queue)
+            log.warning("流程 %s：队列已满 (%d)，丢弃触发", self.name, self.max_queue)
             return None
         job = _Job(trig)
         self._queue.put(job)
@@ -199,7 +199,7 @@ class FlowRunner:
             try:
                 job.result = self.engine.run(job.trigger)
             except Exception:  # the engine already isolates node errors; this is a safety net
-                log.exception("flow %s: unexpected engine failure", self.name)
+                log.exception("流程 %s：引擎异常", self.name)
             finally:
                 job.done.set()
 
@@ -252,7 +252,7 @@ class Solution:
 
     def rename_flow(self, old: str, new: str) -> None:
         if new in self.flows or old not in self.flows:
-            raise ValueError(f"cannot rename flow {old!r} to {new!r}")
+            raise ValueError(f"无法把流程 {old!r} 重命名为 {new!r}")
         g = self.flows.pop(old)
         g.name = new
         self.flows[new] = g

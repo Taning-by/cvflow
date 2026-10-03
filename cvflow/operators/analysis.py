@@ -141,14 +141,14 @@ class TemplateMatch(Node):
             return as_gray(inp)
         path = paths.resolve(self.get("template_path"))
         if not path:
-            raise NodeError("no template image (set template_path or connect 'template')")
+            raise NodeError("没有模板图像（请设置模板文件或连接 'template' 输入）")
         if not os.path.isfile(path):
-            raise NodeError(f"template not found: {path}")
+            raise NodeError(f"模板文件不存在：{path}")
         key = (path, os.path.getmtime(path))
         if not self._tpl_cache or self._tpl_cache[0] != key:
             t = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             if t is None:
-                raise NodeError(f"cannot read template {path}")
+                raise NodeError(f"无法读取模板 {path}")
             self._tpl_cache = (key, t)
         return self._tpl_cache[1]
 
@@ -159,7 +159,7 @@ class TemplateMatch(Node):
         view, eff = crop(img.derive(g), self.rect("search_roi"))
         th, tw = tpl.shape[:2]
         if th > view.shape[0] or tw > view.shape[1]:
-            raise NodeError("template larger than search area")
+            raise NodeError("模板比搜索区域大")
         method = {"ccoeff_normed": cv2.TM_CCOEFF_NORMED, "ccorr_normed": cv2.TM_CCORR_NORMED,
                   "sqdiff_normed": cv2.TM_SQDIFF_NORMED}[self.get("method")]
         res = cv2.matchTemplate(view, tpl, method)
@@ -220,7 +220,7 @@ class EdgeCaliper(Node):
         img = require_image(inputs["image"])
         roi = inputs.get("roi") if isinstance(inputs.get("roi"), Rect) else self.rect("roi")
         if roi is None:
-            raise NodeError("no ROI set")
+            raise NodeError("未设置 ROI")
         g = as_gray(img)
         view, eff = crop(img.derive(g), roi)
         horizontal = self.get("direction") == "horizontal"

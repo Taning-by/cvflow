@@ -43,7 +43,7 @@ def test_main_window_end_to_end(app, tmp_path):
         assert w.results_panel.banner.text().startswith("OK")
         assert w.image_view.image is not None
 
-        holes = w.solution.flows["main"].find_by_name("Holes")
+        holes = w.solution.flows["main"].find_by_name("孔")
         w.scene.select_node(holes.id)
         _pump(app)
         assert w.selected_node == holes.id
@@ -60,7 +60,7 @@ def test_main_window_end_to_end(app, tmp_path):
         # editing: add + link a node through the scene, then save and reload
         n = w.scene.add_node("preprocess.blur", QPointF(10, 400))
         assert n is not None and n.id in w.solution.flows["main"].nodes
-        gray = w.solution.flows["main"].find_by_name("Gray")
+        gray = w.solution.flows["main"].find_by_name("灰度")
         w.solution.flows["main"].add_link(gray.id, "image", n.id, "image")
         w.scene.set_graph(w.solution.flows["main"])
         out = tmp_path / "copy.json"

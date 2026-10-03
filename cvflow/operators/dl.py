@@ -51,16 +51,16 @@ class _OnnxBase(Node):
     def _ensure_session(self):
         path = paths.resolve(self.get("model_path"))
         if not path:
-            raise NodeError("no model_path set")
+            raise NodeError("未设置模型文件")
         if not os.path.isfile(path):
-            raise NodeError(f"model not found: {path}")
+            raise NodeError(f"模型文件不存在：{path}")
         key = (path, os.path.getmtime(path), self.get("provider"))
         if self._loaded_key == key and self._session is not None:
             return self._session
         try:
             import onnxruntime as ort
         except ImportError as e:  # pragma: no cover
-            raise NodeError("onnxruntime is not installed") from e
+            raise NodeError("未安装 onnxruntime") from e
         avail = ort.get_available_providers()
         prov = self.get("provider")
         if prov == "auto":
@@ -229,12 +229,12 @@ class OnnxDetector(_OnnxBase):
         return pred.shape[1] in (85, 6) or (pred.shape[1] > 6 and float(pred[:, 4].max()) <= 1.0 and float(pred[:, 5:].max()) <= 1.0 and pred.shape[1] % 2 == 1)
 
 
-_SCRIPT_TEMPLATE = '''"""Custom node code. Available: np, cv2, Image, Overlay, Rect, Point, Line, Circle.
+_SCRIPT_TEMPLATE = '''"""自定义节点代码。可用对象：np, cv2, Image, Overlay, Rect, Point, Line, Circle。
 
-def setup(state): optional, runs once when the flow starts.
-def process(ctx, inputs, params, state) -> dict: runs per image.
-   inputs: {"image": Image|None, "in1".."in4": any}
-   return {"image": Image, "out1".."out4": any}
+def setup(state): 可选，流程启动时执行一次。
+def process(ctx, inputs, params, state) -> dict: 每张图执行一次。
+   inputs: {"image": Image|None, "in1".."in4": 任意}
+   返回 {"image": Image, "out1".."out4": 任意}
 """
 def process(ctx, inputs, params, state):
     img = inputs["image"]
@@ -271,7 +271,7 @@ class PythonScript(Node):
                   "Point": Point, "Line": Line, "Circle": Circle, "NodeError": NodeError, "__name__": f"script_{self.id}"}
             exec(compile(src, f"<script {self.name}>", "exec"), ns)
             if "process" not in ns or not callable(ns["process"]):
-                raise NodeError("script must define process(ctx, inputs, params, state)")
+                raise NodeError("脚本必须定义 process(ctx, inputs, params, state)")
             self._ns, self._compiled_src = ns, src
             if callable(ns.get("setup")):
                 ns["setup"](self.state)

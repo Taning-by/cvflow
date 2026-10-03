@@ -30,28 +30,28 @@ def place(node, col: int, row: int = 0):
 
 def build_main() -> Graph:
     g = Graph("main")
-    g.description = "Count the three holes of the part and measure its width."
-    src = place(g.add_node(registry.create("source.image_folder", name="Folder",
+    g.description = "统计工件上的三个孔并测量工件宽度。"
+    src = place(g.add_node(registry.create("source.image_folder", name="取图",
                                            values={"directory": IMAGES, "mode": "next"})), 0)
-    gray = place(g.add_node(registry.create("preprocess.color", name="Gray", values={"mode": "gray"})), 1)
-    th = place(g.add_node(registry.create("preprocess.threshold", name="Threshold",
+    gray = place(g.add_node(registry.create("preprocess.color", name="灰度", values={"mode": "gray"})), 1)
+    th = place(g.add_node(registry.create("preprocess.threshold", name="阈值",
                                           values={"method": "binary_inv", "thresh": 120})), 2)
-    mo = place(g.add_node(registry.create("preprocess.morphology", name="Open",
+    mo = place(g.add_node(registry.create("preprocess.morphology", name="开运算",
                                           values={"op": "open", "ksize": 3})), 3)
-    blob = place(g.add_node(registry.create("analysis.blob", name="Holes",
+    blob = place(g.add_node(registry.create("analysis.blob", name="孔",
                                             values={"min_area": 500, "max_area": 5000})), 4)
-    jc = place(g.add_node(registry.create("logic.judge", name="Hole Count",
+    jc = place(g.add_node(registry.create("logic.judge", name="孔数判定",
                                           values={"op": "==", "low": 3, "name": "holes"})), 5)
-    cal = place(g.add_node(registry.create("analysis.caliper", name="Width",
+    cal = place(g.add_node(registry.create("analysis.caliper", name="宽度",
                                            values={"roi": {"x": 60, "y": 150, "w": 520, "h": 24},
                                                    "direction": "horizontal", "select": "first_last",
                                                    "min_contrast": 15})), 4, 1)
-    jw = place(g.add_node(registry.create("logic.judge", name="Width OK",
+    jw = place(g.add_node(registry.create("logic.judge", name="宽度判定",
                                           values={"op": "in_range", "low": 390, "high": 410, "name": "width"})), 5, 1)
-    pub = place(g.add_node(registry.create("output.publish", name="Publish",
+    pub = place(g.add_node(registry.create("output.publish", name="发布",
                                            values={"name_a": "holes", "name_b": "width"})), 6)
-    rnd = place(g.add_node(registry.create("output.render", name="Render")), 6, 1)
-    sav = place(g.add_node(registry.create("output.save_image", name="Save NG",
+    rnd = place(g.add_node(registry.create("output.render", name="渲染")), 6, 1)
+    sav = place(g.add_node(registry.create("output.save_image", name="NG 存图",
                                            values={"directory": "../../captures", "when": "ng_only"})), 7, 1)
     g.add_link(src.id, "image", gray.id, "image")
     g.add_link(gray.id, "image", th.id, "image")
@@ -71,18 +71,18 @@ def build_main() -> Graph:
 
 def build_learning() -> Graph:
     g = Graph("learning")
-    g.description = "Bandit plugin tunes the threshold; reward is highest when 3 holes of nominal area are found."
-    rew = place(g.add_node(registry.create("logic.get_variable", name="Reward", values={"name": "reward", "default": "0"})), 0, 1)
-    bandit = place(g.add_node(registry.create("learning.bandit_threshold", name="Tuner",
+    g.description = "Bandit 插件调节阈值；找到 3 个标称面积的孔时奖励最高。"
+    rew = place(g.add_node(registry.create("logic.get_variable", name="奖励", values={"name": "reward", "default": "0"})), 0, 1)
+    bandit = place(g.add_node(registry.create("learning.bandit_threshold", name="调优器",
                                               values={"low": 60, "high": 220, "step": 20, "epsilon": 0.2})), 1, 1)
-    src = place(g.add_node(registry.create("source.image_folder", name="Folder",
+    src = place(g.add_node(registry.create("source.image_folder", name="取图",
                                            values={"directory": IMAGES, "mode": "fixed", "index": 0})), 0)
-    gray = place(g.add_node(registry.create("preprocess.color", name="Gray", values={"mode": "gray"})), 1)
-    th = place(g.add_node(registry.create("preprocess.threshold", name="Threshold", values={"method": "binary_inv"})), 2)
-    blob = place(g.add_node(registry.create("analysis.blob", name="Holes", values={"min_area": 500, "max_area": 5000})), 3)
-    exp = place(g.add_node(registry.create("logic.expression", name="Score", values={
+    gray = place(g.add_node(registry.create("preprocess.color", name="灰度", values={"mode": "gray"})), 1)
+    th = place(g.add_node(registry.create("preprocess.threshold", name="阈值", values={"method": "binary_inv"})), 2)
+    blob = place(g.add_node(registry.create("analysis.blob", name="孔", values={"min_area": 500, "max_area": 5000})), 3)
+    exp = place(g.add_node(registry.create("logic.expression", name="得分", values={
         "expression": "(1.0 if a == 3 else 0.0) * max(0.0, 1.0 - abs(b - 1963) / 1963)"})), 4)
-    setv = place(g.add_node(registry.create("logic.set_variable", name="Store", values={"name": "reward"})), 5)
+    setv = place(g.add_node(registry.create("logic.set_variable", name="存奖励", values={"name": "reward"})), 5)
     g.add_link(rew.id, "value", bandit.id, "reward")
     g.add_link(bandit.id, "threshold", th.id, "thresh")
     g.add_link(src.id, "image", gray.id, "image")
@@ -99,8 +99,8 @@ def main() -> None:
     sol.add_flow(build_main())
     sol.add_flow(build_learning())
     sol.plugin_dirs = ["../plugins"]
-    sol.variables.define("reward", 0.0, "float", "reward for the learning flow")
-    sol.variables.define("product", "PART-A", "string", "current product code")
+    sol.variables.define("reward", 0.0, "float", "学习流程的奖励")
+    sol.variables.define("product", "PART-A", "string", "当前产品型号")
     sol.comm_config = {
         "devices": [{"name": "plc", "kind": "tcp_server", "config": {"host": "0.0.0.0", "port": 6000, "terminator": "\\n"}}],
         "receive_rules": [{"name": "trigger", "device": "plc", "match": "startswith", "pattern": "TRIG",

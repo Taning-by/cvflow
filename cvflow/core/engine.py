@@ -171,7 +171,7 @@ class Engine:
                 node.setup()
                 node._is_setup = True
             except Exception as e:
-                msg = f"{node.name}: setup failed: {type(e).__name__}: {e}"
+                msg = f"{node.name}：初始化失败：{type(e).__name__}: {e}"
                 node.last_error = msg
                 node.status = NodeStatus.ERROR
                 errors.append(msg)
@@ -217,7 +217,7 @@ class Engine:
             nres = NodeResult(node_id=nid, node_name=node.name, status=NodeStatus.SKIPPED)
 
             if not node.enabled:
-                nres.error = "disabled"
+                nres.error = "已禁用"
             else:
                 inputs, skip_reason = self._gather_inputs(node, ctx)
                 if skip_reason:
@@ -231,10 +231,10 @@ class Engine:
                         if out is None:
                             out = {}
                         if not isinstance(out, dict):
-                            raise TypeError(f"process() must return a dict, got {type(out).__name__}")
+                            raise TypeError(f"process() 必须返回 dict，实际返回 {type(out).__name__}")
                         if "__skip__" in out:          # node asked to skip its dependants (e.g. Gate)
                             nres.status = NodeStatus.SKIPPED
-                            nres.error = str(out.get("__skip__") or "skipped")
+                            nres.error = str(out.get("__skip__") or "已跳过")
                             out = {}
                         else:
                             nres.status = NodeStatus.OK
@@ -260,7 +260,7 @@ class Engine:
             self._emit(events.NODE_FINISHED, run_id=rid, flow=self.graph.name, node_id=nid,
                        status=nres.status, time_ms=nres.time_ms, error=nres.error)
             if ctx.cancelled:
-                result.error = "cancelled"
+                result.error = "已取消"
                 break
 
         result.node_results = ctx.results
@@ -280,7 +280,7 @@ class Engine:
             link = links.get(port.name)
             if link is None:
                 if not port.optional:
-                    return {}, f"input '{port.name}' not connected"
+                    return {}, f"输入 '{port.name}' 未连接"
                 inputs[port.name] = None
                 continue
             up = ctx.results.get(link.src_node)
@@ -288,7 +288,8 @@ class Engine:
                 # a *linked* upstream that did not produce outputs always skips this node,
                 # whether or not the port is optional (optional only means "may stay unlinked")
                 up_name = self.graph.nodes[link.src_node].name if link.src_node in self.graph.nodes else link.src_node
-                return {}, f"upstream '{up_name}' {up.status.value if up else 'missing'}"
+                state = {"error": "出错", "skipped": "已跳过"}.get(up.status.value, up.status.value) if up else "无结果"
+                return {}, f"上游 '{up_name}' {state}"
             inputs[port.name] = up.outputs.get(link.src_port)
         return inputs, ""
 
@@ -298,7 +299,7 @@ class Engine:
             try:
                 self.on_result(result)
             except Exception:
-                log.exception("on_result hook failed")
+                log.exception("on_result 回调失败")
         self._emit(events.RUN_FINISHED, result=result)
 
     def _emit(self, event: str, **payload: Any) -> None:

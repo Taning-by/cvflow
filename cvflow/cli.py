@@ -1,11 +1,11 @@
-"""Command line interface.
+"""命令行入口。
 
-  cvflow gui [solution.json]                open the desktop application
-  cvflow run solution.json [-f main] [-n 5] run a flow N times in the terminal
-  cvflow serve solution.json                headless production mode: connect devices, start all flows
-  cvflow nodes [--json]                     list registered node types
-  cvflow validate solution.json             check a solution for problems
-  cvflow new solution.json                  create an empty solution
+  cvflow gui [方案.json]                 打开桌面程序
+  cvflow run 方案.json [-f main] [-n 5]  在终端运行流程 N 次
+  cvflow serve 方案.json                 无界面生产模式：连接设备、启动全部流程
+  cvflow nodes [--json]                  列出已注册的节点类型
+  cvflow validate 方案.json              检查方案是否有问题
+  cvflow new 方案.json                   新建一个空方案
 """
 from __future__ import annotations
 
@@ -34,13 +34,14 @@ def cmd_nodes(args) -> int:
     if args.json:
         print(json.dumps([c.describe() for c in registry.all()], indent=2, ensure_ascii=False))
         return 0
+    from .ui.i18n import tr
     for cat, classes in registry.categories().items():
-        print(f"{cat}")
+        print(f"{tr(cat)}")
         for c in classes:
             ins = ", ".join(f"{p.name}:{p.dtype.value}" for p in c.inputs)
             outs = ", ".join(f"{p.name}:{p.dtype.value}" for p in c.outputs)
-            print(f"  {c.type_id:28s} {c.label:24s} in[{ins}] out[{outs}]")
-    print(f"\n{len(registry.all())} node types")
+            print(f"  {c.type_id:28s} {tr(c.label):18s} 输入[{ins}] 输出[{outs}]")
+    print(f"\n共 {len(registry.all())} 个节点类型")
     return 0
 
 
@@ -51,7 +52,7 @@ def cmd_validate(args) -> int:
         for w in g.validate():
             print(f"[{g.name}] {w}")
             problems += 1
-    print(f"{len(sol.flows)} flow(s), {sum(len(g.nodes) for g in sol.flows.values())} nodes, {problems} warning(s)")
+    print(f"{len(sol.flows)} 个流程，{sum(len(g.nodes) for g in sol.flows.values())} 个节点，{problems} 条警告")
     return 1 if problems else 0
 
 
@@ -61,7 +62,7 @@ def cmd_new(args) -> int:
     sol = Solution(Path(args.solution).stem)
     sol.add_flow(Graph("main"))
     sol.save(args.solution)
-    print("created", args.solution)
+    print("已创建", args.solution)
     return 0
 
 
@@ -71,14 +72,14 @@ def cmd_run(args) -> int:
     sol = _load(args.solution, args.plugins)
     flow = args.flow or next(iter(sol.flows))
     if flow not in sol.flows:
-        print(f"no flow {flow!r}; available: {list(sol.flows)}", file=sys.stderr)
+        print(f"没有名为 {flow!r} 的流程；可用流程：{list(sol.flows)}", file=sys.stderr)
         return 2
     mgr = CommManager(sol.bus, sol.variables)
     mgr.load_dict(sol.comm_config)
     set_manager(mgr)
     if args.connect:
         for e in mgr.connect_all():
-            print("comm:", e, file=sys.stderr)
+            print("通信：", e, file=sys.stderr)
     runner = FlowRunner(sol.flows[flow], sol.variables, sol.bus)
     out = open(args.output, "a", encoding="utf-8") if args.output else None
     try:
@@ -98,7 +99,7 @@ def cmd_run(args) -> int:
             out.close()
         mgr.shutdown()
     s = runner.stats
-    print(f"\n{s.count} runs: {s.ok} OK, {s.ng} NG, {s.error} ERROR, avg {s.avg_ms:.1f} ms")
+    print(f"\n共运行 {s.count} 次：OK {s.ok}，NG {s.ng}，错误 {s.error}，平均 {s.avg_ms:.1f} ms")
     return 0 if s.error == 0 else 1
 
 
@@ -108,18 +109,18 @@ def cmd_serve(args) -> int:
     sol = _load(args.solution, args.plugins)
     mgr = CommManager(sol.bus, sol.variables)
     for e in mgr.load_dict(sol.comm_config):
-        print("comm:", e, file=sys.stderr)
+        print("通信：", e, file=sys.stderr)
     set_manager(mgr)
     runners = {name: FlowRunner(g, sol.variables, sol.bus) for name, g in sol.flows.items()}
     mgr.set_runners(runners)
     for e in mgr.connect_all():
-        print("comm:", e, file=sys.stderr)
+        print("通信：", e, file=sys.stderr)
     for name, r in runners.items():
         for e in r.start():
             print(f"[{name}] {e}", file=sys.stderr)
         if args.continuous and name == (args.flow or next(iter(runners))):
             r.set_continuous(args.continuous)
-    print(f"serving {list(runners)} - devices: {[f'{d.name}({d.kind})' for d in mgr.devices.values()]} - Ctrl-C to stop")
+    print(f"运行中：流程 {list(runners)}，设备 {[f'{d.name}({d.kind})' for d in mgr.devices.values()]}，按 Ctrl-C 停止")
     stop = False
 
     def _sig(*_):
@@ -134,12 +135,12 @@ def cmd_serve(args) -> int:
             last = time.time()
             for name, r in runners.items():
                 s = r.stats
-                print(f"[{name}] runs={s.count} ok={s.ok} ng={s.ng} err={s.error} avg={s.avg_ms:.1f}ms "
-                      f"pending={r.pending()} | " + " ".join(f"{d.name}:{'up' if d.connected else 'down'}" for d in mgr.devices.values()))
+                print(f"[{name}] 运行={s.count} OK={s.ok} NG={s.ng} 错误={s.error} 平均={s.avg_ms:.1f}ms "
+                      f"排队={r.pending()} | " + " ".join(f"{d.name}:{'已连接' if d.connected else '未连接'}" for d in mgr.devices.values()))
     for r in runners.values():
         r.stop()
     mgr.shutdown()
-    print("stopped")
+    print("已停止")
     return 0
 
 
@@ -150,20 +151,20 @@ def cmd_gui(args) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="cvflow", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-v", "--verbose", action="store_true")
-    ap.add_argument("-p", "--plugins", action="append", default=[], help="extra plugin directory (repeatable)")
+    ap.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
+    ap.add_argument("-p", "--plugins", action="append", default=[], help="额外的插件目录（可重复）")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    g = sub.add_parser("gui"); g.add_argument("solution", nargs="?"); g.set_defaults(fn=cmd_gui)
-    r = sub.add_parser("run"); r.add_argument("solution"); r.add_argument("-f", "--flow")
-    r.add_argument("-n", "--count", type=int, default=1); r.add_argument("-i", "--interval", type=float, default=0.0)
-    r.add_argument("-o", "--output", help="append results as JSON lines"); r.add_argument("--connect", action="store_true")
+    g = sub.add_parser("gui", help="打开桌面程序"); g.add_argument("solution", nargs="?", help="方案文件"); g.set_defaults(fn=cmd_gui)
+    r = sub.add_parser("run", help="在终端运行流程"); r.add_argument("solution", help="方案文件"); r.add_argument("-f", "--flow", help="流程名")
+    r.add_argument("-n", "--count", type=int, default=1, help="运行次数"); r.add_argument("-i", "--interval", type=float, default=0.0, help="两次运行之间的间隔（秒）")
+    r.add_argument("-o", "--output", help="把每次结果追加写入 JSON Lines 文件"); r.add_argument("--connect", action="store_true", help="连接通信设备")
     r.set_defaults(fn=cmd_run)
-    s = sub.add_parser("serve"); s.add_argument("solution"); s.add_argument("-f", "--flow")
-    s.add_argument("-c", "--continuous", type=float, default=0.0, help="timer trigger interval in seconds")
-    s.add_argument("--stats-every", type=float, default=10.0); s.set_defaults(fn=cmd_serve)
-    n = sub.add_parser("nodes"); n.add_argument("--json", action="store_true"); n.set_defaults(fn=cmd_nodes)
-    v = sub.add_parser("validate"); v.add_argument("solution"); v.set_defaults(fn=cmd_validate)
-    w = sub.add_parser("new"); w.add_argument("solution"); w.set_defaults(fn=cmd_new)
+    s = sub.add_parser("serve", help="无界面生产模式"); s.add_argument("solution", help="方案文件"); s.add_argument("-f", "--flow", help="定时触发的流程名")
+    s.add_argument("-c", "--continuous", type=float, default=0.0, help="定时触发间隔（秒）")
+    s.add_argument("--stats-every", type=float, default=10.0, help="统计信息打印间隔（秒）"); s.set_defaults(fn=cmd_serve)
+    n = sub.add_parser("nodes", help="列出节点类型"); n.add_argument("--json", action="store_true", help="以 JSON 输出"); n.set_defaults(fn=cmd_nodes)
+    v = sub.add_parser("validate", help="检查方案"); v.add_argument("solution", help="方案文件"); v.set_defaults(fn=cmd_validate)
+    w = sub.add_parser("new", help="新建空方案"); w.add_argument("solution", help="方案文件"); w.set_defaults(fn=cmd_new)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")

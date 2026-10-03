@@ -7,6 +7,8 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
+from .i18n import tr
+
 _COLORS = {"DEBUG": "#888888", "INFO": "#dddddd", "WARNING": "#ffb74d", "ERROR": "#ff8a65", "CRITICAL": "#ff5252"}
 
 
@@ -39,7 +41,7 @@ class LogPanel(QWidget):
         self.level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         self.level.setCurrentText("INFO")
         self.level.currentTextChanged.connect(self._set_level)
-        clear = QPushButton("Clear")
+        clear = QPushButton(tr("Clear"))
         bar.addWidget(self.level)
         bar.addStretch(1)
         bar.addWidget(clear)

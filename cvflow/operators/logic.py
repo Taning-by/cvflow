@@ -19,7 +19,7 @@ def safe_eval(expr: str, names: dict):
     code = compile(expr, "<expr>", "eval")
     for n in code.co_names:
         if n not in names and n not in _SAFE_FUNCS:
-            raise NodeError(f"unknown name {n!r} in expression")
+            raise NodeError(f"表达式中有未知名称 {n!r}")
     return eval(code, {"__builtins__": {}}, {**_SAFE_FUNCS, **names})
 
 
@@ -54,7 +54,7 @@ class Judge(Node):
             ok = {"in_range": lo <= x <= hi, "==": x == lo, "!=": x != lo, "<": x < lo, "<=": x <= lo,
                   ">": x > lo, ">=": x >= lo}[op]
         name = self.get("name") or self.name
-        reason = "" if ok else f"{name}: {v!r} failed {op} [{lo}, {hi}]" if op == "in_range" else "" if ok else f"{name}: {v!r} failed {op} {txt or lo}"
+        reason = "" if ok else (f"{name}：{v!r} 不满足 {op} [{lo}, {hi}]" if op == "in_range" else f"{name}：{v!r} 不满足 {op} {txt or lo}")
         return {"ok": ok, "value": v, "reason": reason}
 
 
@@ -118,7 +118,7 @@ class Format(Node):
         try:
             return {"text": self.get("template").format(**inputs, vars=ctx.variables.snapshot(), run_id=ctx.run_id)}
         except (KeyError, ValueError, IndexError) as e:
-            raise NodeError(f"bad template: {e}") from e
+            raise NodeError(f"模板有误：{e}") from e
 
 
 @register

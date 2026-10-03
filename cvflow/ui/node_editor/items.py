@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPath
 
 from ...core.graph import Link
 from ...core.node import Node, NodeStatus, Port
+from ..i18n import tr
 from ..theme import DTYPE_COLORS, STATUS_COLORS
 
 NODE_W = 170
@@ -70,7 +71,7 @@ class NodeItem(QGraphicsItem):
             it.setPos(NODE_W, HEADER_H + 8 + i * ROW_H + ROW_H / 2)
             self.outputs[p.name] = it
         self.setPos(node.position[0], node.position[1])
-        self.setToolTip(f"{node.label} [{node.type_id}]\n{node.description}")
+        self.setToolTip(f"{tr(node.label)} [{node.type_id}]\n{tr(node.description)}")
 
     def boundingRect(self) -> QRectF:
         return QRectF(-PORT_R, -2, NODE_W + 2 * PORT_R, self._h + 4)
@@ -100,7 +101,7 @@ class NodeItem(QGraphicsItem):
         painter.drawEllipse(QPointF(NODE_W - 14, HEADER_H / 2), 5, 5)
         painter.setPen(QPen(QColor("#bbbbbb")))
         painter.setFont(QFont("Sans", 7))
-        foot = f"{self.node.last_time_ms:.1f} ms" if st in (NodeStatus.OK, NodeStatus.NG, NodeStatus.ERROR) else st.value
+        foot = f"{self.node.last_time_ms:.1f} ms" if st in (NodeStatus.OK, NodeStatus.NG, NodeStatus.ERROR) else tr(st.value)
         if st in (NodeStatus.ERROR, NodeStatus.SKIPPED) and self.node.last_error:
             foot = (self.node.last_error[:26] + "…") if len(self.node.last_error) > 27 else self.node.last_error
         painter.drawText(QRectF(6, self._h - 14, NODE_W - 12, 13), Qt.AlignVCenter | Qt.AlignRight, foot)
