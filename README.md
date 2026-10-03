@@ -71,6 +71,20 @@ Simulate the PLC with netcat: run `cvflow serve examples/solutions/demo_holes.js
 Paths inside a solution (image folders, models, templates, capture directory, plugin
 directories) are relative to the solution file, so a solution folder can be moved or cloned.
 
+## Launching from an icon
+
+Installing creates a console-free entry point `cvflow-gui` (`.venv\Scripts\cvflow-gui.exe` on
+Windows) that can be double-clicked. To get a desktop shortcut with the application icon:
+
+```bash
+cvflow shortcut                                     # desktop shortcut opening the app
+cvflow shortcut examples/solutions/demo_holes.json  # shortcut that opens a given solution
+```
+
+Windows gets `CVFlow.lnk`, Linux `CVFlow.desktop` (also added to the application menu), macOS
+`CVFlow.command`. *File → Create desktop shortcut* does the same from the GUI. Started without a
+solution, the app reopens the last one; *File → Recent* lists the last eight.
+
 ## Using the editor
 
 * Drag nodes from the palette (or double-click), drag from an output port to an input port

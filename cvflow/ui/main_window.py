@@ -77,7 +77,11 @@ class MainWindow(QMainWindow):
         if solution_path:
             self.open_solution(solution_path)
         else:
-            self.new_solution()
+            last = str(s.value("last_file", "") or "")
+            if last and Path(last).is_file():
+                self.open_solution(last)
+            else:
+                self.new_solution()
 
     # ------------------------------------------------------------------ UI construction
     def _build_ui(self) -> None:
@@ -208,6 +212,10 @@ class MainWindow(QMainWindow):
         f = m.addMenu(tr("&File"))
         f.addActions([self.act_new, self.act_open, self.act_save])
         f.addAction(QAction(tr("Save &As…"), self, shortcut=QKeySequence.SaveAs, triggered=self._save_as_dialog))
+        self.recent_menu = f.addMenu("最近打开")
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        f.addSeparator()
+        f.addAction(QAction("创建桌面快捷方式…", self, triggered=self._create_shortcut))
         f.addSeparator()
         f.addAction(QAction(tr("E&xit"), self, shortcut=QKeySequence.Quit, triggered=self.close))
         fl = m.addMenu(tr("&Flow"))
@@ -293,6 +301,7 @@ class MainWindow(QMainWindow):
             return
         self._bind_solution(sol)
         QSettings().setValue("last_file", path)
+        self._remember_recent(str(Path(path).resolve()))
         self.statusBar().showMessage(tr("opened {path}").format(path=path), 4000)
 
     def save_solution(self, path: str | None = None) -> bool:
@@ -310,6 +319,7 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._update_title()
         QSettings().setValue("last_file", path)
+        self._remember_recent(str(Path(path).resolve()))
         self.statusBar().showMessage(tr("saved {path}").format(path=path), 3000)
         return True
 
@@ -649,6 +659,37 @@ class MainWindow(QMainWindow):
         self.image_view.set_image(img)
         self.image_view.set_overlays(overlays)
         self.image_title.setText(tr("{name}  ({w}×{h}, frame {id})").format(name=node.name, w=img.width, h=img.height, id=img.frame_id))
+
+    # ------------------------------------------------------------------ recent files / shortcut
+    @staticmethod
+    def _recent_files() -> list[str]:
+        v = QSettings().value("recent", [])
+        if isinstance(v, str):
+            v = [v]
+        return [p for p in (v or []) if p and Path(p).is_file()]
+
+    def _remember_recent(self, path: str) -> None:
+        files = [p for p in self._recent_files() if p != path]
+        QSettings().setValue("recent", [path] + files[:7])
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        files = self._recent_files()
+        if not files:
+            a = self.recent_menu.addAction("（无）")
+            a.setEnabled(False)
+            return
+        for p in files:
+            self.recent_menu.addAction(QAction(p, self, triggered=lambda checked=False, x=p: self.open_solution(x)))
+
+    def _create_shortcut(self) -> None:
+        from ..launcher import create_shortcut
+        try:
+            path = create_shortcut(str(self.solution.path) if self.solution and self.solution.path else None)
+        except Exception as e:
+            QMessageBox.warning(self, "创建桌面快捷方式", f"失败：{e}")
+            return
+        QMessageBox.information(self, "创建桌面快捷方式", f"已创建：{path}\n双击即可打开软件。")
 
     # ------------------------------------------------------------------ cameras
     def _camera_dialog(self) -> None:

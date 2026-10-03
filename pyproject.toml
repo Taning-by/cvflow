@@ -45,8 +45,14 @@ dl = ["torch", "torchvision"]
 [project.scripts]
 cvflow = "cvflow.cli:main"
 
+[project.gui-scripts]
+cvflow-gui = "cvflow.ui:main"
+
 [tool.setuptools.packages.find]
 include = ["cvflow*"]
+
+[tool.setuptools.package-data]
+"cvflow.ui" = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

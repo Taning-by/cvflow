@@ -6,6 +6,7 @@
   cvflow nodes [--json]                  列出已注册的节点类型
   cvflow validate 方案.json              检查方案是否有问题
   cvflow new 方案.json                   新建一个空方案
+  cvflow shortcut [方案.json]            在桌面创建快捷方式（点击图标打开软件）
 """
 from __future__ import annotations
 
@@ -144,6 +145,17 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_shortcut(args) -> int:
+    from .launcher import create_shortcut
+    try:
+        path = create_shortcut(args.solution, args.name)
+    except Exception as e:
+        print(f"创建快捷方式失败：{e}", file=sys.stderr)
+        return 1
+    print(f"已创建桌面快捷方式：{path}")
+    return 0
+
+
 def cmd_gui(args) -> int:
     from .ui import main as ui_main
     return ui_main([sys.argv[0]] + ([args.solution] if args.solution else []))
@@ -165,6 +177,8 @@ def main(argv=None) -> int:
     n = sub.add_parser("nodes", help="列出节点类型"); n.add_argument("--json", action="store_true", help="以 JSON 输出"); n.set_defaults(fn=cmd_nodes)
     v = sub.add_parser("validate", help="检查方案"); v.add_argument("solution", help="方案文件"); v.set_defaults(fn=cmd_validate)
     w = sub.add_parser("new", help="新建空方案"); w.add_argument("solution", help="方案文件"); w.set_defaults(fn=cmd_new)
+    sc = sub.add_parser("shortcut", help="在桌面创建快捷方式"); sc.add_argument("solution", nargs="?", help="快捷方式打开的方案（可选）")
+    sc.add_argument("--name", default="CVFlow", help="快捷方式名称"); sc.set_defaults(fn=cmd_shortcut)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")

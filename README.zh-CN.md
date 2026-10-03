@@ -57,6 +57,17 @@ pytest -q                                             # 35 个测试，界面测
 
 用 `nc` 模拟 PLC：先 `cvflow serve examples/solutions/demo_holes.json`，再 `printf 'TRIG\n' | nc -q1 127.0.0.1 6000`。
 
+## 用图标打开软件
+
+安装后虚拟环境里会生成无控制台窗口的入口 `cvflow-gui`（Windows 下是 `.venv\Scripts\cvflow-gui.exe`），直接双击就能打开。更方便的是让程序在桌面放一个带图标的快捷方式：
+
+```bash
+cvflow shortcut                                   # 桌面快捷方式，打开软件
+cvflow shortcut examples/solutions/demo_holes.json  # 快捷方式直接打开指定方案
+```
+
+Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用菜单），macOS 生成 `CVFlow.command`。界面里"文件 → 创建桌面快捷方式"也能做同样的事。不带方案启动时会自动打开上次使用的方案，"文件 → 最近打开"里有最近 8 个方案。
+
 ## 界面操作
 
 * 左侧节点库拖到画布，或双击加到视图中心；从输出端口拖到输入端口连线，Delete 删除，F 适配视图，中键/Alt+左键平移。
