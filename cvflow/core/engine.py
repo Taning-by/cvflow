@@ -12,7 +12,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from . import events
 from .events import EventBus
@@ -154,6 +154,9 @@ class Engine:
         self.variables = variables if variables is not None else GlobalVariables(bus)
         self.bus = bus
         self.last_result: RunResult | None = None
+        # called with the finished RunResult before RUN_FINISHED is emitted, so that
+        # bookkeeping (run statistics) is consistent by the time subscribers react
+        self.on_result: Callable[[RunResult], None] | None = None
         self._run_counter = 0
         self._lock = threading.Lock()
 
@@ -291,6 +294,11 @@ class Engine:
 
     def _finish(self, result: RunResult) -> None:
         self.last_result = result
+        if self.on_result is not None:
+            try:
+                self.on_result(result)
+            except Exception:
+                log.exception("on_result hook failed")
         self._emit(events.RUN_FINISHED, result=result)
 
     def _emit(self, event: str, **payload: Any) -> None:

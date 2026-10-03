@@ -79,7 +79,8 @@ def test_tcp_server_trigger_and_reply(reg):
         # two frames in one packet
         s.sendall(b"TRIG\nTRIG\n")
         assert rd.line() == "OK,3\n" and rd.line() == "OK,3\n"
-        assert runner.stats.count == 3 and dev.stats["rx"] == 4 and dev.stats["tx"] == 3
+        assert runner.stats.count == 3  # counted before the reply was sent
+        assert _wait(lambda: dev.stats["rx"] == 4 and dev.stats["tx"] == 3)
         s.close()
     finally:
         runner.stop()

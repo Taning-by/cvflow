@@ -100,6 +100,7 @@ class FlowRunner:
         self.variables = variables if variables is not None else GlobalVariables(self.bus)
         self.engine = Engine(graph, self.variables, self.bus)
         self.stats = RunStats()
+        self.engine.on_result = self.stats.add   # counted before RUN_FINISHED reaches comm/UI
         self.max_queue = max_queue
         self._queue: queue.Queue[_Job] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -124,9 +125,7 @@ class FlowRunner:
     def run_once(self, trigger: Trigger | None = None) -> RunResult:
         """Execute synchronously (edit mode, CLI, tests)."""
         trig = trigger or Trigger(TriggerSource.MANUAL)
-        result = self.engine.run(trig)
-        self.stats.add(result)
-        return result
+        return self.engine.run(trig)
 
     # ---- run mode ----
     def start(self) -> list[str]:
@@ -199,7 +198,6 @@ class FlowRunner:
                 continue
             try:
                 job.result = self.engine.run(job.trigger)
-                self.stats.add(job.result)
             except Exception:  # the engine already isolates node errors; this is a safety net
                 log.exception("flow %s: unexpected engine failure", self.name)
             finally:
