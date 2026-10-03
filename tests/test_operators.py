@@ -212,3 +212,19 @@ def test_demo_images_hole_count(reg, images_dir):
     assert count(images_dir / "part_00.png") == 3
     assert count(images_dir / "part_07.png") == 2
     assert count(images_dir / "part_08.png") == 4
+
+
+def test_blob_accepts_colour_and_gray_input(reg, blob_image, images_dir):
+    # colour image straight into Blob: auto -> Otsu, bright squares are the foreground
+    nr, _ = run_single(reg, "analysis.blob", {"image": blob_image}, {"min_area": 100, "max_area": 10000})
+    assert nr.outputs["count"] == 3 and nr.outputs["binary"].data.max() == 255
+    # dark polarity on the real demo part: the three dark holes inside the bright part
+    part = Image(cv2.imread(str(images_dir / "part_00.png")))
+    nr, _ = run_single(reg, "analysis.blob", {"image": part}, {"polarity": "dark", "min_area": 500, "max_area": 5000})
+    assert nr.outputs["count"] == 3
+    # manual range
+    nr, _ = run_single(reg, "analysis.blob", {"image": part}, {"binarize": "manual", "low": 0, "high": 100, "min_area": 500, "max_area": 5000})
+    assert nr.outputs["count"] == 3
+    # 'none' on a colour image collapses into one huge blob -> filtered out (the old behaviour)
+    nr, _ = run_single(reg, "analysis.blob", {"image": blob_image}, {"binarize": "none", "max_area": 10000})
+    assert nr.outputs["count"] == 3  # white squares on black are already binary

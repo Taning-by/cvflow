@@ -21,12 +21,19 @@ class BlobAnalysis(Node):
     type_id = "analysis.blob"
     category = "Analysis"
     label = "Blob Analysis"
-    description = "Connected components of a binary image with area/size filters."
+    description = "Connected components with area/size filters. Accepts gray/colour images (built-in binarisation) or binary masks."
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE, description="Binary image (non-zero = foreground)")]
+    inputs = [Port("image", DataType.IMAGE, description="Gray, colour or binary image")]
     outputs = [Port("count", DataType.INT), Port("blobs", DataType.LIST), Port("largest_area", DataType.FLOAT),
-               Port("total_area", DataType.FLOAT), Port("centers", DataType.LIST), Port("mask", DataType.IMAGE)]
-    params = [Param("min_area", 50, "int", min=0, max=10_000_000),
+               Port("total_area", DataType.FLOAT), Port("centers", DataType.LIST), Port("mask", DataType.IMAGE),
+               Port("binary", DataType.IMAGE)]
+    params = [Param("binarize", "auto", "enum", choices=["auto", "none", "otsu", "manual"],
+                    description="auto: binary input used as is, otherwise Otsu; none: non-zero = foreground; manual: low..high"),
+              Param("polarity", "bright", "enum", choices=["bright", "dark"],
+                    description="Foreground brighter or darker than the threshold (otsu / auto)"),
+              Param("low", 128, "int", min=0, max=255, description="Manual threshold lower bound"),
+              Param("high", 255, "int", min=0, max=255, description="Manual threshold upper bound"),
+              Param("min_area", 50, "int", min=0, max=10_000_000),
               Param("max_area", 1_000_000, "int", min=1, max=100_000_000),
               Param("min_width", 0, "int", min=0, max=100000, advanced=True),
               Param("min_height", 0, "int", min=0, max=100000, advanced=True),
@@ -34,10 +41,28 @@ class BlobAnalysis(Node):
               Param("sort", "area_desc", "enum", choices=["area_desc", "area_asc", "left_to_right", "top_to_bottom"]),
               Param("max_count", 100, "int", min=1, max=10000)]
 
+    def _binarize(self, g: np.ndarray) -> np.ndarray:
+        mode = self.get("binarize")
+        dark = self.get("polarity") == "dark"
+        if mode == "auto":
+            sample = g[::8, ::8] if g.size > 65536 else g
+            if len(np.unique(sample)) <= 2:          # 已经是二值图
+                mode = "none"
+            else:
+                mode = "otsu"
+        if mode == "none":
+            return (g > 0).astype(np.uint8)
+        if mode == "otsu":
+            flag = cv2.THRESH_BINARY_INV if dark else cv2.THRESH_BINARY
+            _, b = cv2.threshold(g, 0, 255, flag | cv2.THRESH_OTSU)
+            return (b > 0).astype(np.uint8)
+        lo, hi = int(self.get("low")), int(self.get("high"))
+        return cv2.inRange(g, min(lo, hi), max(lo, hi)).astype(np.uint8) // 255
+
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
         g = as_gray(img)
-        binary = (g > 0).astype(np.uint8)
+        binary = self._binarize(g)
         n, labels, stats, cents = cv2.connectedComponentsWithStats(binary, connectivity=int(self.get("connectivity")))
         lo, hi = int(self.get("min_area")), int(self.get("max_area"))
         mw, mh = int(self.get("min_width")), int(self.get("min_height"))
@@ -64,7 +89,8 @@ class BlobAnalysis(Node):
                 "largest_area": blobs[0]["area"] if blobs and self.get("sort") == "area_desc" else
                 (max((b["area"] for b in blobs), default=0.0)),
                 "total_area": float(sum(b["area"] for b in blobs)),
-                "centers": [Point(b["cx"], b["cy"]) for b in blobs], "mask": img.derive(mask)}
+                "centers": [Point(b["cx"], b["cy"]) for b in blobs], "mask": img.derive(mask),
+                "binary": img.derive(binary * 255)}
 
 
 @register
