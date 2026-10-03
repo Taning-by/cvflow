@@ -650,11 +650,16 @@ def test_comm_cli_serve_modbus_end_to_end():
     data = json.loads(src.read_text(encoding="utf-8"))
     port = free_port(); data["comm"]["devices"][0]["config"]["port"] = port
     tmp = src.parent / "_bb_modbus.json"; tmp.write_text(json.dumps(data), encoding="utf-8")
+    log = open(tmp.with_suffix(".log"), "w", encoding="utf-8")
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.Popen([sys.executable, "-m", "cvflow", "serve", str(tmp), "--stats-every", "100"], cwd=ROOT,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                            stdout=log, stderr=subprocess.STDOUT, env=env)
     try:
         c = ModbusTcpClient("127.0.0.1", port=port, timeout=2)
-        assert _wait(lambda: c.connect(), 15)
+        ok = _wait(lambda: proc.poll() is not None or c.connect(), 60)      # 慢机器上进程启动可能要几十秒
+        if proc.poll() is not None or not ok:
+            log.flush()
+            raise AssertionError(f"serve 子进程退出码 {proc.poll()}，输出：\n{tmp.with_suffix('.log').read_text(encoding='utf-8', errors='replace')[-2000:]}")
         c.write_register(0, 1, device_id=1)
         assert _wait(lambda: c.read_holding_registers(10, count=1, device_id=1).registers == [3], 10)
         r = c.read_holding_registers(0, count=2, device_id=1).registers
@@ -662,4 +667,4 @@ def test_comm_cli_serve_modbus_end_to_end():
         assert _wait(lambda: c.read_holding_registers(20, count=1, device_id=1).registers[0] >= 1, 5)   # 心跳
         c.close()
     finally:
-        proc.terminate(); proc.wait(10); tmp.unlink(missing_ok=True)
+        proc.terminate(); proc.wait(10); log.close(); tmp.unlink(missing_ok=True); tmp.with_suffix(".log").unlink(missing_ok=True)

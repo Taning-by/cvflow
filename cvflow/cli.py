@@ -162,6 +162,12 @@ def cmd_gui(args) -> int:
 
 
 def main(argv=None) -> int:
+    # 输出被重定向到管道/文件时（如 Windows 下的 cp1252），中文不能编码会直接崩溃；改为替代符
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(prog="cvflow", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
     ap.add_argument("-p", "--plugins", action="append", default=[], help="额外的插件目录（可重复）")
