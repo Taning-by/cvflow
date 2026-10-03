@@ -58,6 +58,41 @@ class Camera(ABC):
     def get_feature(self, name: str) -> Any:
         return None
 
+    def apply_settings(self, cfg: dict[str, Any]) -> None:
+        """把通用设置映射到 GenICam SFNC 特性：曝光（微秒）、增益、触发模式/源。"""
+        exp = cfg.get("exposure_us")
+        if exp not in (None, "", 0, 0.0):
+            self.set_feature("ExposureAuto", "Off")
+            self.set_feature("ExposureTime", float(exp))
+        gain = cfg.get("gain")
+        if gain not in (None, "") and float(gain) >= 0:
+            self.set_feature("GainAuto", "Off")
+            self.set_feature("Gain", float(gain))
+        mode = cfg.get("trigger_mode", "keep")
+        if mode == "off":
+            self.set_feature("TriggerMode", "Off")
+        elif mode == "software":
+            self.set_feature("TriggerMode", "On")
+            self.set_feature("TriggerSource", "Software")
+        elif mode == "hardware":
+            self.set_feature("TriggerMode", "On")
+            self.set_feature("TriggerSource", str(cfg.get("trigger_source") or "Line0"))
+
+    def software_trigger(self) -> None:  # noqa: B027
+        """软触发一帧（触发模式为 software 时由相机节点在取图前调用）。"""
+
+    def test_connection(self) -> tuple[bool, str]:
+        """连接测试：默认尝试打开再关闭。"""
+        try:
+            was_open = self.is_open
+            if not was_open:
+                self.open()
+            if not was_open:
+                self.close()
+            return True, f"相机 {self.name!r}（{self.kind}）可以打开"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+
     def info(self) -> dict[str, Any]:
         return {"name": self.name, "kind": self.kind, "open": self.is_open, "frames": self._frame_id}
 

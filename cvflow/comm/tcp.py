@@ -17,6 +17,8 @@ class TcpClientDevice(CommDevice):
         ("encoding", "string", "Encoding", "utf-8", ""),
         ("auto_reconnect", "bool", "Auto reconnect", True, ""),
         ("reconnect_s", "float", "Reconnect interval (s)", 2.0, ""),
+        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
+        ("heartbeat_text", "string", "心跳报文", "HB\\n", "按心跳间隔发送，用于让 PLC 判断视觉在线"),
     ]
 
     def __init__(self, name, config=None, bus=None):
@@ -80,6 +82,16 @@ class TcpClientDevice(CommDevice):
             raise CommError("未连接")
         self._sock.sendall(data)
 
+    def test_connection(self) -> tuple[bool, str]:
+        host, port = self.config["host"], int(self.config["port"])
+        t0 = time.perf_counter()
+        try:
+            s = socket.create_connection((host, port), timeout=3.0)
+            s.close()
+            return True, f"{host}:{port} 可连接，耗时 {(time.perf_counter() - t0) * 1000:.0f} ms"
+        except OSError as e:
+            return False, f"{host}:{port} 连接失败：{e}"
+
 
 class TcpServerDevice(CommDevice):
     """Listens for PLC/HMI clients; ``send`` broadcasts to every connected client."""
@@ -90,6 +102,8 @@ class TcpServerDevice(CommDevice):
         ("port", "int", "Port", 6000, ""),
         ("terminator", "string", "Terminator", "\\n", "Frame terminator (escapes ok, empty = raw)"),
         ("encoding", "string", "Encoding", "utf-8", ""),
+        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
+        ("heartbeat_text", "string", "心跳报文", "HB\\n", "按心跳间隔广播给所有已连接的客户端"),
     ]
 
     def __init__(self, name, config=None, bus=None):
@@ -106,6 +120,18 @@ class TcpServerDevice(CommDevice):
     @property
     def bound_port(self) -> int:
         return self._server.getsockname()[1] if self._server else int(self.config["port"])
+
+    def test_connection(self) -> tuple[bool, str]:
+        if self._server is not None:
+            return True, f"正在监听 {self.config['host']}:{self.bound_port}，当前 {self.client_count} 个客户端"
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((self.config["host"], int(self.config["port"])))
+            s.close()
+            return True, f"端口 {self.config['port']} 可用（设备尚未启动监听）"
+        except OSError as e:
+            return False, f"无法监听 {self.config['host']}:{self.config['port']}：{e}"
 
     def connect(self) -> None:
         if self._server:
@@ -254,3 +280,14 @@ class UdpDevice(CommDevice):
         if not self._sock:
             raise CommError("未打开")
         self._sock.sendto(data, (self.config["host"], int(self.config["port"])))
+
+    def test_connection(self) -> tuple[bool, str]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", int(self.config.get("local_port", 0))))
+            s.sendto(b"", (self.config["host"], int(self.config["port"])))
+            s.close()
+            return True, f"UDP 无连接；本地端口 {self.config.get('local_port', 0)} 可用，远端 {self.config['host']}:{self.config['port']} 可寻址"
+        except OSError as e:
+            return False, f"UDP 端口检查失败：{e}"

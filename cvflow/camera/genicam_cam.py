@@ -45,8 +45,9 @@ class GenICamCamera(Camera):
                 setattr(node_map, feat, val)
             except Exception as e:
                 raise CameraError(f"GenICam：无法设置 {feat}={val!r}：{e}") from e
-        ia.start()
         self._h, self._ia = h, ia
+        self.apply_settings(self.config)
+        ia.start()
         self.is_open = True
 
     def close(self) -> None:
@@ -99,3 +100,23 @@ class GenICamCamera(Camera):
     def software_trigger(self) -> None:
         if self._ia is not None:
             self._ia.remote_device.node_map.TriggerSoftware.execute()
+
+
+def enumerate_genicam(cti: str) -> list:
+    """通过 GenTL 驱动枚举相机（需要 harvesters）。"""
+    from .discovery import GigEDevice
+    try:
+        from harvesters.core import Harvester
+    except ImportError as e:
+        raise CameraError("GenICam 支持需要 `pip install harvesters`") from e
+    h = Harvester()
+    h.add_file(str(cti))
+    h.update()
+    out = []
+    for i, d in enumerate(h.device_info_list):
+        out.append(GigEDevice(ip=getattr(d, "ip_address", "") or "", mac="", manufacturer=getattr(d, "vendor", "") or "",
+                              model=getattr(d, "model", "") or "", version=getattr(d, "version", "") or "",
+                              serial=getattr(d, "serial_number", "") or "", user_name=getattr(d, "user_defined_name", "") or "",
+                              source="genicam", extra={"index": i, "cti": str(cti)}))
+    h.reset()
+    return out

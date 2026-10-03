@@ -5,11 +5,11 @@ import json
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QPlainTextEdit, QPushButton, QSpinBox,
-                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit,
+                               QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
-from ..comm.manager import DEVICE_KINDS, REGISTER_MATCHES, TEXT_MATCHES, CommManager, ReceiveRule, SendRule
+from ..comm.manager import DEVICE_KIND_LABELS, DEVICE_KINDS, REGISTER_MATCHES, TEXT_MATCHES, CommManager, ReceiveRule, SendRule
 from .i18n import tr
 
 
@@ -18,13 +18,15 @@ class DeviceDialog(QDialog):
     def __init__(self, parent=None, name: str = "", kind: str = "tcp_server", config: dict | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("Communication device"))
+        self.setMinimumWidth(520)
         self._fields: dict[str, QWidget] = {}
         lay = QVBoxLayout(self)
         top = QFormLayout()
         self.name = QLineEdit(name or "plc")
         self.kind = QComboBox()
-        self.kind.addItems(sorted(DEVICE_KINDS))
-        self.kind.setCurrentText(kind)
+        for k in sorted(DEVICE_KINDS):
+            self.kind.addItem(DEVICE_KIND_LABELS.get(k, k), k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(kind)))
         self.kind.setEnabled(not name)
         top.addRow(tr("Name"), self.name)
         top.addRow(tr("Kind"), self.kind)
@@ -32,7 +34,7 @@ class DeviceDialog(QDialog):
         self._form_host = QWidget()
         lay.addWidget(self._form_host)
         self._config = dict(config or {})
-        self.kind.currentTextChanged.connect(lambda _: self._build_form())
+        self.kind.currentIndexChanged.connect(lambda _: self._build_form())
         self._build_form()
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
@@ -49,7 +51,7 @@ class DeviceDialog(QDialog):
             QWidget().setLayout(old)
         form = QFormLayout(self._form_host)
         self._fields.clear()
-        cls = DEVICE_KINDS[self.kind.currentText()]
+        cls = DEVICE_KINDS[self.kind.currentData()]
         for key, kind, label, default, desc in cls.config_schema:
             val = self._config.get(key, default)
             if kind == "int":
@@ -78,7 +80,7 @@ class DeviceDialog(QDialog):
                 cfg[key] = w.currentText()
             else:
                 cfg[key] = w.text()
-        return self.name.text().strip(), self.kind.currentText(), cfg
+        return self.name.text().strip(), self.kind.currentData(), cfg
 
 
 class ReceiveRuleDialog(QDialog):
@@ -170,7 +172,8 @@ class CommPanel(QWidget):
         dev_w = QWidget(); dl = QVBoxLayout(dev_w); dl.setContentsMargins(2, 2, 2, 2)
         bar = QHBoxLayout()
         for text, slot in [("Add", self._add_device), ("Edit", self._edit_device), ("Remove", self._remove_device),
-                           ("Connect", self._connect), ("Disconnect", self._disconnect), ("Connect all", self._connect_all)]:
+                           ("Connect", self._connect), ("Disconnect", self._disconnect), ("Connect all", self._connect_all),
+                           ("测试连接", self._test_device)]:
             b = QPushButton(tr(text)); b.clicked.connect(slot); bar.addWidget(b)
         bar.addStretch(1)
         self.dev_table = QTableWidget(0, 6)
@@ -236,7 +239,7 @@ class CommPanel(QWidget):
         for r, d in enumerate(devs):
             info = d.info()
             status = tr("connected") if d.connected else tr("disconnected")
-            cells = [d.name, d.kind, status, str(info.get("rx", 0)), str(info.get("tx", 0)), d.last_error]
+            cells = [d.name, DEVICE_KIND_LABELS.get(d.kind, d.kind), status, str(info.get("rx", 0)), str(info.get("tx", 0)), d.last_error]
             for c, text in enumerate(cells):
                 it = QTableWidgetItem(text)
                 if c == 2:
@@ -331,6 +334,19 @@ class CommPanel(QWidget):
     def _connect_all(self) -> None:
         self.mgr.connect_all()
         self.refresh()
+
+    def _test_device(self) -> None:
+        d = self._selected_device()
+        if d is None:
+            QMessageBox.information(self, "测试连接", "请先在列表中选择一个设备。")
+            return
+        QApplication.setOverrideCursor(Qt.BusyCursor)
+        try:
+            ok, msg = self.mgr.test_connection(d.name)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.refresh()
+        (QMessageBox.information if ok else QMessageBox.warning)(self, f"测试连接 – {d.name}", msg)
 
     # ---- rules ----
     def _add_rx(self) -> None:

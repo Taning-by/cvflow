@@ -153,5 +153,5 @@ class ModbusWrite(Node):
         v = inputs["value"]
         if self.get("kind") != "bool":
             v = float(v) * float(self.get("scale"))
-        ok = mgr.modbus_write(self.get("device"), int(self.get("address")), v, self.get("kind"))
+        ok = mgr.modbus_write(self.get("device"), self.get("address"), v, self.get("kind"))
         return {"ok": bool(ok)}

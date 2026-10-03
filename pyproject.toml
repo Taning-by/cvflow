@@ -39,7 +39,7 @@ Issues = "https://github.com/Taning-by/cvflow/issues"
 dev = ["pytest>=7"]
 gpu = ["onnxruntime-gpu>=1.16"]
 genicam = ["harvesters>=1.4"]
-plc = ["python-snap7>=1.3", "omniplc"]
+plc = ["python-snap7>=1.3"]
 dl = ["torch", "torchvision"]
 
 [project.scripts]

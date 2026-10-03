@@ -114,18 +114,26 @@ class CameraSource(Node):
     color = "#2e7d32"
     outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT)]
     params = [Param("camera", "cam0", "string", description="Shared camera name"),
-              Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS)),
+              Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS),
+                    description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS genicam=GenTL 驱动"),
               Param("source", "", "string", description="folder path | device index/URL | GenICam index/serial"),
-              Param("cti", "", "file", label="GenTL producer (.cti)", advanced=True),
+              Param("trigger_mode", "keep", "enum", choices=["keep", "off", "software", "hardware"],
+                    description="keep=沿用相机当前设置 off=自由采集 software=软触发 hardware=外部触发"),
+              Param("trigger_source", "Line0", "string", description="硬件触发信号线", advanced=True),
+              Param("exposure_us", 0.0, "float", min=0, max=10_000_000, description="0 表示沿用相机当前曝光"),
+              Param("gain", -1.0, "float", min=-1, max=100, description="-1 表示沿用相机当前增益"),
               Param("timeout_s", 2.0, "float", min=0.01, max=60),
               Param("grayscale", False, "bool"),
+              Param("cti", "", "file", label="GenTL producer (.cti)", advanced=True),
               Param("features", {}, "json", label="Camera features (JSON)", advanced=True)]
 
     def _config(self):
         src = self.get("source")
         if self.get("kind") == "folder":
             src = paths.resolve(src)
-        cfg = {"source": src, "grayscale": self.get("grayscale"), "loop": True}
+        cfg = {"source": src, "grayscale": self.get("grayscale"), "loop": True,
+               "trigger_mode": self.get("trigger_mode"), "trigger_source": self.get("trigger_source"),
+               "exposure_us": self.get("exposure_us"), "gain": self.get("gain")}
         if self.get("cti"):
             cfg["cti"] = paths.resolve(self.get("cti"))
         if self.get("features"):
@@ -140,6 +148,10 @@ class CameraSource(Node):
 
     def process(self, ctx, inputs):
         cam = camera_manager.get_or_create(self.get("camera"), self.get("kind"), self._config())
+        if self.get("trigger_mode") == "software":
+            if not cam.is_open:
+                cam.open()
+            cam.software_trigger()
         img = cam.grab(float(self.get("timeout_s")))
         if img is None:
             raise NodeError(f"相机 {cam.name!r}：取图超时")

@@ -93,3 +93,36 @@ def test_main_window_end_to_end(app, tmp_path):
         w._dirty = False
         w.close()
         _pump(app)
+
+
+def test_camera_dialog_and_comm_test_button(app, tmp_path, monkeypatch):
+    from cvflow.camera.discovery import GigEDevice
+    from cvflow.ui import camera_dialog
+    from cvflow.ui.camera_dialog import CameraDialog
+    from cvflow.ui.main_window import MainWindow
+    monkeypatch.setattr(camera_dialog.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(camera_dialog.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    fake = [GigEDevice(ip="192.168.1.20", mac="C4:2F:90:11:22:33", model="MV-CA050-10GM", serial="DA1234567",
+                       user_name="cam1", extra={"sources": ["gvcp"]})]
+    w = MainWindow(str(DEMO))
+    w.autorun.setChecked(False)
+    try:
+        dlg = CameraDialog(w, enumerator=lambda **kw: fake)
+        got = []
+        dlg.add_requested.connect(lambda k, s, n, c: got.append((k, s, n, c)))
+        dlg._search()
+        _pump(app)
+        assert dlg.table.rowCount() == 1 and dlg.table.item(0, 3).text() == "DA1234567"
+        dlg._add_to_flow()
+        assert got and got[0][1] == "DA1234567" and got[0][2] == "cam1"
+        before = len(w.scene.node_items)
+        w._add_camera_node(*got[0])
+        assert len(w.scene.node_items) == before + 1
+        node = w.solution.flows["main"].nodes[w.selected_node]
+        assert node.type_id == "source.camera" and node.get("source") == "DA1234567" and node.name.startswith("相机 cam1")
+        ok, msg = w.comm.test_connection("plc")
+        assert ok and "可用" in msg
+    finally:
+        w._dirty = False
+        w.close()
+        _pump(app)

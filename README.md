@@ -41,7 +41,7 @@ pip install -e ".[dev]"            # core + GUI + tests
 ```
 
 Optional extras: `.[gpu]` (onnxruntime-gpu), `.[genicam]` (harvesters for GigE / USB3 Vision
-cameras), `.[dl]` (PyTorch for the plugin template).
+cameras), `.[plc]` (python-snap7 for Siemens S7), `.[dl]` (PyTorch for the plugin template).
 
 ## Run
 
@@ -83,6 +83,47 @@ directories) are relative to the solution file, so a solution folder can be move
   flow. The flow is locked; triggers come from the PLC, timer or the Run button.
 * The *Communication* tab manages devices, receive rules (what triggers a flow or sets a
   variable), send rules (what is sent when a flow finishes), a monitor and manual sending.
+
+## Camera acquisition
+
+**Camera → Camera manager** works like VisionMaster's camera management:
+
+* **Search** broadcasts GigE Vision discovery on every local interface and lists IP, MAC,
+  vendor, model, serial and user name of each camera, flagging cameras on a foreign subnet.
+  Discovery needs no SDK; with the Hikrobot MVS SDK installed the SDK enumeration (incl. USB3)
+  is merged in, and with a GenTL `.cti` set, GenICam enumeration too.
+* **Add by IP** sends a unicast discovery; a silent camera can still be added manually.
+* **Connection test** reads the camera's GigE Vision version register and reports latency;
+  Hikrobot cameras are additionally opened through the SDK.
+* **Force IP** assigns a temporary IP by MAC when the camera is on the wrong subnet.
+* **Add to flow** creates a Camera node using `hik` (MVS SDK) or `genicam` acquisition.
+
+Camera node parameters: trigger mode (keep / off / software / hardware), exposure (µs), gain,
+timeout and a JSON of arbitrary GenICam features. Point `MVCAM_SDK_PATH` at the MVS
+`Samples/Python/MvImport` directory for the Hikrobot SDK; GenICam needs `pip install
+harvesters` and a vendor `.cti`.
+
+## PLC interoperation
+
+Every communication device has a **connection test** (TCP connect latency, Modbus/MC/S7 read a
+register and report value and latency, serial open). Devices:
+
+| Kind | Notes |
+|---|---|
+| TCP client / server, UDP, serial | Text frames; optional heartbeat frame and interval |
+| Modbus TCP master / slave | Master polls PLC registers; the slave is a native implementation the PLC reads/writes |
+| Mitsubishi MC (3E binary) | Q/L/iQ-R/FX5 and compatibles (Inovance, Keyence); word devices D/W/R and bit devices M/X/Y, addresses like `D100`, `M20`; ships `McSimulatorServer` |
+| Siemens S7 | python-snap7, a DB block as exchange area, byte-offset addresses; S7-1200/1500 need PUT/GET enabled and non-optimised DB access |
+
+Register devices share one handshake:
+
+* **Trigger** — a `register_rising` receive rule watches the trigger word for 0→non-zero.
+* **Busy flag** `busy_address` — written 1 on trigger, 0 after the results are written.
+* **Trigger reset** `trigger_reset` — the vision side clears the trigger word so the next PLC
+  write produces a clean edge.
+* **Heartbeat** `heartbeat_address` + `heartbeat_s` — incremented periodically so the PLC can
+  tell the vision PC is alive; text devices send a heartbeat frame instead.
+* **Results** — register writes in a send rule, kinds int16 / uint16 / int32 / uint32 / float32 / bool.
 
 ## Writing your own node
 
@@ -155,10 +196,11 @@ tests/             pytest (core, operators, communication, offscreen UI)
 * A flow executes as a single-threaded DAG (flows run in parallel, nodes within a flow do
   not). Output-category nodes are scheduled after other ready nodes so saving/rendering sees
   the final judgement. Sub-20 ms cycle times need heavy nodes in a subprocess or C++ extension.
-* GenICam cameras need `harvesters` plus a vendor GenTL producer and have not been tested on
-  real hardware; no direct Hikrobot MVS SDK wrapper yet.
-* Vendor PLC protocols (Siemens S7, Mitsubishi MC, Omron FINS) are not built in; implement a
-  `CommDevice` subclass (python-snap7 / omniplc) to add them.
+* The Hikrobot MVS wrapper and GenICam grabbing are not yet verified on real cameras (none
+  on the development machine); GigE discovery, force-IP and the connection test are covered by
+  automated tests against a simulated camera.
+* Mitsubishi MC and Siemens S7 are verified only against the simulator / snap7 server; Omron
+  FINS and Rockwell EtherNet/IP are not implemented.
 * No user management, result database, solution versioning or installer yet.
 
 ## License

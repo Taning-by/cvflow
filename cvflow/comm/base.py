@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
@@ -133,6 +134,43 @@ class CommDevice(ABC):
     def _emit(self, event: str, **payload) -> None:
         if self.bus is not None:
             self.bus.emit(event, **payload)
+
+    # ---- 连接测试 / 心跳 ----
+    def test_connection(self) -> tuple[bool, str]:
+        """连接测试：默认启动连接并等待最多 3 秒。"""
+        try:
+            self.connect()
+        except Exception as e:
+            return False, f"{self.name}：{e}"
+        end = time.time() + 3.0
+        while time.time() < end and not self.connected:
+            time.sleep(0.05)
+        if self.connected:
+            return True, f"{self.name}：已连接"
+        return False, f"{self.name}：{self.last_error or '超时未连接'}"
+
+    def heartbeat(self) -> None:
+        """心跳：寄存器类设备（Modbus/MC/S7）自增 heartbeat_address；文本设备发送 heartbeat_text。"""
+        if not self.connected:
+            return
+        try:
+            addr = int(self.config.get("heartbeat_address", -1))
+        except (TypeError, ValueError):
+            addr = -1
+        if addr >= 0 and hasattr(self, "write_registers") and hasattr(self, "read_registers"):
+            cur = self.read_registers(addr, 1)[0]  # type: ignore[attr-defined]
+            self.write_registers(addr, [(cur + 1) & 0xFFFF])  # type: ignore[attr-defined]
+            return
+        text = str(self.config.get("heartbeat_text", "") or "")
+        if text:
+            self.send(text.encode().decode("unicode_escape"))
+
+    @property
+    def heartbeat_interval(self) -> float:
+        try:
+            return float(self.config.get("heartbeat_s", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def info(self) -> dict[str, Any]:
         return {"name": self.name, "kind": self.kind, "connected": self.connected, "error": self.last_error, **self.stats}

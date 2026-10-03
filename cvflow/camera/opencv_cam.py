@@ -29,6 +29,7 @@ class OpenCVCamera(Camera):
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.config["height"]))
         self._cap = cap
         self.is_open = True
+        self.apply_settings(self.config)
 
     def close(self) -> None:
         if self._cap is not None:
@@ -50,7 +51,8 @@ class OpenCVCamera(Camera):
     def set_feature(self, name: str, value) -> None:
         if self._cap is None:
             return
-        prop = {"exposure": cv2.CAP_PROP_EXPOSURE, "gain": cv2.CAP_PROP_GAIN,
+        prop = {"exposure": cv2.CAP_PROP_EXPOSURE, "ExposureTime": cv2.CAP_PROP_EXPOSURE,
+                "gain": cv2.CAP_PROP_GAIN, "Gain": cv2.CAP_PROP_GAIN,
                 "fps": cv2.CAP_PROP_FPS, "brightness": cv2.CAP_PROP_BRIGHTNESS}.get(name)
         if prop is not None:
             self._cap.set(prop, float(value))

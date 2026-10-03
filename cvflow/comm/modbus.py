@@ -57,10 +57,25 @@ def registers_to_value(regs: list[int], kind: str) -> Any:
 
 
 class _RegisterWatcher:
-    """Mixin: diff register snapshots and notify change callbacks."""
+    """Mixin: register change callbacks plus the PLC handshake helpers shared by register devices."""
 
     def __init__(self) -> None:
         self._reg_callbacks: list[RegCallback] = []
+
+    # 子类需提供 read_registers / write_registers / config / connected
+    def on_trigger(self, address: int) -> None:
+        """收到触发后：置忙标志，按需清零触发寄存器。"""
+        busy = int(self.config.get("busy_address", -1))  # type: ignore[attr-defined]
+        if busy >= 0:
+            self.write_registers(busy, [1])  # type: ignore[attr-defined]
+        if self.config.get("trigger_reset"):  # type: ignore[attr-defined]
+            self.write_registers(int(address), [0])  # type: ignore[attr-defined]
+
+    def on_done(self, result=None) -> None:
+        """流程结束（结果已写入）后：清忙标志。"""
+        busy = int(self.config.get("busy_address", -1))  # type: ignore[attr-defined]
+        if busy >= 0:
+            self.write_registers(busy, [0])  # type: ignore[attr-defined]
 
     def on_register_change(self, cb: RegCallback) -> None:
         self._reg_callbacks.append(cb)
@@ -82,6 +97,10 @@ class ModbusTcpServerDevice(CommDevice, _RegisterWatcher):
         ("unit_id", "int", "Unit id", 1, "0 = accept any"),
         ("register_count", "int", "Holding registers", 256, ""),
         ("coil_count", "int", "Coils", 64, ""),
+        ("busy_address", "int", "忙标志地址", -1, "-1 关闭；触发后写 1，流程结束写 0"),
+        ("trigger_reset", "bool", "触发后自动复位触发寄存器", False, "PLC 写 1 触发后由视觉清零，便于下次产生上升沿"),
+        ("heartbeat_address", "int", "心跳寄存器地址", -1, "-1 关闭；按心跳间隔自增，PLC 据此判断视觉在线"),
+        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
     ]
 
     def __init__(self, name, config=None, bus=None):
@@ -171,6 +190,18 @@ class ModbusTcpServerDevice(CommDevice, _RegisterWatcher):
 
     def _send_bytes(self, data: bytes) -> None:
         raise CommError("Modbus 从站不发送原始报文，请使用 write_value()")
+
+    def test_connection(self) -> tuple[bool, str]:
+        if self._server is not None:
+            return True, f"Modbus 从站正在监听 {self.config['host']}:{self.bound_port}，当前 {len(self._clients)} 个客户端"
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((self.config["host"], int(self.config["port"])))
+            s.close()
+            return True, f"端口 {self.config['port']} 可用（从站尚未启动）"
+        except OSError as e:
+            return False, f"无法监听 {self.config['host']}:{self.config['port']}：{e}"
 
     # ---- protocol ----
     def _accept_loop(self) -> None:
@@ -285,6 +316,10 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
         ("watch_address", "int", "Watch start address", 0, "Holding registers polled for changes"),
         ("watch_count", "int", "Watch count", 8, ""),
         ("timeout_s", "float", "Timeout (s)", 1.0, ""),
+        ("busy_address", "int", "忙标志地址", -1, "-1 关闭；触发后写 1，流程结束写 0"),
+        ("trigger_reset", "bool", "触发后自动复位触发寄存器", False, ""),
+        ("heartbeat_address", "int", "心跳寄存器地址", -1, "-1 关闭；按心跳间隔自增"),
+        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
     ]
 
     def __init__(self, name, config=None, bus=None):
@@ -328,6 +363,19 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
 
     def _send_bytes(self, data: bytes) -> None:
         raise CommError("Modbus 主站不发送原始报文，请使用 write_value()")
+
+    def test_connection(self) -> tuple[bool, str]:
+        t0 = time.perf_counter()
+        try:
+            with self._lock:
+                c = self._ensure_client()
+                if not c.connected and not c.connect():
+                    raise CommError("TCP 连接失败")
+            addr = int(self.config.get("watch_address", 0))
+            v = self.read_registers(addr, 1)[0]
+            return True, f"{self.config['host']}:{self.config['port']} 单元 {self.config['unit_id']} 可用，寄存器 {addr}={v}，耗时 {(time.perf_counter() - t0) * 1000:.0f} ms"
+        except Exception as e:
+            return False, f"{self.config['host']}:{self.config['port']} 连接失败：{e}"
 
     def _check(self, rr):
         if rr is None or rr.isError():

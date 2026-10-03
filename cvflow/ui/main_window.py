@@ -16,6 +16,7 @@ from ..core.engine import RunResult
 from ..core.events import EventBus
 from ..core.types import Image, Overlay, Rect
 from .bridge import EventBridge
+from .camera_dialog import CameraDialog
 from .comm_panel import CommPanel
 from .i18n import tr
 from .image_view import ImageView
@@ -185,6 +186,8 @@ class MainWindow(QMainWindow):
         tb.addAction(self.act_run_mode)
         self.act_fit = QAction(tr("Fit"), self, shortcut="F", triggered=self.view.fit_all)
         tb.addAction(self.act_fit)
+        tb.addSeparator()
+        tb.addAction(QAction("相机管理", self, triggered=self._camera_dialog))
 
     def _build_menu(self) -> None:
         m = self.menuBar()
@@ -200,6 +203,8 @@ class MainWindow(QMainWindow):
         fl.addAction(self.act_run)
         fl.addAction(self.act_run_mode)
         fl.addAction(QAction(tr("Validate flow"), self, triggered=self._validate))
+        cam = m.addMenu("相机(&C)")
+        cam.addAction(QAction("相机管理…", self, triggered=self._camera_dialog))
         p = m.addMenu(tr("&Plugins"))
         p.addAction(QAction(tr("Load plugin folder…"), self, triggered=self._load_plugin_dir))
         p.addAction(QAction(tr("Reload plugins"), self, triggered=self._reload_plugins))
@@ -624,6 +629,30 @@ class MainWindow(QMainWindow):
         self.image_view.set_image(img)
         self.image_view.set_overlays(overlays)
         self.image_title.setText(tr("{name}  ({w}×{h}, frame {id})").format(name=node.name, w=img.width, h=img.height, id=img.frame_id))
+
+    # ------------------------------------------------------------------ cameras
+    def _camera_dialog(self) -> None:
+        dlg = CameraDialog(self)
+        dlg.add_requested.connect(self._add_camera_node)
+        dlg.exec()
+
+    def _add_camera_node(self, kind: str, source: str, name: str, cti: str) -> None:
+        if self.run_mode:
+            self.statusBar().showMessage(tr("Stop run mode to edit the flow"), 4000)
+            return
+        pos = self.view.mapToScene(self.view.viewport().rect().center())
+        node = self.scene.add_node("source.camera", QPointF(pos.x() - 80, pos.y() - 30))
+        if node is None:
+            return
+        node.set("kind", kind)
+        node.set("source", source)
+        node.set("camera", name)
+        if cti:
+            node.set("cti", cti)
+        node.name = self.graph.unique_name(f"相机 {name}")
+        self.scene.node_items[node.id].update()
+        self.scene.select_node(node.id)
+        self._mark_dirty()
 
     # ------------------------------------------------------------------ plugins
     def _load_plugin_dir(self) -> None:

@@ -14,6 +14,7 @@ import logging
 import re
 import string
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +24,9 @@ from ..core.events import EventBus
 from ..core.runtime import FlowRunner, Trigger, TriggerSource
 from ..core.variables import GlobalVariables
 from .base import CommDevice, CommError
+from .mc import McDevice
 from .modbus import ModbusTcpClientDevice, ModbusTcpServerDevice
+from .s7 import S7Device
 from .serial_port import SerialDevice
 from .tcp import TcpClientDevice, TcpServerDevice, UdpDevice
 
@@ -34,7 +37,13 @@ log = logging.getLogger("cvflow.comm")
 
 DEVICE_KINDS: dict[str, type[CommDevice]] = {
     cls.kind: cls for cls in (TcpClientDevice, TcpServerDevice, UdpDevice, SerialDevice,
-                               ModbusTcpClientDevice, ModbusTcpServerDevice)
+                               ModbusTcpClientDevice, ModbusTcpServerDevice, McDevice, S7Device)
+}
+
+DEVICE_KIND_LABELS = {
+    "tcp_client": "TCP 客户端", "tcp_server": "TCP 服务端", "udp": "UDP", "serial": "串口",
+    "modbus_tcp_client": "Modbus TCP 主站（读写 PLC）", "modbus_tcp_server": "Modbus TCP 从站（PLC 读写本机）",
+    "mc": "三菱 MC 协议（3E 二进制）", "s7": "西门子 S7（snap7）",
 }
 
 TEXT_MATCHES = ("any", "startswith", "equals", "contains", "regex")
@@ -139,6 +148,14 @@ def format_template(template: str, result: RunResult | None = None,
         raise CommError(f"模板 {template!r} 有误：{e}") from e
 
 
+def _address(value):
+    """寄存器地址：数字（Modbus/S7 偏移）或字符串（MC 的 D100 / M20）。"""
+    text = str(value).strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    return text
+
+
 def eval_register_expr(expr: str, result: RunResult | None, variables: dict | None) -> float:
     text = format_template(str(expr), result, variables).strip()
     if text.lower() in ("true", "ok"):
@@ -158,6 +175,8 @@ class CommManager:
         self.send_rules: list[SendRule] = []
         self.runners: dict[str, FlowRunner] = {}
         self._lock = threading.RLock()
+        self._hb_thread: threading.Thread | None = None
+        self._hb_stop = threading.Event()
         self.bus.subscribe(events.RUN_FINISHED, self._on_run_finished)
 
     # ---- flows ----
@@ -196,14 +215,54 @@ class CommManager:
             except Exception as e:
                 errors.append(f"{dev.name}: {e}")
                 log.error("连接 %s 失败：%s", dev.name, e)
+        self._start_heartbeats()
         return errors
 
     def disconnect_all(self) -> None:
+        self._stop_heartbeats()
         for dev in list(self.devices.values()):
             try:
                 dev.disconnect()
             except Exception:
                 log.exception("断开 %s 失败", dev.name)
+
+    def test_connection(self, name: str) -> tuple[bool, str]:
+        dev = self.devices.get(name)
+        if dev is None:
+            return False, f"没有名为 {name!r} 的设备"
+        try:
+            return dev.test_connection()
+        except Exception as e:
+            return False, f"{name}：{e}"
+
+    # ---- 心跳 ----
+    def _start_heartbeats(self) -> None:
+        if any(d.heartbeat_interval > 0 for d in self.devices.values()) and not (self._hb_thread and self._hb_thread.is_alive()):
+            self._hb_stop.clear()
+            self._hb_thread = threading.Thread(target=self._heartbeat_loop, name="comm-heartbeat", daemon=True)
+            self._hb_thread.start()
+
+    def _stop_heartbeats(self) -> None:
+        self._hb_stop.set()
+        if self._hb_thread:
+            self._hb_thread.join(2.0)
+            self._hb_thread = None
+
+    def _heartbeat_loop(self) -> None:
+        last: dict[str, float] = {}
+        while not self._hb_stop.is_set():
+            now = time.time()
+            for dev in list(self.devices.values()):
+                iv = dev.heartbeat_interval
+                if iv <= 0 or not dev.connected:
+                    continue
+                if now - last.get(dev.name, 0.0) >= iv:
+                    last[dev.name] = now
+                    try:
+                        dev.heartbeat()
+                    except Exception as e:
+                        dev._error(f"心跳失败：{e}")
+            self._hb_stop.wait(0.05)
 
     def send(self, device: str, data: bytes | str) -> bool:
         dev = self.devices.get(device)
@@ -218,7 +277,7 @@ class CommManager:
             log.warning("Modbus 写入：%r 不是 Modbus 设备", device)
             return False
         try:
-            dev.write_value(int(address), value, kind)
+            dev.write_value(_address(address), value, kind)
             return True
         except Exception as e:
             dev._error(f"写入失败：{e}")
@@ -275,6 +334,11 @@ class CommManager:
                    or (rule.match == "register_change")
                    or (rule.match == "register_equals" and new == int(rule.value) and old != int(rule.value)))
             if hit:
+                if hasattr(dev, "on_trigger"):
+                    try:
+                        dev.on_trigger(address)   # 置忙标志 / 清零触发寄存器（PLC 握手）
+                    except Exception as e:
+                        dev._error(f"握手失败：{e}")
                 self._fire(rule, Trigger(TriggerSource.COMM, device=dev.name, message=f"reg[{address}]={new}",
                                          payload={"rule": rule.name, "address": address, "old": old, "new": new}))
 
@@ -309,11 +373,18 @@ class CommManager:
                 if rule.registers and hasattr(dev, "write_value"):
                     for reg in rule.registers:
                         val = eval_register_expr(reg.get("expr", "0"), result, result.variables)
-                        dev.write_value(int(reg.get("address", 0)), val, str(reg.get("kind", "int16")))
+                        dev.write_value(_address(reg.get("address", 0)), val, str(reg.get("kind", "int16")))
                 elif rule.template:
                     dev.send(format_template(rule.template, result, result.variables))
             except Exception as e:
                 dev._error(f"发送规则 {rule.name!r}：{e}")
+        # 握手收尾：清除触发该次运行的设备的忙标志（结果已经写入）
+        trig_dev = self.devices.get(getattr(result.trigger, "device", "") or "")
+        if trig_dev is not None and hasattr(trig_dev, "on_done"):
+            try:
+                trig_dev.on_done(result)
+            except Exception as e:
+                trig_dev._error(f"握手收尾失败：{e}")
 
     # ---- persistence ----
     def to_dict(self) -> dict:
@@ -337,6 +408,7 @@ class CommManager:
         return errors
 
     def shutdown(self) -> None:
+        self._stop_heartbeats()
         self.disconnect_all()
         self.bus.unsubscribe(events.RUN_FINISHED, self._on_run_finished)
 

@@ -71,3 +71,14 @@ class SerialDevice(CommDevice):
         if not self._ser:
             raise CommError("未打开")
         self._ser.write(data)
+
+    def test_connection(self) -> tuple[bool, str]:
+        if self._ser is not None:
+            return True, f"串口 {self.config['port']} 已打开"
+        try:
+            import serial
+            s = serial.Serial(port=self.config["port"], baudrate=int(self.config["baudrate"]), timeout=0.2)
+            s.close()
+            return True, f"串口 {self.config['port']} 可以打开（{self.config['baudrate']} 波特）"
+        except Exception as e:
+            return False, f"串口 {self.config['port']} 打开失败：{e}"
