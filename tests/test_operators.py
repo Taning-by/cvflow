@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -167,8 +169,8 @@ def test_render_and_save(reg, blob_image, tmp_path):
     g.add_link(rnd.id, "image", sv.id, "image")
     r = Engine(g).run()
     assert r.status_text == "NG"
-    path = r.node_results[sv.id].outputs["path"]
-    assert path.endswith(".png") and "/NG/" in path and (tmp_path / "NG").exists()
+    path = Path(r.node_results[sv.id].outputs["path"])
+    assert path.suffix == ".png" and path.parent.name == "NG" and path.parent.parent == tmp_path and path.is_file()
     out = r.node_results[rnd.id].outputs["image"].data
     assert out.ndim == 3 and (out[5:55, 5] == (0, 0, 255)).all(axis=1).any()
 
