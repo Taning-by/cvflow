@@ -240,6 +240,16 @@ camera manager, plugins and help. Regenerate with:
 python tools/ui_test_report.py
 ```
 
+`docs/comm-test-report.md` is the communication black-box report: the peer side is played by
+real sockets, a Linux pseudo-terminal serial port, third-party pymodbus and snap7, and
+hand-assembled protocol frames checked byte by byte; it covers TCP/UDP/serial, Modbus master and
+slave, Mitsubishi MC, Siemens S7, receive/send rules, templates, handshake, heartbeat, events,
+persistence, connection tests and the headless serve mode. Regenerate with:
+
+```bash
+python tools/comm_test_report.py
+```
+
 ## Current limits
 
 * Classical operators cover what OpenCV offers directly: blobs, contours, NCC template

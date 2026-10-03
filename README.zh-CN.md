@@ -194,6 +194,12 @@ python tools/node_test_report.py
 python tools/ui_test_report.py
 ```
 
+`docs/comm-test-report.md` 是通信功能的黑盒测试报告：对端用真实套接字、Linux 伪终端串口、第三方 pymodbus 与 snap7、按协议手册手工拼出的报文做字节级核对，覆盖 TCP/UDP/串口/Modbus 主从站/三菱 MC/西门子 S7、接收与发送规则、模板、握手、心跳、事件、持久化、连接测试和无界面生产模式。重新生成：
+
+```bash
+python tools/comm_test_report.py
+```
+
 ## 目前的边界（诚实版）
 
 * 传统算子仅覆盖 OpenCV 能直接提供的部分：Blob、轮廓、NCC 模板匹配（仅平移）、亚像素边缘卡尺、圆查找、强度统计、二维码。形状匹配（旋转/缩放）、高精度标定、OCR 还没有。
