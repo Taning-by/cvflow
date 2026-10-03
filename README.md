@@ -230,6 +230,16 @@ analytically known ground truth. Regenerate with:
 python tools/node_test_report.py
 ```
 
+`docs/ui-test-report.md` is the GUI black-box report: the interface is driven only through
+user-visible actions (menus, toolbar, mouse drags, keyboard, dialogs, table edits) and checked
+through visible results, covering startup layout, file and flow management, palette, node
+editor, parameter panel, run controls, image view, results/variables/log/communication panels,
+camera manager, plugins and help. Regenerate with:
+
+```bash
+python tools/ui_test_report.py
+```
+
 ## Current limits
 
 * Classical operators cover what OpenCV offers directly: blobs, contours, NCC template

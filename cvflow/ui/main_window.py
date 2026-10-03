@@ -236,6 +236,11 @@ class MainWindow(QMainWindow):
                                "Nodes are Python plugins; flows talk to PLCs over TCP/UDP/serial/Modbus."))))
 
 
+    def toolbar_actions(self) -> list[QAction]:
+        """工具栏上的全部动作（供自动化测试/脚本按文字查找）。"""
+        tb = self.findChild(QToolBar, "toolbar_main")
+        return list(tb.actions()) if tb else []
+
     # ------------------------------------------------------------------ solution lifecycle
     def _teardown_current(self) -> None:
         if self.run_mode:

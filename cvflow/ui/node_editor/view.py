@@ -122,6 +122,7 @@ class NodeView(QGraphicsView):
         new = self._scene.add_node(node.type_id, QPointF(node.position[0] + 30, node.position[1] + 30))
         if new is not None:
             new.values = {k: v for k, v in node.values.items()}
+            new.name = ""                                   # 先清空，避免自己占用一个编号
             new.name = self._scene.graph.unique_name(node.name)
             self._scene.node_items[new.id].update()
 
