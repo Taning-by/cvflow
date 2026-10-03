@@ -36,7 +36,7 @@ Homepage = "https://github.com/Taning-by/cvflow"
 Issues = "https://github.com/Taning-by/cvflow/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "onnx>=1.14"]
 gpu = ["onnxruntime-gpu>=1.16"]
 genicam = ["harvesters>=1.4"]
 plc = ["python-snap7>=1.3"]

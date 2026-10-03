@@ -238,6 +238,8 @@ class Engine:
                             out = {}
                         else:
                             nres.status = NodeStatus.OK
+                            for port in node.outputs:          # 未返回的声明输出补 None，保证下游语义稳定
+                                out.setdefault(port.name, None)
                         nres.outputs = out
                         if nres.status == NodeStatus.OK and node.is_judge and "ok" in out:
                             ok = bool(out["ok"])

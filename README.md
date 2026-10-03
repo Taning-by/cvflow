@@ -219,6 +219,17 @@ examples/          demo image generator, demo solution, example plugins
 tests/             pytest (core, operators, communication, offscreen UI)
 ```
 
+## Node black-box test report
+
+`docs/node-test-report.md` is a per-node black-box test report: contract tests cover every
+registered node automatically (metadata, declared outputs present with the declared types, bad
+input isolated), functional tests verify each mode and parameter against synthetic images with
+analytically known ground truth. Regenerate with:
+
+```bash
+python tools/node_test_report.py
+```
+
 ## Current limits
 
 * Classical operators cover what OpenCV offers directly: blobs, contours, NCC template

@@ -186,7 +186,8 @@ class OnnxDetector(_OnnxBase):
         pred = np.asarray(outs[0], dtype=np.float32)
         if pred.ndim == 3:
             pred = pred[0]
-        if pred.shape[0] < pred.shape[1]:          # [84, N] (v8 layout) -> [N, 84]
+        # 属性维（4 个框坐标 + 类别分数）至少 5 个；v8 布局为 [84, N]，v5 为 [N, 85]
+        if pred.shape[1] < 5 or (pred.shape[0] >= 5 and pred.shape[0] < pred.shape[1]):
             pred = pred.T
         if pred.shape[1] > 5 and pred.shape[1] - 5 >= 1 and self._looks_v5(pred):
             obj = pred[:, 4:5]
