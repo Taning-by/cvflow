@@ -136,8 +136,8 @@ class S7Device(CommDevice, _RegisterWatcher):
             try:
                 with self._lock:
                     self._ensure_client()
-                self._set_connected(True)
                 if poll <= 0:
+                    self._set_connected(True)
                     self._stop.wait(0.5)
                     continue
                 off, nbytes = int(self.config["watch_offset"]), int(self.config["watch_bytes"])
@@ -147,6 +147,7 @@ class S7Device(CommDevice, _RegisterWatcher):
                         if o != n:
                             self._notify_reg(off + 2 * i, o, n)
                 self._last = regs
+                self._set_connected(True)   # 基线快照建立之后才对外显示“已连接”
                 self._stop.wait(poll)
             except Exception as e:
                 if self.connected or not self.last_error:

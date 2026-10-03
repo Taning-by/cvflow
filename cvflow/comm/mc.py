@@ -215,8 +215,8 @@ class McDevice(CommDevice, _RegisterWatcher):
             try:
                 with self._lock:
                     self._ensure_sock()
-                self._set_connected(True)
                 if poll <= 0:
+                    self._set_connected(True)
                     self._stop.wait(0.5)
                     continue
                 addr, count = int(self.config["watch_address"]), int(self.config["watch_count"])
@@ -226,6 +226,7 @@ class McDevice(CommDevice, _RegisterWatcher):
                         if o != n:
                             self._notify_reg(addr + i, o, n)
                 self._last = regs
+                self._set_connected(True)   # 基线快照建立之后才对外显示“已连接”
                 self._stop.wait(poll)
             except Exception as e:
                 if self.connected or not self.last_error:

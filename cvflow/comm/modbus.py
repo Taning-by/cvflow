@@ -424,8 +424,8 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
                     if not c.connected:
                         if not c.connect():
                             raise CommError("连接失败")
-                self._set_connected(True)
                 if poll <= 0:
+                    self._set_connected(True)
                     self._stop.wait(0.5)
                     continue
                 addr, count = int(self.config["watch_address"]), int(self.config["watch_count"])
@@ -436,6 +436,7 @@ class ModbusTcpClientDevice(CommDevice, _RegisterWatcher):
                         if o != n:
                             self._notify_reg(addr + i, o, n)
                 self._last = regs
+                self._set_connected(True)   # 基线快照建立之后才对外显示“已连接”，避免漏掉首次变化
                 self._stop.wait(poll)
             except Exception as e:
                 if self.connected or not self.last_error:
