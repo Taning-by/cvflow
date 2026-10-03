@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QSettings, Qt, QTimer
+from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton, QTabWidget,
@@ -25,6 +25,7 @@ from .node_editor import NodeScene, NodeView
 from .palette import NodePalette
 from .param_panel import ParamPanel
 from .results_panel import ResultsPanel
+from .theme import C, app_icon, chip_style, make_icon
 from .variables_panel import VariablesPanel
 
 log = logging.getLogger("cvflow.ui")
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
     def __init__(self, solution_path: str | None = None) -> None:
         super().__init__()
         self.setWindowTitle("CVFlow")
+        self.setWindowIcon(app_icon())
         self.resize(1500, 920)
         registry.load_builtins()
 
@@ -94,9 +96,11 @@ class MainWindow(QMainWindow):
         il = QVBoxLayout(img_w)
         il.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
+        bar.setContentsMargins(8, 4, 8, 4)
         self.image_title = QLabel("—")
+        self.image_title.setStyleSheet("font-weight:600")
         fit = QPushButton(tr("Fit"))
-        fit.setFixedWidth(48)
+        fit.setFixedWidth(56)
         self.all_overlays = QCheckBox(tr("All overlays"))
         self.all_overlays.toggled.connect(lambda _: self._update_image())
         bar.addWidget(self.image_title, 1)
@@ -105,6 +109,8 @@ class MainWindow(QMainWindow):
         self.image_view = ImageView()
         fit.clicked.connect(self.image_view.fit)
         self.pixel_label = QLabel("")
+        self.pixel_label.setObjectName("muted")
+        self.pixel_label.setContentsMargins(8, 2, 8, 2)
         self.image_view.pixel_info.connect(self.pixel_label.setText)
         il.addLayout(bar)
         il.addWidget(self.image_view, 1)
@@ -132,6 +138,7 @@ class MainWindow(QMainWindow):
         self._dock(tr("Output"), self.bottom_tabs, Qt.BottomDockWidgetArea, "dock_bottom")
 
         self.status_run = QLabel(tr("edit mode"))
+        self.status_run.setStyleSheet(chip_style(C["panel2"], C["muted"]))
         self.status_stats = QLabel("")
         self.statusBar().addPermanentWidget(self.status_stats)
         self.statusBar().addPermanentWidget(self.status_run)
@@ -147,25 +154,32 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Main")
         tb.setObjectName("toolbar_main")
         tb.setMovable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
-        self.act_new = QAction(tr("New"), self, shortcut=QKeySequence.New, triggered=self.new_solution)
-        self.act_open = QAction(tr("Open…"), self, shortcut=QKeySequence.Open, triggered=self._open_dialog)
-        self.act_save = QAction(tr("Save"), self, shortcut=QKeySequence.Save, triggered=lambda: self.save_solution())
+        self.act_new = QAction(make_icon("new"), tr("New"), self, shortcut=QKeySequence.New, triggered=self.new_solution)
+        self.act_open = QAction(make_icon("open"), tr("Open…"), self, shortcut=QKeySequence.Open, triggered=self._open_dialog)
+        self.act_save = QAction(make_icon("save"), tr("Save"), self, shortcut=QKeySequence.Save, triggered=lambda: self.save_solution())
         for a in (self.act_new, self.act_open, self.act_save):
             tb.addAction(a)
         tb.addSeparator()
-        tb.addWidget(QLabel(tr(" Flow: ")))
+        flow_lbl = QLabel(tr(" Flow: "))
+        flow_lbl.setObjectName("muted")
+        tb.addWidget(flow_lbl)
         self.flow_combo = QComboBox()
         self.flow_combo.setMinimumWidth(140)
         self.flow_combo.currentTextChanged.connect(self._set_current_flow)
         tb.addWidget(self.flow_combo)
-        self.act_add_flow = QAction("+", self, toolTip=tr("Add flow"), triggered=self._add_flow)
-        self.act_del_flow = QAction("−", self, toolTip=tr("Remove flow"), triggered=self._remove_flow)
+        self.act_add_flow = QAction(make_icon("plus"), "", self, toolTip=tr("Add flow"), triggered=self._add_flow)
+        self.act_del_flow = QAction(make_icon("minus"), "", self, toolTip=tr("Remove flow"), triggered=self._remove_flow)
         tb.addAction(self.act_add_flow)
         tb.addAction(self.act_del_flow)
         tb.addSeparator()
-        self.act_run = QAction(tr("▶ Run once"), self, shortcut="F5", triggered=self.run_once)
+        self.act_run = QAction(make_icon("play", "#ffffff"), tr("▶ Run once"), self, shortcut="F5", triggered=self.run_once)
         tb.addAction(self.act_run)
+        run_btn = tb.widgetForAction(self.act_run)
+        if run_btn is not None:
+            run_btn.setObjectName("primary")
         self.autorun = QCheckBox(tr("Auto-run on change"))
         self.autorun.setChecked(True)
         tb.addWidget(self.autorun)
@@ -181,13 +195,13 @@ class MainWindow(QMainWindow):
         self.interval.valueChanged.connect(lambda _: self._apply_continuous(self.continuous.isChecked()))
         tb.addWidget(self.interval)
         tb.addSeparator()
-        self.act_run_mode = QAction(tr("● Start run mode"), self, shortcut="F9", checkable=True)
+        self.act_run_mode = QAction(make_icon("record", C["ok"]), tr("● Start run mode"), self, shortcut="F9", checkable=True)
         self.act_run_mode.toggled.connect(self.toggle_run_mode)
         tb.addAction(self.act_run_mode)
-        self.act_fit = QAction(tr("Fit"), self, shortcut="F", triggered=self.view.fit_all)
+        self.act_fit = QAction(make_icon("fit"), tr("Fit"), self, shortcut="F", triggered=self.view.fit_all)
         tb.addAction(self.act_fit)
         tb.addSeparator()
-        tb.addAction(QAction("相机管理", self, triggered=self._camera_dialog))
+        tb.addAction(QAction(make_icon("camera"), "相机管理", self, triggered=self._camera_dialog))
 
     def _build_menu(self) -> None:
         m = self.menuBar()
@@ -530,14 +544,16 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, tr("Run mode"), tr("Started with problems:\n") + "\n".join(errors))
             self._apply_continuous(self.continuous.isChecked())
             self.act_run_mode.setText(tr("■ Stop run mode"))
+            self.act_run_mode.setIcon(make_icon("stop", "#ffb3b3"))
             self.status_run.setText(tr("RUN MODE"))
-            self.status_run.setStyleSheet("color:#66bb6a; font-weight:bold")
+            self.status_run.setStyleSheet(chip_style("#1f7a3f"))
         else:
             for r in self.runners.values():
                 r.stop()
             self.act_run_mode.setText(tr("● Start run mode"))
+            self.act_run_mode.setIcon(make_icon("record", C["ok"]))
             self.status_run.setText(tr("edit mode"))
-            self.status_run.setStyleSheet("")
+            self.status_run.setStyleSheet(chip_style(C["panel2"], C["muted"]))
             self._apply_continuous(self.continuous.isChecked())
         self.scene.set_locked(on)
         self.param_panel.set_locked(on)
@@ -588,7 +604,11 @@ class MainWindow(QMainWindow):
         r = self.runner
         st = r.stats if r else None
         if st:
-            self.status_stats.setText(tr("runs {count}  OK {ok}  NG {ng}  ERR {err}  avg {avg:.1f} ms  ").format(count=st.count, ok=st.ok, ng=st.ng, err=st.error, avg=st.avg_ms))
+            self.status_stats.setText(
+                f"<span style='color:{C['muted']}'>运行</span> {st.count} &nbsp; "
+                f"<span style='color:{C['ok']}'>OK {st.ok}</span> &nbsp; <span style='color:{C['ng']}'>NG {st.ng}</span> &nbsp; "
+                f"<span style='color:{C['warn']}'>错误 {st.error}</span> &nbsp; "
+                f"<span style='color:{C['muted']}'>平均</span> {st.avg_ms:.1f} ms &nbsp;")
         self.statusBar().showMessage(tr("run {id}: {status} in {ms:.1f} ms").format(id=result.run_id, status=result.status_text, ms=result.duration_ms)
                                      + (f" – {result.error}" if result.error else ""), 5000)
 

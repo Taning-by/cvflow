@@ -22,6 +22,7 @@ class NodeView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setAcceptDrops(True)
+        self.setFrameShape(QGraphicsView.NoFrame)
         self._panning = False
         self._pan_start = QPointF()
 

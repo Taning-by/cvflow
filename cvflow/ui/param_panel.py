@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
 from ..core.graph import Graph
 from ..core.node import Node, Param
 from .i18n import tr
+from .theme import C
 
 
 class ParamPanel(QScrollArea):
@@ -66,16 +67,18 @@ class ParamPanel(QScrollArea):
             lbl = QLabel(tr("Select a node to edit its parameters.\n\nDrag nodes from the palette, connect ports by "
                             "dragging, press Delete to remove, F to fit."))
             lbl.setWordWrap(True)
-            lbl.setStyleSheet("color:#888")
+            lbl.setStyleSheet(f"color:{C['muted']}; padding: 12px 4px; line-height: 150%")
             self._layout.addWidget(lbl)
             self._layout.addStretch(1)
             return
-        head = QLabel(f"<b>{tr(node.label)}</b> <span style='color:#888'>{node.type_id}</span>")
+        head = QLabel(f"<span style='font-size:13px; font-weight:600'>{tr(node.label)}</span>"
+                      f"&nbsp;&nbsp;<span style='color:{C['muted']}; font-size:9px'>{node.type_id}</span>")
+        head.setStyleSheet(f"border-left: 4px solid {node.color}; padding: 4px 8px; background: {C['panel2']}; border-radius: 4px")
         self._layout.addWidget(head)
         if node.description:
             d = QLabel(tr(node.description))
             d.setWordWrap(True)
-            d.setStyleSheet("color:#aaa")
+            d.setStyleSheet(f"color:{C['muted']}; padding: 2px 4px 6px 4px")
             self._layout.addWidget(d)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
@@ -89,18 +92,19 @@ class ParamPanel(QScrollArea):
         self._layout.addLayout(form)
         err = QLabel(node.last_error or "")
         err.setWordWrap(True)
-        err.setStyleSheet("color:#ff8a65")
+        err.setStyleSheet(f"color:{C['warn']}; background: #3a2f1a; border-radius: 4px; padding: 4px 6px")
         err.setVisible(bool(node.last_error))
         self._widgets["__error"] = err
         self._layout.addWidget(err)
 
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("color:#444")
         self._layout.addWidget(line)
 
         pform = QFormLayout()
-        pform.setLabelAlignment(Qt.AlignRight)
+        pform.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        pform.setVerticalSpacing(8)
+        pform.setHorizontalSpacing(12)
         adv = [p for p in node.params if p.advanced]
         for p in node.params:
             if p.advanced and not self._show_advanced:
@@ -230,7 +234,7 @@ class ParamPanel(QScrollArea):
         r = node.get(p.name)
         txt = f"x{r['x']:.0f} y{r['y']:.0f} {r['w']:.0f}×{r['h']:.0f}" if r else tr("not set")
         lbl = QLabel(txt)
-        lbl.setStyleSheet("color:#ffa500" if r else "color:#888")
+        lbl.setStyleSheet(f"color:{C['warn']}" if r else f"color:{C['muted']}")
         draw = QPushButton(tr("Draw"))
         draw.setToolTip(tr("Drag a rectangle on the image"))
         draw.clicked.connect(lambda: self.roi_edit_requested.emit(node.id, p.name))
@@ -256,7 +260,7 @@ class ParamPanel(QScrollArea):
         row = QHBoxLayout()
         apply_btn = QPushButton(tr("Apply"))
         status = QLabel("")
-        status.setStyleSheet("color:#ff8a65")
+        status.setStyleSheet(f"color:{C['warn']}")
 
         def apply():
             text = ed.toPlainText()

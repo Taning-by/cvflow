@@ -28,6 +28,8 @@ class VariablesPanel(QWidget):
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels([tr("Name"), tr("Value"), tr("Description")])
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
         self.table.setColumnWidth(0, 140)
         self.table.setColumnWidth(1, 220)
         self.table.cellChanged.connect(self._edited)

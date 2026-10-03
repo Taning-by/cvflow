@@ -52,7 +52,8 @@ class ImageView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setBackgroundBrush(QBrush(QColor("#1a1a1a")))
+        self.setBackgroundBrush(QBrush(QColor("#121418")))
+        self.setFrameShape(QGraphicsView.NoFrame)
         self.setMouseTracking(True)
 
     # ---- content ----
@@ -105,13 +106,13 @@ class ImageView(QGraphicsView):
                 r.setPen(pen)
                 items.append(r)
                 if ov.label:
-                    items.append(self._text(g["x"], g["y"] - 14, ov.label, ov.color))
+                    items.append(self._text(g["x"], g["y"] - self._label_h(), ov.label, ov.color))
             elif ov.kind == "circle":
                 c = QGraphicsEllipseItem(QRectF(g["cx"] - g["r"], g["cy"] - g["r"], 2 * g["r"], 2 * g["r"]))
                 c.setPen(pen)
                 items.append(c)
                 if ov.label:
-                    items.append(self._text(g["cx"] - g["r"], g["cy"] - g["r"] - 14, ov.label, ov.color))
+                    items.append(self._text(g["cx"] - g["r"], g["cy"] - g["r"] - self._label_h(), ov.label, ov.color))
             elif ov.kind == "line":
                 ln = QGraphicsLineItem(g["x1"], g["y1"], g["x2"], g["y2"])
                 ln.setPen(pen)
@@ -124,7 +125,7 @@ class ImageView(QGraphicsView):
                 p.setPen(pen)
                 items.append(p)
                 if ov.label and g["points"]:
-                    items.append(self._text(g["points"][0][0], g["points"][0][1] - 14, ov.label, ov.color))
+                    items.append(self._text(g["points"][0][0], g["points"][0][1] - self._label_h(), ov.label, ov.color))
             elif ov.kind == "points":
                 path = QPainterPath()
                 for x, y in g["points"]:
@@ -134,7 +135,7 @@ class ImageView(QGraphicsView):
                 p.setPen(pen)
                 items.append(p)
             elif ov.kind == "text":
-                items.append(self._text(g["x"], g["y"] - 12, str(g["text"]), ov.color))
+                items.append(self._text(g["x"], g["y"] - self._label_h(), str(g["text"]), ov.color))
             elif ov.kind == "contours":
                 path = QPainterPath()
                 for cnt in g["contours"]:
@@ -152,14 +153,28 @@ class ImageView(QGraphicsView):
             pass
         return items
 
-    @staticmethod
-    def _text(x: float, y: float, text: str, color: str) -> QGraphicsSimpleTextItem:
+    def _text(self, x: float, y: float, text: str, color: str) -> QGraphicsItem:
+        """叠加文字：字号随图像尺寸缩放（像素单位），带半透明深色底，便于在任何底色上阅读。"""
+        h = self._image.height if self._image is not None else 480
+        px = max(9, int(h / 36))
         t = QGraphicsSimpleTextItem(text)
         t.setBrush(QBrush(QColor(color)))
-        t.setFont(QFont("Sans", 9))
-        t.setPos(x, y)
-        t.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-        return t
+        f = QFont("Sans")
+        f.setPixelSize(px)
+        f.setBold(True)
+        t.setFont(f)
+        br = t.boundingRect()
+        bg = QGraphicsRectItem(QRectF(0, 0, br.width() + px * 0.5, br.height() + px * 0.2))
+        bg.setBrush(QBrush(QColor(0, 0, 0, 150)))
+        bg.setPen(Qt.NoPen)
+        bg.setPos(x, max(0.0, y))
+        t.setParentItem(bg)
+        t.setPos(px * 0.25, px * 0.1)
+        return bg
+
+    def _label_h(self) -> float:
+        h = self._image.height if self._image is not None else 480
+        return max(9, int(h / 36)) * 1.4
 
     # ---- ROI editing ----
     def begin_roi_edit(self, callback: Callable[[Rect], None]) -> None:

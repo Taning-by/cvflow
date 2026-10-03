@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPen
+from ..theme import C
 from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsScene
 
 from ...core.graph import Graph, GraphError, Link
@@ -27,8 +28,26 @@ class NodeScene(QGraphicsScene):
         self._temp_src: PortItem | None = None
         self._locked = False
         self.setSceneRect(-2000, -2000, 6000, 6000)
-        self.setBackgroundBrush(QColor("#232323"))
+        self.setBackgroundBrush(QColor(C["canvas"]))
         self.selectionChanged.connect(self._on_selection)
+
+    def drawBackground(self, painter, rect) -> None:
+        super().drawBackground(painter, rect)
+        painter.setRenderHint(painter.RenderHint.Antialiasing, False)
+        small, big = 24, 120
+        left, top = int(rect.left()) - int(rect.left()) % small, int(rect.top()) - int(rect.top()) % small
+        pen_s = QPen(QColor("#1f232a"), 1)
+        pen_b = QPen(QColor("#262b34"), 1)
+        x = left
+        while x < rect.right():
+            painter.setPen(pen_b if x % big == 0 else pen_s)
+            painter.drawLine(x, int(rect.top()), x, int(rect.bottom()))
+            x += small
+        y = top
+        while y < rect.bottom():
+            painter.setPen(pen_b if y % big == 0 else pen_s)
+            painter.drawLine(int(rect.left()), y, int(rect.right()), y)
+            y += small
 
     # ---- model binding ----
     def set_graph(self, graph: Graph) -> None:
@@ -137,7 +156,7 @@ class NodeScene(QGraphicsScene):
             return
         self._temp_src = port
         self._temp = QGraphicsPathItem(bezier(port.scene_center(), pos))
-        pen = QPen(QColor("#ffd54f"), 2, Qt.DashLine)
+        pen = QPen(QColor(C["sel"]), 2.2, Qt.DashLine)
         self._temp.setPen(pen)
         self._temp.setZValue(5)
         self.addItem(self._temp)

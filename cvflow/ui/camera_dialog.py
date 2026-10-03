@@ -67,6 +67,8 @@ class CameraDialog(QDialog):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(lambda _: self._add_to_flow())
         lay.addWidget(self.table, 1)
 
@@ -74,6 +76,8 @@ class CameraDialog(QDialog):
         for text, slot in [("搜索相机", self._search), ("按 IP 添加…", self._add_by_ip), ("连接测试", self._test),
                            ("强制 IP…", self._force_ip), ("添加到流程", self._add_to_flow)]:
             b = QPushButton(text)
+            if text == "添加到流程":
+                b.setObjectName("primary")
             b.clicked.connect(slot)
             bar.addWidget(b)
         bar.addStretch(1)
@@ -123,6 +127,9 @@ class CameraDialog(QDialog):
                 if c == 7 and not d.reachable:
                     it.setForeground(Qt.red)
                 self.table.setItem(r, c, it)
+        self.table.resizeColumnsToContents()
+        for c, w in enumerate((70, 110, 150, 120, 120, 140, 100)):
+            self.table.setColumnWidth(c, max(self.table.columnWidth(c), w))
         if devices:
             self.table.selectRow(0)
 

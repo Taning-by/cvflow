@@ -1,13 +1,14 @@
 """Node palette: categories tree with filter, drag source for the editor."""
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
-from PySide6.QtGui import QColor, QDrag
+from PySide6.QtCore import QByteArray, QMimeData, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QDrag, QFont
 from PySide6.QtWidgets import QLineEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from ..core.registry import registry
 from .i18n import tr
 from .node_editor.view import MIME
+from .theme import C, make_icon
 
 
 class _Tree(QTreeWidget):
@@ -38,6 +39,9 @@ class NodePalette(QWidget):
         self.filter.setPlaceholderText(tr("Filter nodes…"))
         self.filter.textChanged.connect(self._apply_filter)
         self.tree = _Tree()
+        self.tree.setIndentation(14)
+        self.tree.setIconSize(QSize(12, 12))
+        self.tree.setFrameShape(QTreeWidget.NoFrame)
         self.tree.itemDoubleClicked.connect(self._activated)
         lay.addWidget(self.filter)
         lay.addWidget(self.tree)
@@ -48,12 +52,16 @@ class NodePalette(QWidget):
         for cat, classes in registry.categories().items():
             top = QTreeWidgetItem([tr(cat)])
             top.setFlags(top.flags() & ~Qt.ItemIsDragEnabled)
+            f = QFont(); f.setBold(True)
+            top.setFont(0, f)
+            top.setForeground(0, QColor(C["muted"]))
+            top.setIcon(0, make_icon("dot", classes[0].color if classes else C["muted"], 12))
             self.tree.addTopLevelItem(top)
             for cls in classes:
                 it = QTreeWidgetItem([tr(cls.label)])
                 it.setData(0, Qt.UserRole, cls.type_id)
                 it.setToolTip(0, f"{cls.type_id}\n{tr(cls.description)}")
-                it.setForeground(0, QColor(cls.color).lighter(160))
+                it.setIcon(0, make_icon("dot", cls.color, 12))
                 top.addChild(it)
             top.setExpanded(True)
         self._apply_filter(self.filter.text())

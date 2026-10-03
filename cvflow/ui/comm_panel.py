@@ -5,6 +5,7 @@ import json
 from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit,
                                QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
@@ -181,6 +182,8 @@ class CommPanel(QWidget):
         self.dev_table.horizontalHeader().setStretchLastSection(True)
         self.dev_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.dev_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.dev_table.setAlternatingRowColors(True)
+        self.dev_table.verticalHeader().setVisible(False)
         dl.addLayout(bar); dl.addWidget(self.dev_table)
         tabs.addTab(dev_w, tr("Devices"))
 
@@ -195,6 +198,8 @@ class CommPanel(QWidget):
         self.rx_table.horizontalHeader().setStretchLastSection(True)
         self.rx_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.rx_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.rx_table.setAlternatingRowColors(True)
+        self.rx_table.verticalHeader().setVisible(False)
         self.rx_table.doubleClicked.connect(lambda _: self._edit_rx())
         rl.addLayout(bar); rl.addWidget(self.rx_table)
         tabs.addTab(rx_w, tr("Receive rules (triggers)"))
@@ -210,6 +215,8 @@ class CommPanel(QWidget):
         self.tx_table.horizontalHeader().setStretchLastSection(True)
         self.tx_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.tx_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tx_table.setAlternatingRowColors(True)
+        self.tx_table.verticalHeader().setVisible(False)
         self.tx_table.doubleClicked.connect(lambda _: self._edit_tx())
         tl.addLayout(bar); tl.addWidget(self.tx_table)
         tabs.addTab(tx_w, tr("Send rules (results)"))
@@ -241,9 +248,9 @@ class CommPanel(QWidget):
             status = tr("connected") if d.connected else tr("disconnected")
             cells = [d.name, DEVICE_KIND_LABELS.get(d.kind, d.kind), status, str(info.get("rx", 0)), str(info.get("tx", 0)), d.last_error]
             for c, text in enumerate(cells):
-                it = QTableWidgetItem(text)
+                it = QTableWidgetItem(("●  " + text) if c == 2 else text)
                 if c == 2:
-                    it.setForeground(Qt.green if d.connected else Qt.gray)
+                    it.setForeground(QColor("#3ccf6e") if d.connected else QColor("#8d95a3"))
                 self.dev_table.setItem(r, c, it)
         self.rx_table.setRowCount(len(self.mgr.receive_rules))
         for r, rule in enumerate(self.mgr.receive_rules):
