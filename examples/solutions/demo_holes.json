@@ -1,0 +1,595 @@
+{
+  "format": 1,
+  "name": "demo_holes",
+  "plugin_dirs": [
+    "../plugins"
+  ],
+  "variables": {
+    "reward": {
+      "value": 0.0,
+      "dtype": "float",
+      "description": "reward for the learning flow"
+    },
+    "product": {
+      "value": "PART-A",
+      "dtype": "string",
+      "description": "current product code"
+    }
+  },
+  "comm": {
+    "devices": [
+      {
+        "name": "plc",
+        "kind": "tcp_server",
+        "config": {
+          "host": "0.0.0.0",
+          "port": 6000,
+          "terminator": "\\n"
+        }
+      }
+    ],
+    "receive_rules": [
+      {
+        "name": "trigger",
+        "device": "plc",
+        "match": "startswith",
+        "pattern": "TRIG",
+        "action": "trigger_flow",
+        "flow": "main",
+        "enabled": true
+      }
+    ],
+    "send_rules": [
+      {
+        "name": "result",
+        "device": "plc",
+        "flow": "main",
+        "when": "always",
+        "template": "{status},{out.holes},{out.width:.1f}\\n",
+        "enabled": true
+      }
+    ]
+  },
+  "flows": [
+    {
+      "name": "main",
+      "description": "Count the three holes of the part and measure its width.",
+      "nodes": [
+        {
+          "id": "aeae6b0b",
+          "type": "source.image_folder",
+          "name": "Folder",
+          "enabled": true,
+          "position": [
+            40.0,
+            60.0
+          ],
+          "values": {
+            "directory": "/home/txj/cvsoftware/examples/images",
+            "mode": "next",
+            "index": 0,
+            "loop": true,
+            "grayscale": false
+          }
+        },
+        {
+          "id": "07c7299b",
+          "type": "preprocess.color",
+          "name": "Gray",
+          "enabled": true,
+          "position": [
+            250.0,
+            60.0
+          ],
+          "values": {
+            "mode": "gray",
+            "channel": -1
+          }
+        },
+        {
+          "id": "f89d5981",
+          "type": "preprocess.threshold",
+          "name": "Threshold",
+          "enabled": true,
+          "position": [
+            460.0,
+            60.0
+          ],
+          "values": {
+            "method": "binary_inv",
+            "thresh": 120,
+            "high": 255,
+            "block_size": 31,
+            "c": 5.0
+          }
+        },
+        {
+          "id": "2870bb7f",
+          "type": "preprocess.morphology",
+          "name": "Open",
+          "enabled": true,
+          "position": [
+            670.0,
+            60.0
+          ],
+          "values": {
+            "op": "open",
+            "shape": "ellipse",
+            "ksize": 3,
+            "iterations": 1
+          }
+        },
+        {
+          "id": "85ddcdaa",
+          "type": "analysis.blob",
+          "name": "Holes",
+          "enabled": true,
+          "position": [
+            880.0,
+            60.0
+          ],
+          "values": {
+            "min_area": 500,
+            "max_area": 5000,
+            "min_width": 0,
+            "min_height": 0,
+            "connectivity": "8",
+            "sort": "area_desc",
+            "max_count": 100
+          }
+        },
+        {
+          "id": "a0078570",
+          "type": "logic.judge",
+          "name": "Hole Count",
+          "enabled": true,
+          "position": [
+            1090.0,
+            60.0
+          ],
+          "values": {
+            "op": "==",
+            "low": 3.0,
+            "high": 100.0,
+            "text": "",
+            "name": "holes"
+          }
+        },
+        {
+          "id": "e49578f7",
+          "type": "analysis.caliper",
+          "name": "Width",
+          "enabled": true,
+          "position": [
+            880.0,
+            220.0
+          ],
+          "values": {
+            "roi": {
+              "x": 60.0,
+              "y": 150.0,
+              "w": 520.0,
+              "h": 24.0,
+              "angle": 0.0
+            },
+            "direction": "horizontal",
+            "polarity": "any",
+            "min_contrast": 15.0,
+            "select": "first_last",
+            "smooth": 3
+          }
+        },
+        {
+          "id": "8b974933",
+          "type": "logic.judge",
+          "name": "Width OK",
+          "enabled": true,
+          "position": [
+            1090.0,
+            220.0
+          ],
+          "values": {
+            "op": "in_range",
+            "low": 390.0,
+            "high": 410.0,
+            "text": "",
+            "name": "width"
+          }
+        },
+        {
+          "id": "85bd0609",
+          "type": "output.publish",
+          "name": "Publish",
+          "enabled": true,
+          "position": [
+            1300.0,
+            60.0
+          ],
+          "values": {
+            "name_a": "holes",
+            "name_b": "width",
+            "name_c": "c",
+            "name_d": "d"
+          }
+        },
+        {
+          "id": "f36ce08b",
+          "type": "output.render",
+          "name": "Render",
+          "enabled": true,
+          "position": [
+            1300.0,
+            220.0
+          ],
+          "values": {
+            "thickness": 1,
+            "stamp_result": true
+          }
+        },
+        {
+          "id": "b3d890da",
+          "type": "output.save_image",
+          "name": "Save NG",
+          "enabled": true,
+          "position": [
+            1510.0,
+            220.0
+          ],
+          "values": {
+            "directory": "./captures",
+            "when": "ng_only",
+            "format": "png",
+            "subfolder_by_result": true,
+            "prefix": "",
+            "jpeg_quality": 92
+          }
+        }
+      ],
+      "links": [
+        {
+          "src": [
+            "aeae6b0b",
+            "image"
+          ],
+          "dst": [
+            "07c7299b",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "07c7299b",
+            "image"
+          ],
+          "dst": [
+            "f89d5981",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "f89d5981",
+            "image"
+          ],
+          "dst": [
+            "2870bb7f",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "2870bb7f",
+            "image"
+          ],
+          "dst": [
+            "85ddcdaa",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "85ddcdaa",
+            "count"
+          ],
+          "dst": [
+            "a0078570",
+            "value"
+          ]
+        },
+        {
+          "src": [
+            "07c7299b",
+            "image"
+          ],
+          "dst": [
+            "e49578f7",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "e49578f7",
+            "width"
+          ],
+          "dst": [
+            "8b974933",
+            "value"
+          ]
+        },
+        {
+          "src": [
+            "85ddcdaa",
+            "count"
+          ],
+          "dst": [
+            "85bd0609",
+            "a"
+          ]
+        },
+        {
+          "src": [
+            "e49578f7",
+            "width"
+          ],
+          "dst": [
+            "85bd0609",
+            "b"
+          ]
+        },
+        {
+          "src": [
+            "aeae6b0b",
+            "image"
+          ],
+          "dst": [
+            "f36ce08b",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "a0078570",
+            "ok"
+          ],
+          "dst": [
+            "f36ce08b",
+            "after"
+          ]
+        },
+        {
+          "src": [
+            "8b974933",
+            "ok"
+          ],
+          "dst": [
+            "b3d890da",
+            "after"
+          ]
+        },
+        {
+          "src": [
+            "f36ce08b",
+            "image"
+          ],
+          "dst": [
+            "b3d890da",
+            "image"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "learning",
+      "description": "Bandit plugin tunes the threshold; reward is highest when 3 holes of nominal area are found.",
+      "nodes": [
+        {
+          "id": "d9e50aa6",
+          "type": "logic.get_variable",
+          "name": "Reward",
+          "enabled": true,
+          "position": [
+            40.0,
+            220.0
+          ],
+          "values": {
+            "name": "reward",
+            "default": "0"
+          }
+        },
+        {
+          "id": "2ae2306b",
+          "type": "learning.bandit_threshold",
+          "name": "Tuner",
+          "enabled": true,
+          "position": [
+            250.0,
+            220.0
+          ],
+          "values": {
+            "low": 60,
+            "high": 220,
+            "step": 20,
+            "epsilon": 0.2,
+            "learning_rate": 0.2,
+            "frozen": false
+          }
+        },
+        {
+          "id": "5006b881",
+          "type": "source.image_folder",
+          "name": "Folder",
+          "enabled": true,
+          "position": [
+            40.0,
+            60.0
+          ],
+          "values": {
+            "directory": "/home/txj/cvsoftware/examples/images",
+            "mode": "fixed",
+            "index": 0,
+            "loop": true,
+            "grayscale": false
+          }
+        },
+        {
+          "id": "93299cbd",
+          "type": "preprocess.color",
+          "name": "Gray",
+          "enabled": true,
+          "position": [
+            250.0,
+            60.0
+          ],
+          "values": {
+            "mode": "gray",
+            "channel": -1
+          }
+        },
+        {
+          "id": "9e569093",
+          "type": "preprocess.threshold",
+          "name": "Threshold",
+          "enabled": true,
+          "position": [
+            460.0,
+            60.0
+          ],
+          "values": {
+            "method": "binary_inv",
+            "thresh": 128,
+            "high": 255,
+            "block_size": 31,
+            "c": 5.0
+          }
+        },
+        {
+          "id": "76140753",
+          "type": "analysis.blob",
+          "name": "Holes",
+          "enabled": true,
+          "position": [
+            670.0,
+            60.0
+          ],
+          "values": {
+            "min_area": 500,
+            "max_area": 5000,
+            "min_width": 0,
+            "min_height": 0,
+            "connectivity": "8",
+            "sort": "area_desc",
+            "max_count": 100
+          }
+        },
+        {
+          "id": "1b25557c",
+          "type": "logic.expression",
+          "name": "Score",
+          "enabled": true,
+          "position": [
+            880.0,
+            60.0
+          ],
+          "values": {
+            "expression": "(1.0 if a == 3 else 0.0) * max(0.0, 1.0 - abs(b - 1963) / 1963)"
+          }
+        },
+        {
+          "id": "8d5946b4",
+          "type": "logic.set_variable",
+          "name": "Store",
+          "enabled": true,
+          "position": [
+            1090.0,
+            60.0
+          ],
+          "values": {
+            "name": "reward"
+          }
+        }
+      ],
+      "links": [
+        {
+          "src": [
+            "d9e50aa6",
+            "value"
+          ],
+          "dst": [
+            "2ae2306b",
+            "reward"
+          ]
+        },
+        {
+          "src": [
+            "2ae2306b",
+            "threshold"
+          ],
+          "dst": [
+            "9e569093",
+            "thresh"
+          ]
+        },
+        {
+          "src": [
+            "5006b881",
+            "image"
+          ],
+          "dst": [
+            "93299cbd",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "93299cbd",
+            "image"
+          ],
+          "dst": [
+            "9e569093",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "9e569093",
+            "image"
+          ],
+          "dst": [
+            "76140753",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "76140753",
+            "count"
+          ],
+          "dst": [
+            "1b25557c",
+            "a"
+          ]
+        },
+        {
+          "src": [
+            "76140753",
+            "largest_area"
+          ],
+          "dst": [
+            "1b25557c",
+            "b"
+          ]
+        },
+        {
+          "src": [
+            "1b25557c",
+            "value"
+          ],
+          "dst": [
+            "8d5946b4",
+            "value"
+          ]
+        }
+      ]
+    }
+  ]
+}

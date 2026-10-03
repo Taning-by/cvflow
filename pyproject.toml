@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cvflow"
+version = "0.1.0"
+description = "Open, flow-based industrial machine vision platform with pluggable Python algorithm nodes and PLC communication"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "PySide6-Essentials>=6.5",
+    "pymodbus>=3.6",
+    "pyserial>=3.5",
+    "onnxruntime>=1.16",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+genicam = ["harvesters>=1.4"]
+plc = ["python-snap7>=1.3", "omniplc"]
+dl = ["torch", "torchvision"]
+
+[project.scripts]
+cvflow = "cvflow.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cvflow*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

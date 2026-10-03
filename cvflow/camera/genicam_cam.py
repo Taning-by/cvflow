@@ -1,0 +1,101 @@
+"""GenICam / GigE Vision / USB3 Vision camera via the `harvesters` package.
+
+Requires a GenTL producer (.cti) from any vendor (MVTec, Matrix Vision, Basler,
+Hikrobot MVS ships one too). Install with ``pip install harvesters``.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+from .base import Camera, CameraError
+
+_BAYER = {
+    "BayerRG8": "COLOR_BayerRG2BGR", "BayerGR8": "COLOR_BayerGR2BGR",
+    "BayerGB8": "COLOR_BayerGB2BGR", "BayerBG8": "COLOR_BayerBG2BGR",
+}
+
+
+class GenICamCamera(Camera):
+    kind = "genicam"
+
+    def __init__(self, name: str, config=None) -> None:
+        super().__init__(name, config)
+        self._h = None
+        self._ia = None
+
+    def open(self) -> None:
+        try:
+            from harvesters.core import Harvester
+        except ImportError as e:  # pragma: no cover - optional dependency
+            raise CameraError("GenICam support needs `pip install harvesters` and a GenTL .cti producer") from e
+        cti = self.config.get("cti")
+        if not cti:
+            raise CameraError("genicam camera: config 'cti' (path to GenTL producer) is required")
+        h = Harvester()
+        h.add_file(str(cti))
+        h.update()
+        if not h.device_info_list:
+            raise CameraError("genicam: no devices found")
+        sel = self.config.get("source", 0)
+        kwargs = {"serial_number": str(sel)} if isinstance(sel, str) and not sel.isdigit() else {"list_index": int(sel)}
+        ia = h.create(**kwargs)
+        node_map = ia.remote_device.node_map
+        for feat, val in (self.config.get("features") or {}).items():  # e.g. ExposureTime, TriggerMode
+            try:
+                setattr(node_map, feat, val)
+            except Exception as e:
+                raise CameraError(f"genicam: cannot set {feat}={val!r}: {e}") from e
+        ia.start()
+        self._h, self._ia = h, ia
+        self.is_open = True
+
+    def close(self) -> None:
+        try:
+            if self._ia is not None:
+                self._ia.stop()
+                self._ia.destroy()
+            if self._h is not None:
+                self._h.reset()
+        finally:
+            self._ia = self._h = None
+            self.is_open = False
+
+    def _grab_raw(self, timeout_s: float) -> np.ndarray | None:
+        assert self._ia is not None
+        try:
+            with self._ia.fetch(timeout=timeout_s) as buffer:
+                comp = buffer.payload.components[0]
+                w, h = comp.width, comp.height
+                fmt = str(comp.data_format)
+                data = np.asarray(comp.data)
+                if fmt in ("Mono8",):
+                    return data.reshape(h, w).copy()
+                if fmt in ("RGB8", "RGB8Packed"):
+                    import cv2
+                    return cv2.cvtColor(data.reshape(h, w, 3), cv2.COLOR_RGB2BGR)
+                if fmt in ("BGR8", "BGR8Packed"):
+                    return data.reshape(h, w, 3).copy()
+                if fmt in _BAYER:
+                    import cv2
+                    return cv2.cvtColor(data.reshape(h, w), getattr(cv2, _BAYER[fmt]))
+                if fmt.startswith("Mono1") and data.dtype != np.uint8:  # Mono10/12/16 -> 8 bit
+                    bits = int("".join(c for c in fmt[4:] if c.isdigit()) or 16)
+                    return (data.reshape(h, w) >> (bits - 8)).astype(np.uint8)
+                raise CameraError(f"genicam: unsupported pixel format {fmt}")
+        except Exception as e:
+            if "timeout" in str(e).lower():
+                return None
+            raise
+
+    def set_feature(self, name: str, value) -> None:
+        if self._ia is not None:
+            setattr(self._ia.remote_device.node_map, name, value)
+
+    def get_feature(self, name: str):
+        if self._ia is None:
+            return None
+        return getattr(self._ia.remote_device.node_map, name).value
+
+    def software_trigger(self) -> None:
+        if self._ia is not None:
+            self._ia.remote_device.node_map.TriggerSoftware.execute()
