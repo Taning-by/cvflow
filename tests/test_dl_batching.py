@@ -298,3 +298,121 @@ def test_dl_batch_detector_splits_per_input(tmp_path):
     assert nr.status == NodeStatus.OK, nr.error
     assert nr.outputs["count"] == 1 and nr.outputs["count2"] == 1
     assert nr.outputs["detections"][0]["x"] == nr.outputs["detections2"][0]["x"] == 270
+
+
+# =============================================================== 模型输入形状自适应
+def _run_onnx(model, img, **values):
+    g = Graph()
+    node = reg.create("dl.onnx", values={"model_path": model, "scale": 1 / 255.0, **values})
+    g.add_node(node)
+    feed = _Feed([img])
+    g.add_node(feed)
+    g.add_link(feed.id, "i0", node.id, "image")
+    eng = Engine(g)
+    return eng, node, eng.run().node_results[node.id]
+
+
+def test_dl_shape_fixed_size_model_corrects_width_and_height(tmp_path):
+    """模型写死 512×512，节点却是 YOLO 默认的 640×640：应自动按模型调整而不是报错。"""
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "s512.onnx", ["b", 3, 512, 512]))
+    eng, node, nr = _run_onnx(model, channel_image(1, 64), width=640, height=640, color="bgr")
+    assert nr.status == NodeStatus.OK, nr.error
+    assert node.get("width") == 512 and node.get("height") == 512      # 参数被改成模型要求的值
+    assert nr.outputs["output0"].shape == (1, 3, 512, 512)
+    eng.teardown_nodes()
+
+
+def test_dl_shape_nhwc_model_corrects_layout(tmp_path):
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "nhwc.onnx", ["b", 32, 32, 3]))
+    eng, node, nr = _run_onnx(model, channel_image(0, 64), width=640, height=640, layout="NCHW", color="bgr")
+    assert nr.status == NodeStatus.OK, nr.error
+    assert node.get("layout") == "NHWC" and node.get("width") == 32 and node.get("height") == 32
+    assert nr.outputs["output0"].shape == (1, 32, 32, 3)
+    eng.teardown_nodes()
+
+
+def test_dl_shape_single_channel_model_corrects_color(tmp_path):
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "gray.onnx", ["b", 1, 16, 16]))
+    eng, node, nr = _run_onnx(model, channel_image(2, 64), color="rgb", width=640, height=640)
+    assert nr.status == NodeStatus.OK, nr.error
+    assert node.get("color") == "gray" and nr.outputs["output0"].shape == (1, 1, 16, 16)
+    eng.teardown_nodes()
+
+
+def test_dl_shape_dynamic_model_keeps_user_parameters(tmp_path):
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "dyn.onnx", ["b", 3, "h", "w"]))
+    eng, node, nr = _run_onnx(model, channel_image(1, 64), width=96, height=48, color="bgr")
+    assert nr.status == NodeStatus.OK, nr.error
+    assert node.get("width") == 96 and node.get("height") == 48        # 动态尺寸完全听节点参数
+    assert nr.outputs["output0"].shape == (1, 3, 48, 96)
+    eng.teardown_nodes()
+
+
+def test_dl_shape_unfixable_mismatch_reports_both_shapes(tmp_path):
+    """通道数不是 1/3/4，软件无法推断布局，此时必须给出说明两边形状的中文报错。"""
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "ch5.onnx", ["b", 5, 8, 8]))
+    eng, node, nr = _run_onnx(model, channel_image(0, 64), width=8, height=8, color="bgr")
+    assert nr.status == NodeStatus.ERROR
+    assert "模型期望输入" in nr.error and "实际送入" in nr.error
+    assert "5×8×8" in nr.error and "3×8×8" in nr.error                 # 两边形状都报出来
+    assert "宽度、高度、颜色、张量布局" in nr.error                      # 指明该调哪些参数
+
+
+def test_dl_shape_broken_model_file_reports_clearly(tmp_path):
+    bad = tmp_path / "bad.onnx"
+    bad.write_bytes(b"not an onnx model at all")
+    eng, node, nr = _run_onnx(str(bad), channel_image(0, 16))
+    assert nr.status == NodeStatus.ERROR and "加载模型失败" in nr.error and "bad.onnx" in nr.error
+
+
+def test_dl_shape_same_model_different_preprocessing_shares_one_session(tmp_path):
+    """预处理不同的两个节点不能合批，但模型权重只该加载一份。"""
+    from cvflow.operators.dl import active_sessions
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "dyn2.onnx", ["b", 3, "h", "w"]))
+    s0, r0 = active_sessions(), runners()
+    a, _, _ = _run_onnx(model, channel_image(0, 32), width=16, height=16, color="bgr")
+    b, _, _ = _run_onnx(model, channel_image(0, 32), width=32, height=32, color="bgr")
+    assert active_sessions() == s0 + 1                                  # 一份权重
+    assert runners() == r0 + 2                                          # 两个独立的批处理执行器
+    a.teardown_nodes()
+    assert active_sessions() == s0 + 1
+    b.teardown_nodes()
+    assert active_sessions() == s0 and runners() == r0                  # 全部释放
+
+
+def test_dl_detector_unparsable_output_reports_clearly(tmp_path):
+    """检测节点接到不是检测布局的输出时，要给出能看懂的提示而不是 numpy 的下标错误。"""
+    from nodes_helpers import make_shaped_model
+    model = str(make_shaped_model(tmp_path / "notdet.onnx", ["b", 3, 32, 32]))
+    g = Graph()
+    node = reg.create("dl.onnx_detector", values={"model_path": model, "color": "bgr"})
+    g.add_node(node)
+    feed = _Feed([Image(np.zeros((64, 64, 3), np.uint8))])
+    g.add_node(feed)
+    g.add_link(feed.id, "i0", node.id, "image")
+    nr = Engine(g).run().node_results[node.id]
+    assert nr.status == NodeStatus.ERROR
+    assert "无法解析检测输出" in nr.error and "32" in nr.error
+    assert "脚本节点" in nr.error                                   # 给出替代做法
+    assert "IndexError" not in nr.error
+
+
+def test_dl_detector_too_few_attributes_reports_clearly(tmp_path):
+    """输出布局像检测但每个候选框只有 4 个属性，缺类别分数，同样要说清楚。"""
+    from nodes_helpers import make_constant_detector
+    model = str(make_constant_detector(tmp_path / "thin.onnx", [(1, 2, 3, 4, 0, 0.9)] * 3, n_cls=0))
+    g = Graph()
+    node = reg.create("dl.onnx_detector", values={"model_path": model})
+    g.add_node(node)
+    feed = _Feed([Image(np.zeros((640, 640, 3), np.uint8))])
+    g.add_node(feed)
+    g.add_link(feed.id, "i0", node.id, "image")
+    nr = Engine(g).run().node_results[node.id]
+    assert nr.status == NodeStatus.ERROR
+    assert "无法解析检测输出" in nr.error and "4 个属性" in nr.error

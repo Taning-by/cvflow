@@ -183,6 +183,13 @@ window expires. A single flow should leave it at 0 and pays no extra latency.
 Real batching needs a model exported with a dynamic batch dimension. A model with a fixed batch
 of 1 falls back to one image at a time, and the `batch_size` output reports what actually ran.
 
+**Input geometry adapts to the model.** When a model fixes its input shape, say it only accepts
+512×512, the node's width, height, tensor layout and colour are corrected to match and the change
+is logged. A fixed shape leaves no room for another value, so the correction is unambiguous; a
+dynamic shape is left entirely to the node parameters. When nothing can be corrected
+automatically, the error reports both the expected and the actual shape and names the parameter
+to change.
+
 Nodes with identical configuration share one inference session, so the weights are loaded once.
 Note that sharing saves the weights; activation memory still grows with the number of images
 inferred at the same time.

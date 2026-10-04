@@ -138,7 +138,8 @@ def make_constant_detector(path: Path, boxes: list[tuple[float, float, float, fl
     arr = np.zeros((1, 4 + n_cls, len(boxes)), dtype=np.float32)
     for i, (cx, cy, w, h, cid, score) in enumerate(boxes):
         arr[0, 0:4, i] = (cx, cy, w, h)
-        arr[0, 4 + cid, i] = score
+        if n_cls:                     # n_cls 为 0 时只有 4 个坐标，用来构造"属性不足"的模型
+            arr[0, 4 + cid, i] = score
     x = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, 640, 640])
     y = helper.make_tensor_value_info("output0", TensorProto.FLOAT, list(arr.shape))
     const = helper.make_node("Constant", [], ["output0"], value=numpy_helper.from_array(arr, "pred"))
@@ -154,3 +155,16 @@ def channel_image(channel: int, size: int = 8) -> Image:
     d = np.zeros((size, size, 3), np.uint8)
     d[:, :, channel] = 255
     return Image(d)
+
+
+def make_shaped_model(path: Path, shape) -> Path:
+    """输入形状任意的恒等模型。shape 的元素可以是整数（固定）或字符串（动态）。"""
+    import onnx
+    from onnx import TensorProto, helper
+    x = helper.make_tensor_value_info("images", TensorProto.FLOAT, list(shape))
+    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, list(shape))
+    g = helper.make_graph([helper.make_node("Identity", ["images"], ["y"])], "shaped", [x], [y])
+    m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
+    m.ir_version = 8
+    onnx.save(m, str(path))
+    return path

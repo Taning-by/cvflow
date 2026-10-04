@@ -7,6 +7,7 @@ For a reusable algorithm write a plugin file instead (see examples/plugins).
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -22,6 +23,7 @@ from ..core.types import DataType, Image, Overlay, Rect
 from ._util import as_bgr, parse_floats, require_image
 
 _COLOR = "#ad1457"
+log = logging.getLogger("cvflow.dl")
 
 
 def _load_labels(path: str) -> list[str]:
@@ -31,28 +33,110 @@ def _load_labels(path: str) -> list[str]:
     return [ln.strip() for ln in open(path, encoding="utf-8") if ln.strip()]
 
 
-# --------------------------------------------------------------------------- 共享会话与批处理
-class _Runner:
-    """一个模型对应的共享推理会话加批处理执行器，按键共享、引用计数释放。"""
+# --------------------------------------------------------------------------- 模型输入形状
+def read_input_spec(session) -> dict:
+    """读出模型第一个输入的形状，推断布局、通道数与固定的高宽。
 
-    def __init__(self, session, input_name: str, dynamic_batch: bool, max_batch: int, wait_s: float, name: str) -> None:
+    返回的 ``height`` / ``width`` / ``layout`` / ``channels`` 只在模型把它们写死时才有值，
+    动态维度一律是 None，表示由节点参数决定。
+    """
+    inp = session.get_inputs()[0]
+    shape = list(inp.shape or [])
+    spec = {"name": inp.name, "shape": shape, "dynamic_batch": True,
+            "layout": None, "channels": None, "height": None, "width": None}
+    if not shape:
+        return spec
+    spec["dynamic_batch"] = not isinstance(shape[0], int)
+    if len(shape) == 4:
+        def at(i):
+            return shape[i] if isinstance(shape[i], int) else None
+        c_first, c_last = at(1), at(3)
+        if c_first in (1, 3, 4) and c_last not in (1, 3, 4):
+            spec.update(layout="NCHW", channels=c_first, height=at(2), width=at(3))
+        elif c_last in (1, 3, 4) and c_first not in (1, 3, 4):
+            spec.update(layout="NHWC", channels=c_last, height=at(1), width=at(2))
+    return spec
+
+
+def describe_shape(shape: list) -> str:
+    return "×".join(str(d) if isinstance(d, int) else f"{d or '动态'}" for d in shape) if shape else "未知"
+
+
+# --------------------------------------------------------------------------- 共享会话
+class _SharedSession:
+    """按 (模型文件, 修改时间, 后端) 共享的推理会话。预处理参数不同的节点也复用同一份权重。"""
+
+    def __init__(self, session, spec: dict) -> None:
         self.session = session
-        self.input_name = input_name
-        self.dynamic_batch = dynamic_batch
+        self.spec = spec
         self.refs = 0
+
+
+_SESSIONS: dict[tuple, _SharedSession] = {}
+_EXECUTORS: dict[tuple, "_Runner"] = {}
+_CACHE_LOCK = threading.RLock()
+
+
+def _get_or_create_session(key: tuple, factory) -> _SharedSession:
+    with _CACHE_LOCK:
+        holder = _SESSIONS.get(key)
+        if holder is None:
+            holder = factory()
+            _SESSIONS[key] = holder
+        return holder
+
+
+def _drop_session(key: tuple) -> None:
+    with _CACHE_LOCK:
+        holder = _SESSIONS.get(key)
+        if holder is not None and holder.refs <= 0:
+            _SESSIONS.pop(key, None)
+
+
+def active_sessions() -> int:
+    """当前存活的推理会话数量，供测试与诊断使用。"""
+    with _CACHE_LOCK:
+        return len(_SESSIONS)
+
+
+# --------------------------------------------------------------------------- 批处理执行器
+class _Runner:
+    """一组相同预处理配置共用的批处理执行器，背后是共享的推理会话。"""
+
+    def __init__(self, session_key: tuple, holder: _SharedSession, max_batch: int, wait_s: float, name: str) -> None:
+        self.session_key = session_key
+        self.holder = holder
+        self.refs = 0
+        holder.refs += 1
         # 模型的批次维是固定的时候只能一张一张推，批上限强制为 1
-        self.executor = BatchExecutor(self._run_batch, max_batch=max_batch if dynamic_batch else 1,
+        self.executor = BatchExecutor(self._run_batch, max_batch=max_batch if self.dynamic_batch else 1,
                                       wait_s=wait_s, name=name)
+
+    @property
+    def spec(self) -> dict:
+        return self.holder.spec
+
+    @property
+    def dynamic_batch(self) -> bool:
+        return bool(self.holder.spec.get("dynamic_batch", True))
 
     def _run_batch(self, blobs: list):
         x = blobs[0] if len(blobs) == 1 else np.concatenate(blobs, axis=0)
-        outs = self.session.run(None, {self.input_name: x})
+        try:
+            outs = self.holder.session.run(None, {self.spec["name"]: x})
+        except Exception as e:
+            raise NodeError(f"推理失败：模型期望输入 {describe_shape(self.spec['shape'])}，"
+                            f"实际送入 {describe_shape(list(x.shape))}。"
+                            f"请检查节点的宽度、高度、颜色、张量布局是否与模型一致。原始错误：{e}") from e
         n = len(blobs)
         return [(_slice_outputs(outs, i, n), n) for i in range(n)]
 
     def close(self) -> None:
         self.executor.close()
-        self.session = None
+        self.holder.refs -= 1
+        if self.holder.refs <= 0:
+            _drop_session(self.session_key)
+        self.holder = None
 
 
 def _slice_outputs(outs, i: int, n: int) -> list:
@@ -67,35 +151,31 @@ def _slice_outputs(outs, i: int, n: int) -> list:
     return row
 
 
-_RUNNERS: dict[tuple, _Runner] = {}
-_RUNNERS_LOCK = threading.Lock()
-
-
 def _acquire_runner(key: tuple, factory) -> _Runner:
-    with _RUNNERS_LOCK:
-        runner = _RUNNERS.get(key)
+    with _CACHE_LOCK:
+        runner = _EXECUTORS.get(key)
         if runner is None:
             runner = factory()
-            _RUNNERS[key] = runner
+            _EXECUTORS[key] = runner
         runner.refs += 1
         return runner
 
 
 def _release_runner(key: tuple) -> None:
-    with _RUNNERS_LOCK:
-        runner = _RUNNERS.get(key)
+    with _CACHE_LOCK:
+        runner = _EXECUTORS.get(key)
         if runner is None:
             return
         runner.refs -= 1
         if runner.refs <= 0:
-            _RUNNERS.pop(key, None)
+            _EXECUTORS.pop(key, None)
             runner.close()
 
 
 def active_runners() -> int:
-    """当前存活的共享会话数量，供测试与诊断使用。"""
-    with _RUNNERS_LOCK:
-        return len(_RUNNERS)
+    """当前存活的批处理执行器数量，供测试与诊断使用。"""
+    with _CACHE_LOCK:
+        return len(_EXECUTORS)
 
 
 MAX_INPUTS = 8
@@ -172,11 +252,12 @@ class _OnnxBase(Node):
         return len(self.inputs)
 
     # ---- 会话与批处理执行器 ----
-    def _make_key(self, path: str, mtime: float) -> tuple:
+    def _preprocess_key(self) -> tuple:
+        """预处理与合批配置：相同的节点才会被合进同一个批次。"""
         pre = (int(self.get("width")), int(self.get("height")), bool(self.get("letterbox")), self.get("color"),
                float(self.get("scale")), self.get("mean"), self.get("std"), self.get("layout"))
-        return (path, mtime, self.get("provider"), pre, int(self.get("max_batch")),
-                round(float(self.get("wait_ms")), 3), str(self.get("batch_group")).strip())
+        return (pre, int(self.get("max_batch")), round(float(self.get("wait_ms")), 3),
+                str(self.get("batch_group")).strip())
 
     def _ensure_runner(self) -> _Runner:
         path = paths.resolve(self.get("model_path"))
@@ -184,15 +265,49 @@ class _OnnxBase(Node):
             raise NodeError("未设置模型文件")
         if not os.path.isfile(path):
             raise NodeError(f"模型文件不存在：{path}")
-        key = self._make_key(path, os.path.getmtime(path))
+        skey = (path, os.path.getmtime(path), self.get("provider"))
+        holder = _get_or_create_session(skey, lambda: self._create_session(path))
+        self.adopt_model_spec(holder.spec)      # 模型把输入形状写死时，按它修正预处理参数
+        key = skey + self._preprocess_key()
         if self._runner_key == key and self._runner is not None:
             return self._runner
         self._release_runner()
-        self._runner = _acquire_runner(key, lambda: self._create_runner(path, key))
+        try:
+            self._runner = _acquire_runner(key, lambda: _Runner(
+                skey, holder, int(self.get("max_batch")), float(self.get("wait_ms")) / 1000.0,
+                name=os.path.basename(path)))
+        except Exception:
+            _drop_session(skey)
+            raise
         self._runner_key = key
         return self._runner
 
-    def _create_runner(self, path: str, key: tuple) -> _Runner:
+    def adopt_model_spec(self, spec: dict) -> list[str]:
+        """模型固定了输入形状时按它修正参数，并返回改动说明。
+
+        形状写死的情况下任何别的取值都会被 onnxruntime 直接拒绝，所以这里的修正不存在歧义；
+        形状是动态的则完全听节点参数的。
+        """
+        changed: list[str] = []
+        for name, want, label in (("height", spec.get("height"), "高度"), ("width", spec.get("width"), "宽度")):
+            if want and int(self.get(name)) != int(want):
+                self.set(name, int(want))
+                changed.append(f"{label}→{want}")
+        if spec.get("layout") and self.get("layout") != spec["layout"]:
+            self.set("layout", spec["layout"])
+            changed.append(f"张量布局→{spec['layout']}")
+        ch = spec.get("channels")
+        if ch == 1 and self.get("color") != "gray":
+            self.set("color", "gray")
+            changed.append("颜色→gray")
+        elif ch in (3, 4) and self.get("color") == "gray":
+            self.set("color", "rgb")
+            changed.append("颜色→rgb")
+        if changed:
+            log.info("%s：模型输入为 %s，已自动调整 %s", self.name, describe_shape(spec["shape"]), "，".join(changed))
+        return changed
+
+    def _create_session(self, path: str) -> _SharedSession:
         try:
             import onnxruntime as ort
         except ImportError as e:  # pragma: no cover
@@ -206,12 +321,11 @@ class _OnnxBase(Node):
             providers = [want] if want in avail else ["CPUExecutionProvider"]
         so = ort.SessionOptions()
         so.log_severity_level = 3
-        session = ort.InferenceSession(path, so, providers=providers)
-        inp = session.get_inputs()[0]
-        shape = list(inp.shape or [])
-        dynamic = bool(shape) and not isinstance(shape[0], int)
-        return _Runner(session, inp.name, dynamic, int(self.get("max_batch")),
-                       float(self.get("wait_ms")) / 1000.0, name=os.path.basename(path))
+        try:
+            session = ort.InferenceSession(path, so, providers=providers)
+        except Exception as e:
+            raise NodeError(f"加载模型失败：{os.path.basename(path)}：{e}") from e
+        return _SharedSession(session, read_input_spec(session))
 
     def _release_runner(self) -> None:
         if self._runner_key is not None:
@@ -377,9 +491,18 @@ class OnnxDetector(_OnnxBase):
         pred = np.asarray(outs[0], dtype=np.float32)
         if pred.ndim == 3:
             pred = pred[0]
+        if pred.ndim != 2:
+            raise NodeError(
+                f"无法解析检测输出：期望 [批, 属性, 候选框] 或 [批, 候选框, 属性] 的张量，"
+                f"实际是 {describe_shape(list(np.shape(outs[0])))}。"
+                f"该模型可能不是 YOLO 系列的检测模型；可以改用 ONNX 推理节点，再接 Python 脚本节点自行后处理。")
         # 属性维（4 个框坐标 + 类别分数）至少 5 个；v8 布局为 [84, N]，v5 为 [N, 85]
         if pred.shape[1] < 5 or (pred.shape[0] >= 5 and pred.shape[0] < pred.shape[1]):
             pred = pred.T
+        if pred.shape[1] < 5:
+            raise NodeError(
+                f"无法解析检测输出：每个候选框至少要有 4 个坐标加 1 个类别分数，"
+                f"实际只有 {pred.shape[1]} 个属性（输出形状 {describe_shape(list(np.shape(outs[0])))}）。")
         if pred.shape[1] > 5 and pred.shape[1] - 5 >= 1 and self._looks_v5(pred):
             obj = pred[:, 4:5]
             cls_scores = pred[:, 5:] * obj
