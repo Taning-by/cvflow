@@ -97,6 +97,8 @@ class ParamPanel(QScrollArea):
         self._layout.addLayout(form)
         err = QLabel(node.last_error or "")
         err.setWordWrap(True)
+        err.setTextInteractionFlags(Qt.TextSelectableByMouse)   # 错误信息要能选中复制
+        err.setCursor(Qt.IBeamCursor)
         err.setStyleSheet(f"color:{C['warn']}; background: #3a2f1a; border-radius: 4px; padding: 4px 6px")
         err.setVisible(bool(node.last_error))
         self._widgets["__error"] = err

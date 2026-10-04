@@ -761,3 +761,84 @@ def test_ui_params_advanced_toggle_does_not_crash(win, app):
     pump(app, 100)
     with pytest.raises(LookupError):
         param_widget(win.param_panel, "块大小")
+
+
+# =============================================================== 结果面板的复制
+def _error_row(win, app):
+    """放一个未设置模型文件的 ONNX 节点并运行，结果面板的"值"一列就会出现报错信息。"""
+    node = win.scene.add_node("dl.onnx_detector", QPointF(100, 500))
+    src = node_by_name(win, "取图")
+    win.solution.flows["main"].add_link(src.id, "image", node.id, "image")
+    win.scene.set_graph(win.solution.flows["main"])
+    win.act_run.trigger()
+    pump(app)
+    win._apply_pending_result()
+    tree = win.results_panel.tree
+    rows = tree.findItems(node.name, Qt.MatchExactly, 0)
+    assert rows, "结果面板里没有该节点"
+    return tree, rows[0]
+
+
+def test_ui_results_error_text_is_visible_in_value_column(win, app):
+    tree, row = _error_row(win, app)
+    assert "模型文件" in row.text(1)                       # 报错信息显示在"值"一列
+    assert row.toolTip(1) == row.text(1) or row.text(1).endswith("…")   # 悬停能看到完整内容
+
+
+def test_ui_results_ctrl_c_copies_error_row(win, app):
+    tree, row = _error_row(win, app)
+    QApplication.clipboard().clear()
+    tree.setCurrentItem(row)
+    row.setSelected(True)
+    QTest.keyClick(tree, Qt.Key_C, Qt.ControlModifier)
+    pump(app)
+    text = QApplication.clipboard().text()
+    assert "模型文件" in text and row.text(0) in text      # 整行连同报错一起进了剪贴板
+
+
+def test_ui_results_context_menu_copies_cell_row_and_all(win, app):
+    tree, row = _error_row(win, app)
+    rect = tree.visualItemRect(row)
+    pos = QPoint(tree.columnWidth(0) + 20, rect.center().y())      # 落在"值"那一列
+    tree.customContextMenuRequested.emit(pos)
+    pump(app)
+    menus = [m for m in tree.findChildren(QMenu) if m.isVisible()]
+    assert menus, "右键没有弹出菜单"
+    labels = [a.text() for a in menus[0].actions() if a.text()]
+    assert "复制此格" in labels and "复制该行" in labels and "复制全部结果" in labels
+    QApplication.clipboard().clear()
+    next(a for a in menus[0].actions() if a.text() == "复制此格").trigger()
+    pump(app)
+    cell = QApplication.clipboard().text()
+    assert "模型文件" in cell and row.text(0) not in cell          # 只复制了这一格
+    QApplication.clipboard().clear()
+    next(a for a in menus[0].actions() if a.text() == "复制全部结果").trigger()
+    pump(app)
+    everything = QApplication.clipboard().text()
+    assert "模型文件" in everything and "取图" in everything and everything.count("\n") > 3
+    for m in menus:
+        m.close()
+
+
+def test_ui_results_long_value_is_truncated_but_copied_in_full(win, app):
+    node = win.scene.add_node("script.python", QPointF(100, 600))
+    node.set("code", "def process(ctx, inputs, params, state):\n    return {'out1': 'X' * 500}\n")
+    win.act_run.trigger()
+    pump(app)
+    win._apply_pending_result()
+    tree = win.results_panel.tree
+    row = tree.findItems(node.name, Qt.MatchExactly, 0)[0]
+    child = next(row.child(i) for i in range(row.childCount()) if row.child(i).text(0) == "out1")
+    assert len(child.text(1)) < 500 and child.text(1).endswith("…")   # 显示被截断
+    assert len(child.toolTip(1)) == 500                                # 悬停是完整的
+    QApplication.clipboard().clear()
+    tree.setCurrentItem(child)
+    child.setSelected(True)
+    QTest.keyClick(tree, Qt.Key_C, Qt.ControlModifier)
+    pump(app)
+    assert QApplication.clipboard().text().count("X") == 500            # 复制到的是完整值
+
+
+def test_ui_results_banner_text_is_selectable(win, app):
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    assert win.results_panel.banner.textInteractionFlags() & Qt.TextSelectableByMouse

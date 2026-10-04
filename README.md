@@ -139,6 +139,10 @@ Register devices share one handshake:
   tell the vision PC is alive; text devices send a heartbeat frame instead.
 * **Results** — register writes in a send rule, kinds int16 / uint16 / int32 / uint32 / float32 / bool.
 
+* Text in the results panel can be selected and copied: Ctrl+C copies the selected rows, the
+  context menu copies a single cell, a row, or everything. Long content is shortened on screen
+  but the tooltip and the clipboard carry the full text. Node errors appear in the Value column.
+
 ## Testing without a camera or a PLC
 
 Two simulators ship with the repository; every path is "open solution → start run mode → run the simulator":
