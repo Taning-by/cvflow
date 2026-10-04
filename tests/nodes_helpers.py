@@ -103,9 +103,10 @@ def run_ok(reg, type_id, inputs=None, values=None):
 
 
 # ---------------------------------------------------------------- 微型 ONNX 模型
-def make_identity_model(path: Path, shape=(1, 3, 8, 8)) -> Path:
+def make_identity_model(path: Path, shape=(1, 3, 8, 8), dynamic_batch: bool = False) -> Path:
     import onnx
     from onnx import TensorProto, helper
+    shape = (["b"] + list(shape[1:])) if dynamic_batch else list(shape)
     x = helper.make_tensor_value_info("x", TensorProto.FLOAT, list(shape))
     y = helper.make_tensor_value_info("y", TensorProto.FLOAT, list(shape))
     g = helper.make_graph([helper.make_node("Identity", ["x"], ["y"])], "ident", [x], [y])
@@ -115,12 +116,13 @@ def make_identity_model(path: Path, shape=(1, 3, 8, 8)) -> Path:
     return path
 
 
-def make_channel_mean_classifier(path: Path, size: int = 8) -> Path:
+def make_channel_mean_classifier(path: Path, size: int = 8, dynamic_batch: bool = False) -> Path:
     """logits[c] = 通道 c 的均值 → 哪个通道最亮就是哪个类。"""
     import onnx
     from onnx import TensorProto, helper
-    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, size, size])
-    y = helper.make_tensor_value_info("logits", TensorProto.FLOAT, [1, 3])
+    b = "b" if dynamic_batch else 1
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [b, 3, size, size])
+    y = helper.make_tensor_value_info("logits", TensorProto.FLOAT, [b, 3])
     node = helper.make_node("ReduceMean", ["x"], ["logits"], axes=[2, 3], keepdims=0)
     g = helper.make_graph([node], "cls", [x], [y])
     m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
@@ -145,3 +147,10 @@ def make_constant_detector(path: Path, boxes: list[tuple[float, float, float, fl
     m.ir_version = 8
     onnx.save(m, str(path))
     return path
+
+
+def channel_image(channel: int, size: int = 8) -> Image:
+    """只有指定通道是亮的 BGR 图，用于区分批次里每一路的来源。"""
+    d = np.zeros((size, size, 3), np.uint8)
+    d[:, :, channel] = 255
+    return Image(d)

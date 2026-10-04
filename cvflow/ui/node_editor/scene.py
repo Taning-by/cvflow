@@ -140,15 +140,27 @@ class NodeScene(QGraphicsScene):
             self.node_items[node_id].update()
             self.graph_changed.emit()
 
-    def rebuild_node(self, node_id: str) -> None:
-        """Recreate a node's item (e.g. after dynamic port changes)."""
+    def rebuild_node(self, node_id: str) -> int:
+        """端口数量变化后重建节点图元，断开指向已消失端口的连线，返回断开的条数。"""
+        node = self.graph.nodes[node_id]
+        valid_in = {p.name for p in node.inputs}
+        valid_out = {p.name for p in node.outputs}
+        stale = [l for l in self.graph.links
+                 if (l.dst_node == node_id and l.dst_port not in valid_in)
+                 or (l.src_node == node_id and l.src_port not in valid_out)]
+        for l in stale:
+            self.graph.remove_link(l)
+            self._drop_link_item(l.id)
         it = self.node_items.pop(node_id)
         self.removeItem(it)
-        self._add_item(self.graph.nodes[node_id])
+        self._add_item(node)
         for lid, li in list(self.link_items.items()):
             if node_id in (li.link.src_node, li.link.dst_node):
                 self._drop_link_item(lid)
                 self._add_link_item(li.link)
+        if stale:
+            self.graph_changed.emit()
+        return len(stale)
 
     # ---- links by drag ----
     def start_link(self, port: PortItem, pos: QPointF) -> None:

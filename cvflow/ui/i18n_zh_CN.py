@@ -111,7 +111,8 @@ NODE_LABELS = {
 }
 
 PARAM_LABELS = {
-    "Address": "地址", "Binarize": "二值化方式", "Alpha": "对比度系数", "Aperture": "Sobel 孔径", "Append": "结尾符",
+    "Address": "地址", "Binarize": "二值化方式", "Input Count": "输入个数", "Max Batch": "批次上限",
+    "Wait Ms": "合批等待（毫秒）", "Batch Group": "合批分组", "Overlay Input": "叠加层来自", "Timeout S": "超时（秒）", "Alpha": "对比度系数", "Aperture": "Sobel 孔径", "Append": "结尾符",
     "Approx Eps": "多边形逼近精度", "Beta": "亮度偏移", "Block Size": "块大小", "C": "常数 C",
     "Camera features (JSON)": "相机特性 (JSON)", "Channel": "通道", "Clip Limit": "对比度限制",
     "Code": "代码", "Color": "颜色顺序", "Conf": "置信度阈值", "Connectivity": "连通性",
@@ -154,6 +155,8 @@ DESCRIPTIONS = {
         "auto：输入已是二值图则直接使用，否则 Otsu 自动阈值；none：非 0 为前景；manual：按下限..上限取前景",
     "Foreground brighter or darker than the threshold (otsu / auto)": "前景比阈值亮还是暗（otsu / auto 时生效）",
     "Manual threshold lower bound": "手动阈值下限", "Manual threshold upper bound": "手动阈值上限",
+    "第一个输入": "第一个输入",
+    "本次推理耗时，整批共用": "本次推理耗时，整批共用", "本次推理实际的批大小": "本次推理实际的批大小",
     "Contrast / brightness, histogram equalisation or CLAHE.": "对比度/亮度调整、直方图均衡或 CLAHE。",
     "Contrast gain (linear)": "对比度增益（线性）",
     "Convert colour space; 'channel' picks one plane of the result.": "转换颜色空间；'channel' 可抽取单个通道。",

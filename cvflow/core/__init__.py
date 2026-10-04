@@ -7,10 +7,11 @@ from .events import EventBus
 from .variables import GlobalVariables
 from .runtime import FlowRunner, Trigger, TriggerSource, Solution
 from . import paths
+from .batching import BatchExecutor, BatchTimeout
 
 __all__ = [
     "DataType", "Image", "Rect", "Point", "Circle", "Line", "Overlay", "types_compatible",
     "Node", "Port", "Param", "NodeStatus", "NodeError", "registry", "register",
     "Graph", "Link", "GraphError", "Engine", "RunContext", "RunResult", "NodeResult",
-    "EventBus", "GlobalVariables", "FlowRunner", "Trigger", "TriggerSource", "Solution", "paths",
+    "EventBus", "GlobalVariables", "FlowRunner", "Trigger", "TriggerSource", "Solution", "paths", "BatchExecutor", "BatchTimeout",
 ]

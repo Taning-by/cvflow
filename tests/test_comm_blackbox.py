@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import socket
 import struct
 import subprocess
@@ -598,6 +599,7 @@ def test_comm_events_sequence_and_payloads(system):
     system.mgr.add_send_rule(SendRule(name="r", device="plc", template="R{out.count}\\n"))
     system.start()
     c = LineClient(dev.bound_port); time.sleep(0.15); c.send(b"GO\n"); assert c.line() == "R3\n"
+    assert _wait(lambda: len(system.events.items) >= 3)   # 事件在字节写出之后才记录，等它落账
     names = [e for e, _ in system.events.items]
     assert names[:3] == ["comm_connected", "comm_received", "comm_sent"]
     rx = system.events.of("comm_received", "plc")[0]; tx = system.events.of("comm_sent", "plc")[0]
@@ -648,18 +650,23 @@ def test_comm_cli_serve_modbus_end_to_end():
     from pymodbus.client import ModbusTcpClient
     src = ROOT / "examples" / "solutions" / "demo_modbus.json"
     data = json.loads(src.read_text(encoding="utf-8"))
-    port = free_port(); data["comm"]["devices"][0]["config"]["port"] = port
+    data["comm"]["devices"][0]["config"]["port"] = 0      # 让子进程自己挑端口，避免与其它用例抢占
     tmp = src.parent / "_bb_modbus.json"; tmp.write_text(json.dumps(data), encoding="utf-8")
     log = open(tmp.with_suffix(".log"), "w", encoding="utf-8")
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen([sys.executable, "-m", "cvflow", "serve", str(tmp), "--stats-every", "100"], cwd=ROOT,
                             stdout=log, stderr=subprocess.STDOUT, env=env)
     try:
-        c = ModbusTcpClient("127.0.0.1", port=port, timeout=2)
-        ok = _wait(lambda: proc.poll() is not None or c.connect(), 60)      # 慢机器上进程启动可能要几十秒
-        if proc.poll() is not None or not ok:
+        def bound_port():
             log.flush()
+            m = re.search(r"监听 [^:\s]+:(\d+)", tmp.with_suffix(".log").read_text(encoding="utf-8", errors="replace"))
+            return int(m.group(1)) if m else None
+        ok = _wait(lambda: proc.poll() is not None or bound_port(), 60)     # 从子进程输出里读回真实端口
+        port = bound_port()
+        if proc.poll() is not None or not port:
             raise AssertionError(f"serve 子进程退出码 {proc.poll()}，输出：\n{tmp.with_suffix('.log').read_text(encoding='utf-8', errors='replace')[-2000:]}")
+        c = ModbusTcpClient("127.0.0.1", port=port, timeout=2)
+        assert _wait(lambda: c.connect(), 30)
         c.write_register(0, 1, device_id=1)
         assert _wait(lambda: c.read_holding_registers(10, count=1, device_id=1).registers == [3], 10)
         r = c.read_holding_registers(0, count=2, device_id=1).registers

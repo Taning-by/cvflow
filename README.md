@@ -156,6 +156,33 @@ The PLC simulators trigger an inspection periodically and print whether the trig
 reset, whether the busy flag appeared, the result registers and the heartbeat counter. The
 simulated camera implements discovery only, so use the folder camera for grabbing.
 
+## Batched multi-input deep learning nodes
+
+All three ONNX nodes accept several image inputs. Set the input count to N and the node grows
+`image2` to `imageN` input ports plus a set of outputs per input, such as `count`, `count2`,
+`count3`. In one run the images on all connected inputs are stacked into a single batch, inferred
+once, and the outputs are split back to the port belonging to each input.
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| input_count | Number of image input ports, up to 8 | 1 |
+| max_batch | Largest batch handed to one inference | 8 |
+| wait_ms | How long to wait for images from other threads before running | 0 |
+| batch_group | Empty groups by model and preprocessing; a name keeps two nodes apart | empty |
+| overlay_input | Which input's results are drawn on the image view | 1 |
+
+The inputs of one node arrive together, so they batch immediately and the wait window never
+delays them. The window only matters across threads: when several flows infer at once, the first
+one waits up to `wait_ms` for the others to join, and runs with whatever has arrived when the
+window expires. A single flow should leave it at 0 and pays no extra latency.
+
+Real batching needs a model exported with a dynamic batch dimension. A model with a fixed batch
+of 1 falls back to one image at a time, and the `batch_size` output reports what actually ran.
+
+Nodes with identical configuration share one inference session, so the weights are loaded once.
+Note that sharing saves the weights; activation memory still grows with the number of images
+inferred at the same time.
+
 ## Writing your own node
 
 Put a `.py` file in a plugin directory (the solution's `plugin_dirs`, or *Plugins → Load

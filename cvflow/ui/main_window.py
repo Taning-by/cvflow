@@ -465,11 +465,17 @@ class MainWindow(QMainWindow):
         node = g.nodes[node_id]
         if node.param_def(name).kind in ("file", "dir") and value and Path(str(value)).is_absolute():
             value = paths.make_relative(value)
+        ports_before = ([p.name for p in node.inputs], [p.name for p in node.outputs])
         try:
             node.set(name, value)
         except (KeyError, ValueError) as e:
             self.statusBar().showMessage(str(e), 4000)
             return
+        if ([p.name for p in node.inputs], [p.name for p in node.outputs]) != ports_before:
+            dropped = self.scene.rebuild_node(node_id)      # 端口数量变了，重建图元
+            self.scene.select_node(node_id)
+            if dropped:
+                self.statusBar().showMessage(f"端口减少，已断开 {dropped} 条连线", 5000)
         item = self.scene.node_items.get(node_id)
         if item is not None:
             item.update()

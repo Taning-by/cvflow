@@ -121,7 +121,12 @@ def cmd_serve(args) -> int:
             print(f"[{name}] {e}", file=sys.stderr)
         if args.continuous and name == (args.flow or next(iter(runners))):
             r.set_continuous(args.continuous)
-    print(f"运行中：流程 {list(runners)}，设备 {[f'{d.name}({d.kind})' for d in mgr.devices.values()]}，按 Ctrl-C 停止")
+    for d in mgr.devices.values():
+        if hasattr(d, "bound_port"):      # 服务端类设备报告真实监听端口，配 0 时尤其有用
+            print(f"设备 {d.name}（{d.kind}）监听 {d.config.get('host', '0.0.0.0')}:{d.bound_port}")
+        else:
+            print(f"设备 {d.name}（{d.kind}）")
+    print(f"运行中：流程 {list(runners)}，按 Ctrl-C 停止")
     stop = False
 
     def _sig(*_):
@@ -162,10 +167,11 @@ def cmd_gui(args) -> int:
 
 
 def main(argv=None) -> int:
-    # 输出被重定向到管道/文件时（如 Windows 下的 cp1252），中文不能编码会直接崩溃；改为替代符
+    # 输出重定向到管道或文件时：编码不支持中文会直接崩溃，改用替代符；
+    # 同时改成行缓冲，否则 serve 的日志会攒在缓冲区里，运维 tail 日志看不到东西。
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")
+            stream.reconfigure(errors="replace", line_buffering=True)
         except (AttributeError, ValueError):
             pass
     ap = argparse.ArgumentParser(prog="cvflow", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
