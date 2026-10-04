@@ -179,6 +179,10 @@ Selecting a node with several image inputs puts a picker above the image view: i
 between each input's image and the node's own output image. Overlays are tagged with the input
 they came from, so only the selected input's boxes and labels are drawn.
 
+Sharing spans nodes and flows: nodes with the same configuration share one inference session and
+one batch executor regardless of which flow they sit in. Two flows whose nodes point at the same
+model file, triggered together with a non-zero wait, merge into a single batch.
+
 **The wait window only affects cross-thread batching.** The inputs of one node arrive together
 and are submitted as one batch, so moving `wait_ms` from 0 to 10 changes nothing for a single
 node. Check the `batch_size` output to confirm batching happened, and change `max_batch` rather

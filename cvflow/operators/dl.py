@@ -304,6 +304,10 @@ class _OnnxBase(Node):
         if self._runner_key == key and self._runner is not None:
             return self._runner
         self._release_runner()
+        # 只在配置变化、真正要建执行器时提示一次，不在每次运行时刷屏
+        if int(self.get("max_batch")) > 1 and not holder.spec.get("dynamic_batch", True):
+            log.warning("%s：模型的批次维固定，无法合批，批上限设置不会生效（输入形状 %s）；"
+                        "要用上合批需要把模型导出成批次维动态的", self.name, describe_shape(holder.spec["shape"]))
         try:
             self._runner = _acquire_runner(key, lambda: _Runner(
                 skey, holder, int(self.get("max_batch")), float(self.get("wait_ms")) / 1000.0,

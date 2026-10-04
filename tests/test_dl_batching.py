@@ -487,3 +487,19 @@ def test_dl_batch_shared_buffer_keeps_results_separate(cls_model):
     got = [nr.outputs["class_id" if k == 0 else f"class_id{k + 1}"] for k in range(6)]
     assert got == [2, 0, 1, 2, 1, 0]
     eng.teardown_nodes()
+
+
+def test_dl_batch_fixed_batch_model_warns_once(fixed_model, caplog):
+    """模型不支持合批却设了批上限，要在日志里说清楚，否则用户只能靠 batch_size 猜。"""
+    import logging
+    caplog.set_level(logging.WARNING, logger="cvflow.dl")
+    eng, node = build(fixed_model, [channel_image(0), channel_image(1)], max_batch=8)
+    nr = eng.run().node_results[node.id]
+    assert nr.outputs["batch_size"] == 1
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("无法合批" in m for m in msgs) == 1          # 只提示一次，不在每次运行时刷屏
+    caplog.clear()
+    for _ in range(3):
+        eng.run()
+    assert not [r for r in caplog.records if "无法合批" in r.getMessage()]
+    eng.teardown_nodes()
