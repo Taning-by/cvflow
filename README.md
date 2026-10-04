@@ -179,6 +179,16 @@ Selecting a node with several image inputs puts a picker above the image view: i
 between each input's image and the node's own output image. Overlays are tagged with the input
 they came from, so only the selected input's boxes and labels are drawn.
 
+**The wait window only affects cross-thread batching.** The inputs of one node arrive together
+and are submitted as one batch, so moving `wait_ms` from 0 to 10 changes nothing for a single
+node. Check the `batch_size` output to confirm batching happened, and change `max_batch` rather
+than `wait_ms` to compare batched against one-by-one.
+
+Note also that batching speeds up inference only. Measured on 8 inputs of a 640×640 detector,
+inference drops from 17.8 ms to 7.1 ms while end to end goes from 55.8 ms to 41.3 ms, because
+preprocessing and postprocessing do not batch. Compare `infer_ms` with the node's total time to
+see the split.
+
 The inputs of one node arrive together, so they batch immediately and the wait window never
 delays them. The window only matters across threads: when several flows infer at once, the first
 one waits up to `wait_ms` for the others to join, and runs with whatever has arrived when the

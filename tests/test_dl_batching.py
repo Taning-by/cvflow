@@ -434,3 +434,56 @@ def test_dl_detector_too_few_attributes_reports_clearly(tmp_path):
     nr = Engine(g).run().node_results[node.id]
     assert nr.status == NodeStatus.ERROR
     assert "无法解析检测输出" in nr.error and "4 个属性" in nr.error
+
+
+# =============================================================== 预处理
+@pytest.mark.parametrize("values", [
+    {"color": "rgb", "layout": "NCHW", "letterbox": True, "width": 64, "height": 64},
+    {"color": "bgr", "layout": "NCHW", "letterbox": False, "width": 48, "height": 32},
+    {"color": "gray", "layout": "NCHW", "letterbox": True, "width": 40, "height": 40},
+    {"color": "rgb", "layout": "NCHW", "letterbox": True, "width": 64, "height": 64,
+     "mean": "0.5,0.5,0.5", "std": "0.25,0.25,0.25"},
+    {"color": "rgb", "layout": "NCHW", "letterbox": True, "width": 64, "height": 64,
+     "mean": "0.485,0.456,0.406", "std": "0.229,0.224,0.225"},
+    {"color": "rgb", "layout": "NHWC", "letterbox": False, "width": 40, "height": 24},
+])
+def test_dl_preprocess_matches_reference_formula(values):
+    """预处理有一条 OpenCV 快速路径，结果必须与 (像素*scale - 均值)/标准差 的定义完全一致。"""
+    import cv2
+    img = Image(np.random.default_rng(3).integers(0, 255, (97, 123, 3), dtype=np.uint8))
+    node = reg.create("dl.onnx", values={"scale": 1 / 255.0, **values})
+    got, meta = node._preprocess(img)
+    canvas, meta2 = node._to_canvas(img)
+    c = 1 if canvas.ndim == 2 else canvas.shape[2]
+    scale, mean, std = node._norm_params(c)
+    if values["color"] == "rgb" and canvas.ndim == 3:
+        canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    if canvas.ndim == 2:
+        canvas = canvas[:, :, None]
+    ref = (canvas.astype(np.float32) * scale - mean) / std
+    if values["layout"] == "NCHW":
+        ref = ref.transpose(2, 0, 1)
+    assert got.shape == ref[None].shape and meta == meta2
+    assert np.abs(got - ref[None]).max() < 1e-5
+
+
+def test_dl_preprocess_letterbox_geometry_is_recoverable():
+    """等比填充要记录缩放与偏移，否则检测框还原不回原图坐标。"""
+    img = Image(np.zeros((300, 600, 3), np.uint8))
+    node = reg.create("dl.onnx", values={"width": 640, "height": 640, "letterbox": True})
+    blob, meta = node._preprocess(img)
+    assert blob.shape == (1, 3, 640, 640)
+    assert meta["scale"] == pytest.approx(640 / 600)
+    assert meta["pad"] == (0, (640 - int(round(300 * 640 / 600))) // 2)
+    assert meta["orig"] == (600, 300)
+
+
+def test_dl_batch_shared_buffer_keeps_results_separate(cls_model):
+    """多路输入共用一块缓冲提交，每一路拿回的必须仍是自己那一行。"""
+    imgs = [channel_image(c) for c in (2, 0, 1, 2, 1, 0)]
+    eng, node = build(cls_model, imgs, max_batch=8)
+    nr = eng.run().node_results[node.id]
+    assert nr.outputs["batch_size"] == 6
+    got = [nr.outputs["class_id" if k == 0 else f"class_id{k + 1}"] for k in range(6)]
+    assert got == [2, 0, 1, 2, 1, 0]
+    eng.teardown_nodes()

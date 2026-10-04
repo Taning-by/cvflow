@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -20,7 +21,7 @@ from ..core.batching import BatchExecutor
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import DataType, Image, Overlay, Rect
-from ._util import as_bgr, parse_floats, require_image
+from ._util import as_bgr, as_gray, parse_floats, require_image
 
 _COLOR = "#ad1457"
 log = logging.getLogger("cvflow.dl")
@@ -107,6 +108,7 @@ class _Runner:
         self.session_key = session_key
         self.holder = holder
         self.refs = 0
+        self._buffer: np.ndarray | None = None       # 批次输入缓冲，由领队线程独占使用
         holder.refs += 1
         # 模型的批次维是固定的时候只能一张一张推，批上限强制为 1
         self.executor = BatchExecutor(self._run_batch, max_batch=max_batch if self.dynamic_batch else 1,
@@ -120,19 +122,38 @@ class _Runner:
     def dynamic_batch(self) -> bool:
         return bool(self.holder.spec.get("dynamic_batch", True))
 
-    def _run_batch(self, blobs: list):
-        x = blobs[0] if len(blobs) == 1 else np.concatenate(blobs, axis=0)
+    def _assemble(self, items: list) -> np.ndarray:
+        """把提交的条目拼成一个批次输入。
+
+        条目是 ``(缓冲区, 行号)``。同一个节点一次提交的若干路输入共用一块连续缓冲，
+        此时整批可以直接拿去推理，一次拷贝都不用；跨线程合批时才需要汇集到一起。
+        """
+        buf, _ = items[0]
+        if all(b is buf for b, _ in items) and [i for _, i in items] == list(range(len(items))) \
+                and buf.shape[0] == len(items):
+            return buf
+        shape = (len(items),) + buf.shape[1:]
+        out = self._buffer
+        if out is None or out.shape != shape or out.dtype != buf.dtype:
+            out = self._buffer = np.empty(shape, dtype=buf.dtype)
+        for k, (b, i) in enumerate(items):
+            out[k] = b[i]
+        return out
+
+    def _run_batch(self, items: list):
+        x = self._assemble(items)
         try:
             outs = self.holder.session.run(None, {self.spec["name"]: x})
         except Exception as e:
             raise NodeError(f"推理失败：模型期望输入 {describe_shape(self.spec['shape'])}，"
                             f"实际送入 {describe_shape(list(x.shape))}。"
                             f"请检查节点的宽度、高度、颜色、张量布局是否与模型一致。原始错误：{e}") from e
-        n = len(blobs)
+        n = len(items)
         return [(_slice_outputs(outs, i, n), n) for i in range(n)]
 
     def close(self) -> None:
         self.executor.close()
+        self._buffer = None
         self.holder.refs -= 1
         if self.holder.refs <= 0:
             _drop_session(self.session_key)
@@ -179,6 +200,19 @@ def active_runners() -> int:
 
 
 MAX_INPUTS = 8
+
+_POOL: "ThreadPoolExecutor | None" = None
+_POOL_LOCK = threading.Lock()
+
+
+def _preprocess_pool() -> "ThreadPoolExecutor":
+    """多路输入时用来并行做预处理的线程池，按需创建、全局共用。"""
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = ThreadPoolExecutor(max_workers=min(MAX_INPUTS, (os.cpu_count() or 4)),
+                                       thread_name_prefix="dl-pre")
+        return _POOL
 
 
 def _input_port_name(i: int) -> str:
@@ -342,16 +376,10 @@ class _OnnxBase(Node):
         return self._runner is not None and self._runner.dynamic_batch
 
     # ---- 预处理 ----
-    def _preprocess(self, img: Image):
+    def _to_canvas(self, img: Image):
+        """缩放或等比填充到网络输入尺寸，返回 uint8 画布（彩色保持 BGR）与还原坐标用的元信息。"""
         w, h = int(self.get("width")), int(self.get("height"))
-        color = self.get("color")
-        data = img.data
-        if color == "gray":
-            data = data if img.is_gray else cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
-        else:
-            data = as_bgr(img)
-            if color == "rgb":
-                data = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
+        data = as_gray(img) if self.get("color") == "gray" else as_bgr(img)
         meta = {"scale": 1.0, "pad": (0, 0), "orig": (img.width, img.height)}
         if self.get("letterbox"):
             r = min(w / img.width, h / img.height)
@@ -360,17 +388,46 @@ class _OnnxBase(Node):
             canvas = np.full((h, w) + (() if resized.ndim == 2 else (resized.shape[2],)), 114, dtype=np.uint8)
             dx, dy = (w - nw) // 2, (h - nh) // 2
             canvas[dy:dy + nh, dx:dx + nw] = resized
-            data, meta["scale"], meta["pad"] = canvas, r, (dx, dy)
+            meta["scale"], meta["pad"] = r, (dx, dy)
+            return canvas, meta
+        meta["scale"] = (w / img.width, h / img.height)
+        return cv2.resize(data, (w, h)), meta
+
+    def _norm_params(self, channels: int):
+        scale = float(self.get("scale"))
+        mean = np.array(parse_floats(self.get("mean"), channels, 0.0), dtype=np.float32)
+        std = np.array(parse_floats(self.get("std"), channels, 1.0), dtype=np.float32)
+        return scale, mean, std
+
+    def _preprocess(self, img: Image):
+        canvas, meta = self._to_canvas(img)
+        c = 1 if canvas.ndim == 2 else canvas.shape[2]
+        scale, mean, std = self._norm_params(c)
+        w, h = int(self.get("width")), int(self.get("height"))
+        rgb = self.get("color") == "rgb"
+        # 快速路径：OpenCV 把缩放、减均值、乘系数、通道交换、转 NCHW 合成一次 C++ 调用，
+        # 全程释放 GIL，多路输入并行预处理时比逐步的 numpy 运算快近一个数量级。
+        # 它的 scalefactor 只能是标量，所以要求各通道 std 相同。
+        if self.get("layout") == "NCHW" and scale != 0 and np.all(std == std[0]) and std[0] != 0:
+            alpha = float(scale / std[0])
+            mean_cv = tuple(float(v) for v in (mean / scale))      # OpenCV 先减均值再乘系数，均值是原始像素量纲
+            blob = cv2.dnn.blobFromImage(canvas, alpha, (w, h), mean_cv if c > 1 else float(mean_cv[0]),
+                                         swapRB=rgb, crop=False)
+            return blob, meta
+        # 通用路径：NHWC 布局或各通道 std 不同
+        if rgb and canvas.ndim == 3:
+            canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        if canvas.ndim == 2:
+            canvas = canvas[:, :, None]
+        alpha = (scale / std).astype(np.float32)
+        beta = (-mean / std).astype(np.float32)
+        x = canvas.astype(np.float32)
+        if np.all(alpha == alpha[0]) and not beta.any():
+            if alpha[0] != 1.0:
+                x *= float(alpha[0])
         else:
-            data = cv2.resize(data, (w, h))
-            meta["scale"] = (w / img.width, h / img.height)
-        x = data.astype(np.float32) * float(self.get("scale"))
-        if x.ndim == 2:
-            x = x[:, :, None]
-        c = x.shape[2]
-        mean = np.array(parse_floats(self.get("mean"), c, 0.0), dtype=np.float32)
-        std = np.array(parse_floats(self.get("std"), c, 1.0), dtype=np.float32)
-        x = (x - mean) / std
+            x *= alpha
+            x += beta
         if self.get("layout") == "NCHW":
             x = x.transpose(2, 0, 1)
         return np.ascontiguousarray(x[None]), meta
@@ -395,13 +452,19 @@ class _OnnxBase(Node):
         """
         runner = self._ensure_runner()
         order = [i for i, im in enumerate(images) if im is not None]
-        blobs, metas = [], {}
-        for i in order:
-            blob, meta = self._preprocess(images[i])
-            blobs.append(blob)
-            metas[i] = meta
+        if len(order) == 1:
+            blob, meta = self._preprocess(images[order[0]])
+            buf, metas = blob, {order[0]: meta}
+        else:
+            # 并行预处理，并直接写进同一块连续缓冲：拷贝也在并行区完成，
+            # 之后整批推理不必再汇集一次。
+            pool = _preprocess_pool()
+            done = list(pool.map(lambda i: self._preprocess(images[i]), order))
+            buf = np.empty((len(order),) + done[0][0].shape[1:], dtype=done[0][0].dtype)
+            list(pool.map(lambda k: buf.__setitem__(k, done[k][0][0]), range(len(order))))
+            metas = {i: meta for i, (_, meta) in zip(order, done)}
         t0 = time.perf_counter()
-        results = runner.executor.submit(blobs, timeout=float(self.get("timeout_s")))
+        results = runner.executor.submit([(buf, k) for k in range(len(order))], timeout=float(self.get("timeout_s")))
         ms = (time.perf_counter() - t0) * 1000
         outs = {i: results[k][0] for k, i in enumerate(order)}
         batch = max((results[k][1] for k in range(len(order))), default=0)
