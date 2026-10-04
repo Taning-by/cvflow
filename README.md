@@ -249,7 +249,9 @@ class MyDefectNet(Node):
 * For quick experiments use the built-in **Python Script** node and write
   `process(ctx, inputs, params, state)` directly in the parameter panel.
 * The built-in **ONNX Inference / Classifier / Detector (YOLO)** nodes run exported models
-  with onnxruntime (CPU, CUDA or TensorRT providers).
+  with onnxruntime (CPU, CUDA or TensorRT providers). Installing the GPU build does not by
+  itself mean the GPU is used: without matching CUDA and cuDNN runtime libraries the provider
+  fails to load and falls back to CPU, so the log states which provider is actually in use.
 
 ## Communication model
 

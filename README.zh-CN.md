@@ -184,7 +184,8 @@ class MyDefectNet(Node):
 * `self.state` 是会随方案保存的节点状态，适合放学习统计、计数器（见 bandit 插件）。
 * `ctx.publish(name, value)` 发布的值可以在通信模板里用 `{out.name}` 引用。
 * 快速试验可直接用内置的 **Python Script** 节点，在参数面板里写 `process(ctx, inputs, params, state)`。
-* 内置 `ONNX Inference / Classifier / Detector(YOLO)` 节点用 onnxruntime 运行导出的模型，`provider` 可选 CUDA/TensorRT。
+* 内置 `ONNX Inference / Classifier / Detector(YOLO)` 节点用 onnxruntime 运行导出的模型，推理后端可选 CPU/CUDA/TensorRT。
+  装了 GPU 版 onnxruntime 不等于 GPU 可用：缺少对应版本的 CUDA 或 cuDNN 运行库时后端会加载失败并回退到 CPU，日志里会写明实际使用的是哪个后端。
 
 ## 通信模型
 
