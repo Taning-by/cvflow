@@ -253,14 +253,32 @@ def test_dl_batch_changing_model_releases_old_session(tmp_path, cls_model):
 
 
 # =============================================================== 叠加层
-def test_dl_batch_overlay_comes_from_selected_input(cls_model):
+def test_dl_batch_overlays_are_tagged_with_their_source_input(cls_model):
+    """每一路都产生叠加层，并标记来自哪个输入端口，图像窗口据此过滤。"""
     imgs = [channel_image(0), channel_image(1), channel_image(2)]
-    for pick, expect in ((1, "0"), (2, "1"), (3, "2")):
-        eng, node = build(cls_model, imgs, overlay_input=pick)
-        nr = eng.run().node_results[node.id]
-        texts = [o.geometry.get("text", "") for o in nr.overlays if o.kind == "text"]
-        assert len(texts) == 1 and texts[0].startswith(expect)    # 只画选中那一路的结果
-        eng.teardown_nodes()
+    eng, node = build(cls_model, imgs)
+    nr = eng.run().node_results[node.id]
+    texts = [(o.group, o.geometry.get("text", "")) for o in nr.overlays if o.kind == "text"]
+    assert len(texts) == 3
+    assert [g for g, _ in texts] == ["image", "image2", "image3"]
+    assert [t.split()[0] for _, t in texts] == ["0", "1", "2"]    # 每一路画的是自己的结果
+    eng.teardown_nodes()
+
+
+def test_dl_batch_unconnected_input_produces_no_overlay(cls_model):
+    eng, node = build(cls_model, [channel_image(2), None, channel_image(0)])
+    nr = eng.run().node_results[node.id]
+    groups = sorted({o.group for o in nr.overlays if o.kind == "text"})
+    assert groups == ["image", "image3"]
+    eng.teardown_nodes()
+
+
+def test_dl_batch_single_input_overlays_stay_ungrouped(cls_model):
+    """单输入节点的叠加层不带分组，老流程的显示行为完全不变。"""
+    eng, node = build(cls_model, [channel_image(1)])
+    nr = eng.run().node_results[node.id]
+    assert [o.group for o in nr.overlays if o.kind == "text"] == ["image"]
+    eng.teardown_nodes()
 
 
 # =============================================================== 其它两种深度学习节点

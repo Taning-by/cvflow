@@ -187,6 +187,7 @@ class Overlay:
     color: str = "#00ff00"
     width: float = 1.5
     label: str = ""
+    group: str = ""          # 多输入节点用它标记这个叠加层属于哪一路输入，单输入节点留空
 
     @staticmethod
     def rect(r: Rect, color: str = "#00ff00", label: str = "") -> "Overlay":

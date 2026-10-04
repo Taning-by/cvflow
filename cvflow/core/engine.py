@@ -7,6 +7,7 @@ ERROR, its dependants are SKIPPED, and every other branch keeps running.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -94,6 +95,7 @@ class RunContext:
         self.judge_reasons: list[str] = []
         self._current: Node | None = None
         self._overlays: list[Overlay] = []
+        self._overlay_group = ""
         self._cancel = threading.Event()
 
     # ---- used by nodes ----
@@ -116,7 +118,19 @@ class RunContext:
         self.outputs[name] = value
 
     def add_overlay(self, overlay: Overlay) -> None:
+        if self._overlay_group and not overlay.group:
+            overlay.group = self._overlay_group
         self._overlays.append(overlay)
+
+    @contextlib.contextmanager
+    def overlay_group(self, name: str):
+        """在这个作用域里产生的叠加层都会标记为属于 ``name`` 这一路输入。"""
+        prev = self._overlay_group
+        self._overlay_group = name
+        try:
+            yield
+        finally:
+            self._overlay_group = prev
 
     def get_output(self, node_id_or_name: str, port: str) -> Any:
         r = self.results.get(node_id_or_name)
@@ -141,6 +155,7 @@ class RunContext:
     def _begin(self, node: Node) -> None:
         self._current = node
         self._overlays = []
+        self._overlay_group = ""
 
     def _end(self) -> list[Overlay]:
         ov, self._overlays, self._current = self._overlays, [], None

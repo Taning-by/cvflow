@@ -29,6 +29,7 @@ from .theme import C, app_icon, chip_style, make_icon
 from .variables_panel import VariablesPanel
 
 log = logging.getLogger("cvflow.ui")
+OUTPUT_PICK = "__output__"      # 图像选择框里代表"节点输出"的标记
 
 
 class MainWindow(QMainWindow):
@@ -105,9 +106,15 @@ class MainWindow(QMainWindow):
         self.image_title.setStyleSheet("font-weight:600")
         fit = QPushButton(tr("Fit"))
         fit.setFixedWidth(56)
+        self.input_pick = QComboBox()
+        self.input_pick.setToolTip("选择查看该节点的哪一路输入")
+        self.input_pick.setMinimumWidth(96)
+        self.input_pick.hide()
+        self.input_pick.currentIndexChanged.connect(lambda _: self._update_image())
         self.all_overlays = QCheckBox(tr("All overlays"))
         self.all_overlays.toggled.connect(lambda _: self._update_image())
         bar.addWidget(self.image_title, 1)
+        bar.addWidget(self.input_pick)
         bar.addWidget(self.all_overlays)
         bar.addWidget(fit)
         self.image_view = ImageView()
@@ -504,22 +511,48 @@ class MainWindow(QMainWindow):
             self._autorun_timer.start()
 
     # ------------------------------------------------------------------ ROI editing
-    def _input_image(self, node_id: str, result: RunResult | None) -> Image | None:
-        """Find the image flowing into ``node_id`` (first IMAGE input, following links upstream)."""
+    def _input_images(self, node_id: str, result: RunResult | None) -> list[tuple[str, Image]]:
+        """该节点每一路已连接输入上实际流入的图像，按端口顺序返回 (端口名, 图像)。"""
         g = self.graph
         if g is None or result is None or node_id not in g.nodes:
-            return None
+            return []
         node = g.nodes[node_id]
+        links = g.input_links(node_id)
+        found: list[tuple[str, Image]] = []
         for port in node.inputs:
-            link = g.input_links(node_id).get(port.name)
+            link = links.get(port.name)
             if link is None:
                 continue
             up = result.node_results.get(link.src_node)
             if up is not None:
                 v = up.outputs.get(link.src_port)
                 if isinstance(v, Image):
-                    return v
-        return None
+                    found.append((port.name, v))
+        return found
+
+    def _input_image(self, node_id: str, result: RunResult | None) -> Image | None:
+        """第一路输入的图像，用于 ROI 绘制等只需要一张图的场合。"""
+        pairs = self._input_images(node_id, result)
+        return pairs[0][1] if pairs else None
+
+    def _sync_image_picker(self, node_id: str, inputs: list[tuple[str, Image]],
+                           has_output: bool, prefer_output: bool) -> str | None:
+        """多路输入时显示"看哪一张图"的选择框，输入与输出都可选，返回当前选中项。"""
+        entries = [(f"输入 {i + 1}", name) for i, (name, _) in enumerate(inputs)]
+        if has_output:
+            entries.append(("输出", OUTPUT_PICK))
+        key = (node_id, tuple(data for _, data in entries))
+        if getattr(self, "_picker_key", None) != key:
+            self._picker_key = key
+            self.input_pick.blockSignals(True)
+            self.input_pick.clear()
+            for label, data in entries:
+                self.input_pick.addItem(label, data)
+            if entries:      # 默认跟随原来的显示习惯：没有叠加层时看输出，有叠加层时看第一路输入
+                self.input_pick.setCurrentIndex(len(entries) - 1 if (prefer_output and has_output) else 0)
+            self.input_pick.blockSignals(False)
+        self.input_pick.setVisible(len(inputs) > 1 and len(entries) > 1)
+        return self.input_pick.currentData() if entries else None
 
     def _begin_roi_edit(self, node_id: str, param: str) -> None:
         r = self.runner
@@ -665,12 +698,20 @@ class MainWindow(QMainWindow):
         nr = result.node_results.get(nid)
         node = g.nodes[nid]
         out_img = next((v for v in nr.outputs.values() if isinstance(v, Image)), None) if nr else None
-        in_img = self._input_image(nid, result)
+        pairs = self._input_images(nid, result)
         overlays = list(nr.overlays) if nr else []
+        picked = self._sync_image_picker(nid, pairs, out_img is not None, prefer_output=not (overlays and pairs))
         if self.all_overlays.isChecked():
             overlays = [ov for res in result.node_results.values() for ov in res.overlays]
-            img = in_img or out_img
+            img = (pairs[0][1] if pairs else None) or out_img
+        elif self.input_pick.isVisible() and picked:
+            if picked == OUTPUT_PICK:
+                img = out_img
+            else:                                   # 选中某一路输入：显示该路的图与该路的叠加层
+                img = next((im for name, im in pairs if name == picked), None)
+                overlays = [ov for ov in overlays if ov.group in ("", picked)]
         else:
+            in_img = pairs[0][1] if pairs else None
             img = in_img if (overlays and in_img is not None) else (out_img or in_img)
         if img is None:
             self.image_view.clear()
@@ -678,7 +719,10 @@ class MainWindow(QMainWindow):
             return
         self.image_view.set_image(img)
         self.image_view.set_overlays(overlays)
-        self.image_title.setText(tr("{name}  ({w}×{h}, frame {id})").format(name=node.name, w=img.width, h=img.height, id=img.frame_id))
+        title = tr("{name}  ({w}×{h}, frame {id})").format(name=node.name, w=img.width, h=img.height, id=img.frame_id)
+        if self.input_pick.isVisible():
+            title = f"{title}  ·  {self.input_pick.currentText()}"
+        self.image_title.setText(title)
 
     # ------------------------------------------------------------------ recent files / shortcut
     @staticmethod

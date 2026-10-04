@@ -217,8 +217,6 @@ class _OnnxBase(Node):
               Param("provider", "auto", "enum", choices=["auto", "cpu", "cuda", "tensorrt"], advanced=True),
               Param("batch_group", "", "string", advanced=True,
                     description="合批分组名。留空按模型与预处理自动分组；填不同的名字可以让两个节点互不合批"),
-              Param("overlay_input", 1, "int", min=1, max=MAX_INPUTS, advanced=True,
-                    description="图像窗口上画哪一个输入的结果"),
               Param("timeout_s", 30.0, "float", min=0.1, max=600, advanced=True,
                     description="等待批处理结果的超时时间")]
 
@@ -416,16 +414,19 @@ class _OnnxBase(Node):
     def process(self, ctx, inputs):
         images = self._gather_images(inputs)
         outs, metas, ms, batch = self._infer_batch(images)
-        draw_on = int(self.get("overlay_input")) - 1
         result: dict = {"infer_ms": ms, "batch_size": batch}
         for i in range(self.input_count):
-            one = (self.decode(ctx, outs[i], metas[i], images[i], draw=(i == draw_on))
-                   if i in outs else self._empty_result())
+            if i in outs:
+                # 每一路的叠加层都画出来并标记来源，图像窗口按当前查看的输入过滤
+                with ctx.overlay_group(_input_port_name(i)):
+                    one = self.decode(ctx, outs[i], metas[i], images[i])
+            else:
+                one = self._empty_result()
             for base, _ in self.per_input_outputs:
                 result[_output_port_name(base, i)] = one.get(base)
         return result
 
-    def decode(self, ctx, outs: list, meta: dict, img: Image, draw: bool) -> dict:
+    def decode(self, ctx, outs: list, meta: dict, img: Image) -> dict:
         """把一路的原始输出转成该路的输出字典，子类实现。"""
         raise NotImplementedError
 
@@ -440,7 +441,7 @@ class OnnxInference(_OnnxBase):
     per_input_outputs = [("outputs", DataType.LIST), ("output0", DataType.TENSOR)]
     inputs, outputs = Node.inputs, Node.outputs      # 占位，下面用 build_ports 覆盖
 
-    def decode(self, ctx, outs, meta, img, draw):
+    def decode(self, ctx, outs, meta, img):
         return {"outputs": outs, "output0": outs[0]}
 
 
@@ -456,7 +457,7 @@ class OnnxClassifier(_OnnxBase):
     params = _OnnxBase.params + [Param("labels_path", "", "file", filter="Text (*.txt)"),
                                  Param("softmax", True, "bool")]
 
-    def decode(self, ctx, outs, meta, img, draw):
+    def decode(self, ctx, outs, meta, img):
         logits = np.asarray(outs[0], dtype=np.float32).reshape(-1)
         if self.get("softmax"):
             e = np.exp(logits - logits.max())
@@ -466,8 +467,7 @@ class OnnxClassifier(_OnnxBase):
         cid = int(probs.argmax())
         labels = _load_labels(self.get("labels_path"))
         label = labels[cid] if cid < len(labels) else str(cid)
-        if draw:
-            ctx.add_overlay(Overlay.text(8, 20, f"{label} {float(probs[cid]):.3f}", "#ffff00"))
+        ctx.add_overlay(Overlay.text(8, 20, f"{label} {float(probs[cid]):.3f}", "#ffff00"))
         return {"class_id": cid, "label": label, "score": float(probs[cid]), "probs": probs.tolist()}
 
 
@@ -487,7 +487,7 @@ class OnnxDetector(_OnnxBase):
         Param("labels_path", "", "file", filter="Text (*.txt)"),
         Param("conf", 0.25, "float", min=0, max=1, step=0.01), Param("iou", 0.45, "float", min=0, max=1, step=0.01)]
 
-    def decode(self, ctx, outs, meta, img, draw):
+    def decode(self, ctx, outs, meta, img):
         pred = np.asarray(outs[0], dtype=np.float32)
         if pred.ndim == 3:
             pred = pred[0]
@@ -533,8 +533,7 @@ class OnnxDetector(_OnnxBase):
             cid = int(cls_ids[i])
             name = labels[cid] if cid < len(labels) else str(cid)
             dets.append({"x": x, "y": y, "w": w, "h": h, "score": float(scores[i]), "class_id": cid, "label": name})
-            if draw:
-                ctx.add_overlay(Overlay.rect(Rect(x, y, w, h), "#00ff00", f"{name} {scores[i]:.2f}"))
+            ctx.add_overlay(Overlay.rect(Rect(x, y, w, h), "#00ff00", f"{name} {scores[i]:.2f}"))
         dets.sort(key=lambda d: -d["score"])
         return {"detections": dets, "count": len(dets),
                 "boxes": [Rect(d["x"], d["y"], d["w"], d["h"]) for d in dets],

@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import sys
+
+import numpy as np
 import time
 from pathlib import Path
 
@@ -842,3 +844,77 @@ def test_ui_results_long_value_is_truncated_but_copied_in_full(win, app):
 def test_ui_results_banner_text_is_selectable(win, app):
     win.act_run.trigger(); pump(app); win._apply_pending_result()
     assert win.results_panel.banner.textInteractionFlags() & Qt.TextSelectableByMouse
+
+
+# =============================================================== 多输入节点的图像查看
+def test_ui_image_input_picker_hidden_for_single_input_node(win, app):
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    win.scene.select_node(node_by_name(win, "孔").id)
+    pump(app)
+    assert not win.input_pick.isVisible()          # 单输入节点不显示选择框
+
+
+def test_ui_image_input_picker_switches_between_two_inputs(win, app):
+    """位运算节点有 a、b 两路图像输入，选择框应能切换查看哪一路。"""
+    g = win.solution.flows["main"]
+    node = win.scene.add_node("preprocess.bitwise", QPointF(100, 520))
+    g.add_link(node_by_name(win, "灰度").id, "image", node.id, "a")
+    g.add_link(node_by_name(win, "阈值").id, "image", node.id, "b")
+    win.scene.set_graph(g)
+    win.scene.select_node(node.id)
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    assert win.input_pick.isVisible() and win.input_pick.count() == 3
+    assert [win.input_pick.itemText(i) for i in range(3)] == ["输入 1", "输入 2", "输出"]
+    assert "输出" in win.image_title.text()                               # 该节点有图像输出，默认看输出
+    win.input_pick.setCurrentIndex(0)
+    pump(app)
+    first = win.image_view.image.data.copy()
+    assert "输入 1" in win.image_title.text()
+    win.input_pick.setCurrentIndex(1)
+    pump(app)
+    second = win.image_view.image.data
+    assert second.shape == first.shape and not (second == first).all()   # 确实换了另一路的图
+    assert "输入 2" in win.image_title.text()
+    assert set(np.unique(second)) <= {0, 255}                            # 第二路是阈值后的二值图
+
+
+def test_ui_image_multi_input_dl_node_shows_each_input_and_its_overlays(win, app, tmp_path):
+    """两路输入的 ONNX 检测节点：每一路都能看到自己的图和自己的检测框。"""
+    from nodes_helpers import make_constant_detector
+    model = str(make_constant_detector(tmp_path / "det.onnx", [(320, 320, 80, 40, 0, 0.9)]))
+    g = win.solution.flows["main"]
+    node = win.scene.add_node("dl.onnx_detector", QPointF(100, 620))
+    node.set("input_count", 2)
+    node.set("model_path", model)
+    win.scene.rebuild_node(node.id)
+    g.add_link(node_by_name(win, "取图").id, "image", node.id, "image")
+    g.add_link(node_by_name(win, "渲染").id, "image", node.id, "image2")
+    win.scene.set_graph(g)
+    win.scene.select_node(node.id)
+    win.act_run.trigger(); pump(app, 200); win._apply_pending_result()
+    nr = win.runner.last_result.node_results[node.id]
+    assert nr.status.value == "ok", nr.error
+    assert nr.outputs["count"] == 1 and nr.outputs["count2"] == 1        # 两路各自有结果
+    assert win.input_pick.isVisible() and win.input_pick.count() == 2
+    boxes_1 = len([o for o in win.image_view._overlay_items])
+    assert boxes_1 > 0                                                   # 第一路看到检测框
+    win.input_pick.setCurrentIndex(1)
+    pump(app)
+    assert "输入 2" in win.image_title.text()
+    assert len(win.image_view._overlay_items) > 0                        # 第二路也看到自己的检测框
+    groups = {o.group for o in nr.overlays if o.kind == "rect"}
+    assert groups == {"image", "image2"}                                 # 叠加层按来源分开标记
+
+
+def test_ui_image_all_overlays_ignores_input_filter(win, app):
+    g = win.solution.flows["main"]
+    node = win.scene.add_node("preprocess.bitwise", QPointF(100, 520))
+    g.add_link(node_by_name(win, "灰度").id, "image", node.id, "a")
+    g.add_link(node_by_name(win, "阈值").id, "image", node.id, "b")
+    win.scene.set_graph(g)
+    win.scene.select_node(node.id)
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    win.all_overlays.setChecked(True)
+    pump(app)
+    assert len(win.image_view._overlay_items) > 0                        # 勾选后显示全流程的叠加层
+    win.all_overlays.setChecked(False)

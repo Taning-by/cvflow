@@ -175,6 +175,10 @@ once, and the outputs are split back to the port belonging to each input.
 | batch_group | Empty groups by model and preprocessing; a name keeps two nodes apart | empty |
 | overlay_input | Which input's results are drawn on the image view | 1 |
 
+Selecting a node with several image inputs puts a picker above the image view: it switches
+between each input's image and the node's own output image. Overlays are tagged with the input
+they came from, so only the selected input's boxes and labels are drawn.
+
 The inputs of one node arrive together, so they batch immediately and the wait window never
 delays them. The window only matters across threads: when several flows infer at once, the first
 one waits up to `wait_ms` for the others to join, and runs with whatever has arrived when the
