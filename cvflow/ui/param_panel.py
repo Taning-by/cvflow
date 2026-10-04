@@ -53,7 +53,12 @@ class ParamPanel(QScrollArea):
 
     # ---- building ----
     def _clear(self) -> None:
-        # QScrollArea.setWidget deletes the previous container together with every child widget/layout
+        # 取下旧容器而不是让 setWidget 直接删除它：重建常常是由面板内某个控件自己的信号触发的
+        # （键入后回车、失焦提交、按钮点击），同步销毁会让 Qt 在信号返回后访问已释放的控件而崩溃。
+        old = self.takeWidget()
+        if old is not None:
+            old.setParent(None)
+            old.deleteLater()
         self._container = QWidget()
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(6, 6, 6, 6)

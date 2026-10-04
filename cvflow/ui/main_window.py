@@ -473,9 +473,10 @@ class MainWindow(QMainWindow):
             return
         if ([p.name for p in node.inputs], [p.name for p in node.outputs]) != ports_before:
             dropped = self.scene.rebuild_node(node_id)      # 端口数量变了，重建图元
-            self.scene.select_node(node_id)
             if dropped:
                 self.statusBar().showMessage(f"端口减少，已断开 {dropped} 条连线", 5000)
+            # 重选与面板刷新推迟一轮事件循环：此刻很可能还在参数控件自己的信号里
+            QTimer.singleShot(0, lambda nid=node_id: self._reselect_node(nid))
         item = self.scene.node_items.get(node_id)
         if item is not None:
             item.update()
@@ -483,6 +484,14 @@ class MainWindow(QMainWindow):
             self.param_panel.set_node(node, g)
         self._mark_dirty()
         self._schedule_autorun()
+
+    def _reselect_node(self, node_id: str) -> None:
+        """端口重建后恢复选中状态并刷新参数面板。"""
+        g = self.graph
+        if g is None or node_id not in g.nodes:
+            return
+        self.scene.select_node(node_id)
+        self.param_panel.set_node(g.nodes[node_id], g)
 
     def _on_node_renamed(self, node_id: str, name: str) -> None:
         self.scene.rename_node(node_id, name)

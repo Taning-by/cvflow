@@ -654,3 +654,110 @@ def test_ui_plugins_load_folder_shows_in_palette(win, modal, tmp_path, app):
 def test_ui_help_about(win, modal, app):
     menu_action(win, "帮助(&H)", "关于").trigger(); pump(app)
     assert modal.calls and modal.calls[-1][0] == "about"
+
+
+# =============================================================== 参数面板重建的稳定性（回归）
+def _dl_node(win, app):
+    """放一个深度学习节点并选中，它的"输入个数"会改变端口数量，触发面板与图元重建。"""
+    node = win.scene.add_node("dl.onnx_detector", QPointF(100, 500))
+    win.scene.select_node(node.id)
+    pump(app)
+    return node
+
+
+def test_ui_params_typing_into_port_count_does_not_crash(win, app):
+    """在"输入个数"里打字后回车。曾经会把正在发信号的控件同步销毁，导致进程段错误。"""
+    node = _dl_node(win, app)
+    sb = spin(win.param_panel, "输入个数")
+    sb.setFocus()
+    sb.selectAll()
+    QTest.keyClicks(sb, "4")
+    QTest.keyClick(sb, Qt.Key_Return)
+    pump(app, 100)
+    assert node.get("input_count") == 4
+    assert [p.name for p in node.inputs] == ["image", "image2", "image3", "image4"]
+    assert "count4" in [p.name for p in node.outputs]
+    assert win.scene.node_items[node.id].inputs.keys() == {"image", "image2", "image3", "image4"}
+    assert win.param_panel._node is node                      # 面板仍然显示该节点，可继续编辑
+    assert spin(win.param_panel, "输入个数").value() == 4
+
+
+def test_ui_params_typing_then_focus_out_applies_and_survives(win, app):
+    node = _dl_node(win, app)
+    sb = spin(win.param_panel, "输入个数")
+    sb.setFocus()
+    sb.selectAll()
+    QTest.keyClicks(sb, "3")
+    sb.clearFocus()                                            # 不按回车，靠失焦提交
+    pump(app, 100)
+    assert node.get("input_count") == 3 and len(node.inputs) == 3
+    assert spin(win.param_panel, "输入个数").value() == 3
+
+
+def test_ui_params_repeated_port_edits_keep_panel_usable(win, app):
+    node = _dl_node(win, app)
+    for want in (4, 2, 6, 1):
+        sb = spin(win.param_panel, "输入个数")
+        sb.setFocus()
+        sb.selectAll()
+        QTest.keyClicks(sb, str(want))
+        QTest.keyClick(sb, Qt.Key_Return)
+        pump(app, 80)
+        assert node.get("input_count") == want and len(node.inputs) == want
+    assert len(win.scene.node_items[node.id].inputs) == 1
+
+
+def test_ui_params_reducing_ports_drops_links(win, app):
+    node = _dl_node(win, app)
+    node.set("input_count", 3)
+    win.scene.rebuild_node(node.id)
+    pump(app)
+    src = node_by_name(win, "取图")
+    g = win.solution.flows["main"]
+    g.add_link(src.id, "image", node.id, "image3")
+    win.scene.set_graph(g)
+    win.scene.select_node(node.id)
+    pump(app)
+    assert any(l.dst_port == "image3" for l in g.links)
+    sb = spin(win.param_panel, "输入个数")
+    sb.setFocus(); sb.selectAll(); QTest.keyClicks(sb, "1"); QTest.keyClick(sb, Qt.Key_Return)
+    pump(app, 100)
+    assert not any(l.dst_node == node.id for l in g.links)     # 指向消失端口的连线被断开
+    assert "断开" in win.statusBar().currentMessage()
+
+
+def test_ui_params_rename_field_does_not_crash(win, app):
+    """名称输入框提交后也会重建面板，属于同一类风险。"""
+    win.scene.select_node(node_by_name(win, "孔").id)
+    pump(app)
+    name = param_widget(win.param_panel, "名称")
+    name.setFocus()
+    name.selectAll()
+    QTest.keyClicks(name, "HoleArea")      # QTest 送不了非拉丁字符，用 ASCII 走同一条提交路径
+    QTest.keyClick(name, Qt.Key_Return)
+    pump(app, 100)
+    assert node_by_name(win, "HoleArea") is not None
+    assert win.param_panel._node.name == "HoleArea"
+
+
+def test_ui_params_roi_clear_button_does_not_crash(win, app):
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    win.scene.select_node(node_by_name(win, "宽度").id)
+    pump(app)
+    assert node_by_name(win, "宽度").rect("roi") is not None
+    button(win.param_panel.widget(), "✕").click()              # 清除按钮会就地重建面板
+    pump(app, 100)
+    assert node_by_name(win, "宽度").rect("roi") is None
+    assert button(win.param_panel.widget(), "绘制") is not None
+
+
+def test_ui_params_advanced_toggle_does_not_crash(win, app):
+    win.scene.select_node(node_by_name(win, "阈值").id)
+    pump(app)
+    button(win.param_panel.widget(), "显示高级参数 (2)").click()   # 按钮点击中重建自身所在面板
+    pump(app, 100)
+    assert param_widget(win.param_panel, "块大小") is not None
+    button(win.param_panel.widget(), "隐藏高级参数 (2)").click()
+    pump(app, 100)
+    with pytest.raises(LookupError):
+        param_widget(win.param_panel, "块大小")
