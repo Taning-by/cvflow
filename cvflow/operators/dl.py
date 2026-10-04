@@ -64,12 +64,16 @@ def describe_shape(shape: list) -> str:
 
 
 # --------------------------------------------------------------------------- 共享会话
+_FAILED_PROVIDERS: set[str] = set()       # 本进程内加载失败过的推理后端，不再重复尝试
+
+
 class _SharedSession:
     """按 (模型文件, 修改时间, 后端) 共享的推理会话。预处理参数不同的节点也复用同一份权重。"""
 
-    def __init__(self, session, spec: dict) -> None:
+    def __init__(self, session, spec: dict, providers: list[str] | None = None) -> None:
         self.session = session
         self.spec = spec
+        self.providers = providers or []       # 实际生效的推理后端，第一个是主用的
         self.refs = 0
 
 
@@ -355,20 +359,34 @@ class _OnnxBase(Node):
             import onnxruntime as ort
         except ImportError as e:  # pragma: no cover
             raise NodeError("未安装 onnxruntime") from e
-        avail = ort.get_available_providers()
+        name = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider", "tensorrt": "TensorrtExecutionProvider"}
+        # 注意：get_available_providers() 列的是编译进包里的后端，不代表运行时真能加载。
+        # 装了 GPU 版但缺 CUDA 运行库时，CUDA 后端会加载失败并静默回退到 CPU，
+        # 所以这里记下本进程内已经失败过的后端，不再重复尝试，并把实际用的后端报出来。
+        avail = [p for p in ort.get_available_providers() if p not in _FAILED_PROVIDERS]
         prov = self.get("provider")
         if prov == "auto":
             providers = [p for p in ("TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider") if p in avail]
         else:
-            want = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider", "tensorrt": "TensorrtExecutionProvider"}[prov]
-            providers = [want] if want in avail else ["CPUExecutionProvider"]
+            want = name[prov]
+            providers = [want] if want in avail else []
+        providers = providers or ["CPUExecutionProvider"]
         so = ort.SessionOptions()
         so.log_severity_level = 3
         try:
             session = ort.InferenceSession(path, so, providers=providers)
         except Exception as e:
             raise NodeError(f"加载模型失败：{os.path.basename(path)}：{e}") from e
-        return _SharedSession(session, read_input_spec(session))
+        active = list(session.get_providers())
+        for p in providers:
+            if p != "CPUExecutionProvider" and p not in active:
+                _FAILED_PROVIDERS.add(p)
+                log.warning("推理后端 %s 无法加载（通常是缺少对应版本的 CUDA/cuDNN 运行库），本次运行不再尝试", p)
+        if prov != "auto" and name[prov] not in active:
+            log.warning("%s：请求的推理后端 %s 不可用，实际使用 %s", self.name, prov, active[0] if active else "?")
+        else:
+            log.info("%s：模型 %s 使用推理后端 %s", self.name, os.path.basename(path), active[0] if active else "?")
+        return _SharedSession(session, read_input_spec(session), active)
 
     def _release_runner(self) -> None:
         if self._runner_key is not None:

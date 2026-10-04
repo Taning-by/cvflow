@@ -555,3 +555,48 @@ def test_dl_batch_fixed_batch_model_warns_once(fixed_model, caplog):
         eng.run()
     assert not [r for r in caplog.records if "无法合批" in r.getMessage()]
     eng.teardown_nodes()
+
+
+# =============================================================== 推理后端
+@pytest.fixture
+def clean_failed_providers():
+    from cvflow.operators import dl
+    saved = set(dl._FAILED_PROVIDERS)
+    dl._FAILED_PROVIDERS.clear()
+    yield dl._FAILED_PROVIDERS
+    dl._FAILED_PROVIDERS.clear()
+    dl._FAILED_PROVIDERS.update(saved)
+
+
+def test_dl_provider_load_failure_is_reported_and_not_retried(cls_model, monkeypatch, caplog, clean_failed_providers):
+    """装了 GPU 版但缺运行库时，后端会加载失败并静默回退到 CPU，必须说清楚并且不重复刷屏。"""
+    import logging
+    import onnxruntime as ort
+    from cvflow.operators import dl
+    monkeypatch.setattr(ort, "get_available_providers",
+                        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    caplog.set_level(logging.INFO, logger="cvflow.dl")
+    eng, node = build(cls_model, [channel_image(0)])
+    nr = eng.run().node_results[node.id]
+    assert nr.status == NodeStatus.OK, nr.error                      # 回退之后照样能跑
+    assert node._runner.holder.providers == ["CPUExecutionProvider"]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("CUDAExecutionProvider 无法加载" in m for m in msgs) == 1
+    assert any("使用推理后端 CPUExecutionProvider" in m for m in msgs)
+    assert "CUDAExecutionProvider" in clean_failed_providers         # 记下来，本进程不再尝试
+    caplog.clear()
+    eng2, _ = build(cls_model, [channel_image(1)], scale=0.5)         # 另一份配置，重新建会话
+    eng2.run()
+    assert not [m for m in (r.getMessage() for r in caplog.records) if "无法加载" in m]
+    eng.teardown_nodes(); eng2.teardown_nodes()
+
+
+def test_dl_explicit_provider_unavailable_warns(cls_model, monkeypatch, caplog, clean_failed_providers):
+    import logging
+    import onnxruntime as ort
+    monkeypatch.setattr(ort, "get_available_providers", lambda: ["CPUExecutionProvider"])
+    caplog.set_level(logging.INFO, logger="cvflow.dl")
+    eng, node = build(cls_model, [channel_image(0)], provider="cuda")
+    assert eng.run().node_results[node.id].status == NodeStatus.OK
+    assert any("请求的推理后端 cuda 不可用" in r.getMessage() for r in caplog.records)
+    eng.teardown_nodes()
