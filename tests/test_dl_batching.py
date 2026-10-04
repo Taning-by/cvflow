@@ -186,8 +186,8 @@ def test_dl_batch_wait_window_expires_and_runs_anyway(cls_model):
 
 
 def test_dl_batch_window_merges_two_concurrent_flows(cls_model):
-    """两个流程在各自线程里同时推理，等待窗口内被合成一个批次。"""
-    engines = [build(cls_model, [channel_image(c)], wait_ms=400.0, max_batch=4) for c in (0, 2)]
+    """填了相同合批分组的两个流程，在等待窗口内被合成一个批次。"""
+    engines = [build(cls_model, [channel_image(c)], wait_ms=400.0, max_batch=4, batch_group="线A") for c in (0, 2)]
     for eng, _ in engines:
         eng.setup_nodes()
     assert runners() >= 1
@@ -210,31 +210,83 @@ def test_dl_batch_window_merges_two_concurrent_flows(cls_model):
 
 
 # =============================================================== 会话共享
-def test_dl_batch_same_config_shares_one_session(cls_model):
-    base = runners()
+def test_dl_batch_nodes_share_weights_but_not_the_batch_executor(cls_model):
+    """默认每个节点独占批处理器以保证并行，但模型权重只加载一份。"""
+    from cvflow.operators.dl import active_sessions
+    s0, r0 = active_sessions(), runners()
     engines = [build(cls_model, [channel_image(0)]) for _ in range(3)]
     for eng, _ in engines:
         eng.setup_nodes()
-    assert runners() == base + 1                              # 三个节点共用一个会话
+    assert active_sessions() == s0 + 1                        # 权重共享：一份
+    assert runners() == r0 + 3                                # 批处理器各管各的：三个
     for eng, _ in engines[:2]:
         eng.teardown_nodes()
-    assert runners() == base + 1                              # 还有引用，不释放
+    assert active_sessions() == s0 + 1 and runners() == r0 + 1
     engines[2][0].teardown_nodes()
-    assert runners() == base                                  # 最后一个释放后回收
+    assert active_sessions() == s0 and runners() == r0
 
 
-def test_dl_batch_group_and_preprocessing_split_sessions(cls_model):
+def test_dl_batch_group_makes_nodes_share_one_executor(cls_model):
+    """填了相同分组名的节点共用一个批处理器，不同分组名的互相独立。"""
+    from cvflow.operators.dl import active_sessions
+    s0, r0 = active_sessions(), runners()
+    same = [build(cls_model, [channel_image(0)], batch_group="线A") for _ in range(3)]
+    other = build(cls_model, [channel_image(0)], batch_group="线B")
+    plain = build(cls_model, [channel_image(0)])
+    for eng, _ in same + [other, plain]:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 1                        # 仍然只有一份权重
+    assert runners() == r0 + 3                                # 线A 一个、线B 一个、未分组的一个
+    assert same[0][1]._runner is same[1][1]._runner is same[2][1]._runner
+    assert other[1]._runner is not same[0][1]._runner
+    assert plain[1]._runner is not same[0][1]._runner
+    for eng, _ in same + [other, plain]:
+        eng.teardown_nodes()
+    assert active_sessions() == s0 and runners() == r0
+
+
+def test_dl_batch_independent_nodes_infer_in_parallel(cls_model):
+    """默认配置下两个节点必须能同时推理；被串行化时屏障会超时。"""
+    import threading
+    engines = [build(cls_model, [channel_image(0)]) for _ in range(2)]
+    for eng, _ in engines:
+        eng.setup_nodes()
+    n1, n2 = engines[0][1], engines[1][1]
+    assert n1._runner.holder.session is n2._runner.holder.session     # 共用会话
+    assert n1._runner is not n2._runner                               # 不共用批处理器
+    sess = n1._runner.holder.session
+    orig = sess.run
+    gate = threading.Barrier(2)
+
+    def wrapped(o, f):
+        try:
+            gate.wait(timeout=5)
+        except threading.BrokenBarrierError:
+            pass
+        return orig(o, f)
+    sess.run = wrapped
+    start = threading.Barrier(2)
+    threads = [threading.Thread(target=lambda e=e: (start.wait(5), e[0].run())) for e in engines]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    sess.run = orig
+    assert not gate.broken, "两个节点没能同时进入推理，说明被串行化了"
+    for eng, _ in engines:
+        eng.teardown_nodes()
+
+
+def test_dl_batch_group_still_split_by_preprocessing(cls_model):
+    """同一个分组名但预处理不同的节点不能合批，因为张量形状对不上。"""
     base = runners()
     a, _ = build(cls_model, [channel_image(0)], batch_group="线A")
-    b, _ = build(cls_model, [channel_image(0)], batch_group="线B")
-    c, _ = build(cls_model, [channel_image(0)], batch_group="线A")
+    b, _ = build(cls_model, [channel_image(0)], batch_group="线A")
+    c, _ = build(cls_model, [channel_image(0)], batch_group="线A", scale=1.0)
     for eng in (a, b, c):
         eng.setup_nodes()
-    assert runners() == base + 2                              # 分组名不同的互不合批
-    d, _ = build(cls_model, [channel_image(0)], batch_group="线A", width=8, height=8, scale=1.0)
-    d.setup_nodes()
-    assert runners() == base + 3                              # 预处理不同也必须分开
-    for eng in (a, b, c, d):
+    assert runners() == base + 2                              # 预处理不同的被分开
+    for eng in (a, b, c):
         eng.teardown_nodes()
     assert runners() == base
 

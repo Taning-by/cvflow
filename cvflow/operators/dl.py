@@ -240,7 +240,7 @@ class _OnnxBase(Node):
               Param("max_batch", 8, "int", min=1, max=64,
                     description="一个批次最多几张图。模型的批次维必须是动态的才能大于 1"),
               Param("wait_ms", 0.0, "float", min=0, max=1000,
-                    description="等待其它线程的图像一起合批的时间，0 表示不等待。窗口到期就按当前数量执行"),
+                    description="等其它节点的图像一起合批的时间，仅在填了合批分组时有意义；0 表示不等待"),
               Param("width", 224, "int", min=1, max=8192), Param("height", 224, "int", min=1, max=8192),
               Param("letterbox", False, "bool", description="Keep aspect ratio, pad to size"),
               Param("color", "rgb", "enum", choices=["rgb", "bgr", "gray"]),
@@ -250,7 +250,8 @@ class _OnnxBase(Node):
               Param("layout", "NCHW", "enum", choices=["NCHW", "NHWC"]),
               Param("provider", "auto", "enum", choices=["auto", "cpu", "cuda", "tensorrt"], advanced=True),
               Param("batch_group", "", "string", advanced=True,
-                    description="合批分组名。留空按模型与预处理自动分组；填不同的名字可以让两个节点互不合批"),
+                    description="留空（默认）每个节点独立推理，互不排队；填相同的名字则这些节点共用一个"
+                                "批处理器，可跨节点跨流程合批，但它们之间的推理会排队"),
               Param("timeout_s", 30.0, "float", min=0.1, max=600, advanced=True,
                     description="等待批处理结果的超时时间")]
 
@@ -285,11 +286,17 @@ class _OnnxBase(Node):
 
     # ---- 会话与批处理执行器 ----
     def _preprocess_key(self) -> tuple:
-        """预处理与合批配置：相同的节点才会被合进同一个批次。"""
+        """批处理器的归属。
+
+        默认每个节点独占一个批处理器，只有本节点的多路输入会合批，不同节点之间可以并行推理。
+        填了合批分组名的节点才会共用一个批处理器，从而能跨节点、跨流程合批，代价是它们之间
+        的推理会被排队。推理会话（权重）始终按模型文件共享，与这里无关。
+        """
         pre = (int(self.get("width")), int(self.get("height")), bool(self.get("letterbox")), self.get("color"),
                float(self.get("scale")), self.get("mean"), self.get("std"), self.get("layout"))
-        return (pre, int(self.get("max_batch")), round(float(self.get("wait_ms")), 3),
-                str(self.get("batch_group")).strip())
+        group = str(self.get("batch_group")).strip()
+        owner = f"group:{group}" if group else f"node:{self.id}"
+        return (pre, int(self.get("max_batch")), round(float(self.get("wait_ms")), 3), owner)
 
     def _ensure_runner(self) -> _Runner:
         path = paths.resolve(self.get("model_path"))

@@ -171,17 +171,19 @@ once, and the outputs are split back to the port belonging to each input.
 |---|---|---|
 | input_count | Number of image input ports, up to 8 | 1 |
 | max_batch | Largest batch handed to one inference | 8 |
-| wait_ms | How long to wait for images from other threads before running | 0 |
-| batch_group | Empty groups by model and preprocessing; a name keeps two nodes apart | empty |
+| wait_ms | How long to wait for same-group nodes before running; only meaningful with a batch group | 0 |
+| batch_group | Empty keeps the node independent and parallel; a shared name lets nodes batch together but serialises them | empty |
 | overlay_input | Which input's results are drawn on the image view | 1 |
 
 Selecting a node with several image inputs puts a picker above the image view: it switches
 between each input's image and the node's own output image. Overlays are tagged with the input
 they came from, so only the selected input's boxes and labels are drawn.
 
-Sharing spans nodes and flows: nodes with the same configuration share one inference session and
-one batch executor regardless of which flow they sit in. Two flows whose nodes point at the same
-model file, triggered together with a non-zero wait, merge into a single batch.
+**Weight sharing and batch sharing are separate.** The inference session is shared per model
+file, so every node pointing at the same model loads the weights once; this costs no parallelism
+because inference itself is thread safe. The batch executor is per node by default, so nodes
+never queue behind each other and really do infer in parallel. To let several nodes batch
+together, give them the same **batch group** name, at the cost of serialising inference among them.
 
 **The wait window only affects cross-thread batching.** The inputs of one node arrive together
 and are submitted as one batch, so moving `wait_ms` from 0 to 10 changes nothing for a single
