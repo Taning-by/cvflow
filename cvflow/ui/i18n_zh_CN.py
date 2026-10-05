@@ -229,6 +229,8 @@ UI_WORKSPACE = {
     "Image above flow": "图像在上，流程在下", "Reset layout": "恢复默认布局",
     # 工具栏
     "Run once": "运行一次", "Auto-run": "自动运行",
+    "{name}: model ready ({ms:.0f} ms)": "{name}：模型已就绪（加载耗时 {ms:.0f} ms）",
+    "{name}: preload failed – {err}": "{name}：模型预加载失败 —— {err}",
     "Run the current flow once (F5)": "把当前流程执行一次（F5）",
     "Run the flow repeatedly at the interval below": "按右侧间隔反复执行当前流程",
     "Re-run the flow after every parameter or wiring change": "改参数或改连线后自动重跑一次",

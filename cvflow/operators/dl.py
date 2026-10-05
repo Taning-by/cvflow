@@ -76,6 +76,7 @@ _PROVIDER_FIX = {
 }
 _WHEEL_CONFLICT_WARNED = False
 _GPU_RUNTIME_PRELOADED = False
+_PROVIDER_LOADABLE: dict[str, bool] = {}   # GPU 后端的动态库能否加载，探测一次就记住
 
 
 def _preload_gpu_runtime(ort) -> None:
@@ -94,6 +95,24 @@ def _preload_gpu_runtime(ort) -> None:
         ort.preload_dlls()
     except Exception as e:                             # pragma: no cover - 取决于本机安装
         log.debug("预加载 CUDA/cuDNN 运行库失败：%s", e)
+
+
+def _provider_loadable(ort, provider: str) -> bool:
+    """GPU 后端的动态库能不能真的加载进来，探测一次就记住。
+
+    必须先剔掉不可用的后端再建会话：onnxruntime 的行为是只要列表里有一个后端加载失败，
+    整个会话就退回 CPU——装了 GPU 版但没装 TensorRT 时，auto 会因为 TensorRT 失败而
+    把本来能用的 CUDA 一起丢掉，结果整个流程都跑在 CPU 上。
+    """
+    cached = _PROVIDER_LOADABLE.get(provider)
+    if cached is not None:
+        return cached
+    why = _why_provider_failed(ort, provider)
+    _PROVIDER_LOADABLE[provider] = not why
+    if why:
+        extra = "；只想用显卡的话推理后端选 cuda 或 auto 即可" if provider == "TensorrtExecutionProvider" else ""
+        log.info("推理后端 %s 的运行库加载不了（%s），本次运行跳过它%s", provider, why, extra)
+    return not why
 
 
 def _why_provider_failed(ort, provider: str) -> str:
@@ -311,6 +330,9 @@ class _OnnxBase(Node):
     #: 每个输入各自对应的输出端口，子类覆盖
     per_input_outputs: list[tuple[str, DataType]] = []
 
+    #: 改了这些参数就该重新预加载（它们决定加载哪个模型、加载到哪里）
+    preload_params = ("model_path", "provider", "device_id", "session_scope")
+
     params = [Param("model_path", "", "file", filter="ONNX models (*.onnx)"),
               Param("input_count", 1, "int", min=1, max=MAX_INPUTS,
                     description="图像输入的个数。多个输入会被合并成一个批次，一次推理完成"),
@@ -346,6 +368,7 @@ class _OnnxBase(Node):
         self._runner: _Runner | None = None
         self._runner_key: tuple | None = None
         self._failed_exclusive: tuple | None = None   # 独占会话失败过的键，不再反复重试
+        self._preloaded_key: tuple | None = None      # 已经提前加载好的会话键
         self._rebuild_ports()
 
     # ---- 动态端口 ----
@@ -416,6 +439,9 @@ class _OnnxBase(Node):
         else:
             want = _PROVIDER_NAMES[prov]
             providers = [want] if want in avail else []
+        if any(p in _GPU_PROVIDERS for p in providers):
+            _preload_gpu_runtime(ort)             # 先把 CUDA/cuDNN 拉进来，否则探测必然失败
+            providers = [p for p in providers if p not in _GPU_PROVIDERS or _provider_loadable(ort, p)]
         providers = providers or ["CPUExecutionProvider"]
         return providers, providers[0] != "CPUExecutionProvider"
 
@@ -560,12 +586,35 @@ class _OnnxBase(Node):
             _release_runner(self._runner_key)
         self._runner, self._runner_key = None, None
 
+    def preload(self) -> None:
+        """把模型提前加载进内存/显存，让第一次运行不用再等几秒的加载时间。
+
+        只预热共享的推理会话（真正重的那一步），不碰本节点的批处理器状态——
+        界面是在后台线程调用这个方法的，而此刻流程可能正在运行，动 runner 会把正在用的执行器关掉。
+        """
+        path = paths.resolve(self.get("model_path"))
+        if not path or not os.path.isfile(path):
+            return
+        skey = self._session_key(path)
+        if skey == self._preloaded_key:
+            return                                    # 这套配置已经加载过了
+        t0 = time.perf_counter()
+        _get_or_create_session(skey, lambda: self._create_session(path))
+        stale, self._preloaded_key = self._preloaded_key, skey
+        if stale is not None and stale != skey:
+            _drop_session(stale)                      # 换了模型/后端/显卡：上一份没人用就放掉
+        log.info("%s：模型 %s 已就绪（加载耗时 %.0f ms）",
+                 self.name, os.path.basename(path), (time.perf_counter() - t0) * 1000)
+
     def setup(self, ctx=None):
         if self.get("model_path"):
             self._ensure_runner()
 
     def teardown(self):
         self._release_runner()
+        if self._preloaded_key is not None:
+            _drop_session(self._preloaded_key)        # 只预热、没真正跑过的会话也要放掉
+            self._preloaded_key = None
 
     @property
     def supports_batching(self) -> bool:

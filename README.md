@@ -214,6 +214,11 @@ and the default `auto` already prefers the GPU. Check what the wheel actually ca
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 ```
 
+`auto` skips backends whose libraries cannot load: on a GPU box without TensorRT the log shows
+`TensorrtExecutionProvider ... cannot load (libnvinfer.so.10: ...), skipping it` and CUDA is used
+instead. This matters — onnxruntime falls the whole session back to the CPU as soon as one
+requested backend fails to load, discarding a perfectly usable CUDA along with it.
+
 No `CUDAExecutionProvider` in the list means a CPU wheel is installed (or it overwrote the GPU
 one): `pip uninstall -y onnxruntime onnxruntime-gpu`, then reinstall `.[gpu]`. If it is listed but
 inference still falls back to the CPU, a runtime library failed to load and the log names it, e.g.
@@ -279,6 +284,12 @@ The inputs of one node arrive together, so they batch immediately and the wait w
 delays them. The window only matters across threads: when several flows infer at once, the first
 one waits up to `wait_ms` for the others to join, and runs with whatever has arrived when the
 window expires. A single flow should leave it at 0 and pays no extra latency.
+
+**The model loads when you pick the file, not on the first run.** Selecting a model file (or
+changing the provider / device) starts a background load of the weights into RAM or VRAM, logged
+as `model xxx.onnx ready (nnn ms)`; opening a solution preloads every deep-learning node in it. The
+first run then costs no loading time and the UI never blocks. A failed preload only logs — the run
+itself retries and reports the error as usual.
 
 Real batching needs a model exported with a dynamic batch dimension. A model with a fixed batch
 of 1 falls back to one image at a time, and the `batch_size` output reports what actually ran.

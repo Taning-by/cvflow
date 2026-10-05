@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
                                QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, 
 
 from ..comm import CommManager, set_manager
 from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, paths, registry
+from ..core.node import Node
 from ..core.engine import RunResult
 from ..core.events import EventBus
 from ..core.types import Image, Overlay, Rect
@@ -33,6 +36,8 @@ OUTPUT_PICK = "__output__"      # 图像选择框里代表"节点输出"的标�
 
 
 class MainWindow(QMainWindow):
+    preload_message = Signal(str)        # 后台预加载线程 → 状态栏（跨线程只能走信号）
+
     def __init__(self, solution_path: str | None = None) -> None:
         super().__init__()
         self.setWindowTitle("CVFlow")
@@ -51,6 +56,7 @@ class MainWindow(QMainWindow):
         self._pending_result: RunResult | None = None
         self._center_sizes: list[int] = []
         self._default_docks = False
+        self._preloading: set[str] = set()      # 正在后台加载模型的节点，避免重复开线程
 
         self._autorun_timer = QTimer(self)
         self._autorun_timer.setSingleShot(True)
@@ -69,6 +75,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_toolbar()
         self._build_menu()
+        self.preload_message.connect(lambda m: self.statusBar().showMessage(m, 5000))
         self._vars_timer.timeout.connect(self.variables_panel.refresh)
 
         s = QSettings()
@@ -590,6 +597,9 @@ class MainWindow(QMainWindow):
         self._set_current_flow(next(iter(sol.flows), ""))
         self._dirty = False
         self._update_title()
+        for graph in sol.flows.values():        # 打开方案就开始加载模型，等用户点运行时通常已经就绪
+            for node in graph.nodes.values():
+                self._preload_node(node)
 
     def _sync_runners(self) -> None:
         assert self.solution is not None
@@ -792,6 +802,32 @@ class MainWindow(QMainWindow):
         if not visible.contains(item.sceneBoundingRect()):
             self.view.ensureVisible(item, 60, 60)
 
+    def _preload_node(self, node) -> None:
+        """在后台线程把节点的重资源（模型权重）准备好。
+
+        界面线程一步都不能卡：加载一个检测模型到显存常常要好几秒。失败不弹窗，
+        只写日志与状态栏——真正运行时还会再试一次，那时才是该报错的地方。
+        """
+        if type(node).preload is Node.preload or node.id in self._preloading:
+            return                                   # 该节点不支持预加载，或已经在加载了
+        self._preloading.add(node.id)
+
+        def work(n=node):
+            t0 = time.perf_counter()
+            try:
+                n.preload()
+            except Exception as e:                   # noqa: BLE001 - 预加载失败不该影响编辑
+                log.warning("%s：预加载失败（%s），运行时会再试一次", n.name, e)
+                self.preload_message.emit(tr("{name}: preload failed – {err}").format(name=n.name, err=e))
+            else:
+                ms = (time.perf_counter() - t0) * 1000
+                if ms > 50:                          # 已经加载过时会立刻返回，没必要提示
+                    self.preload_message.emit(tr("{name}: model ready ({ms:.0f} ms)").format(name=n.name, ms=ms))
+            finally:
+                self._preloading.discard(n.id)
+
+        threading.Thread(target=work, name="cvflow-preload", daemon=True).start()
+
     def _node_result(self, node_id) -> object | None:
         """选中节点在最近一次运行里的结果，供参数面板的"本次输出"分组显示。"""
         r = self.runner
@@ -831,6 +867,8 @@ class MainWindow(QMainWindow):
             item.update()
         if name == "roi" or node.param_def(name).kind == "rect":
             self.param_panel.set_node(node, g)
+        if name in getattr(node, "preload_params", ()):
+            self._preload_node(node)        # 选好模型/改了后端：立刻在后台加载，别等到运行时才等
         self._mark_dirty()
         self._schedule_autorun()
 

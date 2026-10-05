@@ -495,6 +495,24 @@ def test_ui_params_roi_draw_show_clear(win, app):
     assert node_by_name(win, "宽度").rect("roi") is None
 
 
+def test_ui_params_choosing_a_model_loads_it_right_away(win, app, tmp_path):
+    """在参数面板里选好模型文件后，模型应当立刻在后台加载，而不是等到第一次运行才加载。"""
+    pytest.importorskip("onnxruntime")
+    from cvflow.operators.dl import active_sessions
+    from nodes_helpers import make_constant_detector
+    model = str(make_constant_detector(tmp_path / "det.onnx", [(320, 320, 80, 40, 0, 0.9)]))
+    node = win.scene.add_node("dl.onnx_detector", QPointF(100, 620))
+    win.scene.select_node(node.id)
+    pump(app)
+    before = active_sessions()
+    win._on_param_changed(node.id, "model_path", model)      # 等同于在参数面板里选中文件
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and active_sessions() == before:
+        pump(app, 50)
+    assert active_sessions() == before + 1                   # 一次都没运行，权重已经就位
+    node.teardown()
+
+
 # =============================================================== 运行控制
 def test_ui_run_once_autorun_continuous(win, app):
     win.act_run.trigger(); pump(app); win._apply_pending_result()

@@ -191,6 +191,14 @@ class Node:
         """Hook for nodes that cache derived data (e.g. reload a template image)."""
 
     # ---- lifecycle ----
+    def preload(self) -> None:  # noqa: B027
+        """可选钩子：参数选好之后提前把重资源准备好（例如把模型加载进显存）。
+
+        界面在用户改完参数、或打开方案之后会在后台线程调用它，目的是让第一次运行不用再等加载。
+        所以实现必须能在后台线程里跑，并且在"已经准备好"时直接返回；失败就抛异常，由调用方记日志，
+        真正运行时还会照常再试一次。
+        """
+
     def setup(self, ctx: "RunContext | None" = None) -> None:  # noqa: B027
         """Acquire resources (open camera, load model). Called once before running."""
 

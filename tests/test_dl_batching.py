@@ -18,6 +18,19 @@ from nodes_helpers import channel_image, make_channel_mean_classifier, make_iden
 reg = registry
 
 
+@pytest.fixture(autouse=True)
+def cpu_backend_only(monkeypatch):
+    """所有用例默认只认 CPU 后端。
+
+    本机有没有可用的显卡会改变默认的会话归属（GPU 上每个节点各加载一份权重），
+    会话份数的断言就不稳定了。需要别的后端组合的用例自己再覆盖这个桩。
+    """
+    import onnxruntime as ort
+    from cvflow.operators import dl
+    monkeypatch.setattr(ort, "get_available_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr(dl, "_PROVIDER_LOADABLE", {})
+
+
 def runners() -> int:
     from cvflow.operators.dl import active_runners
     return active_runners()
@@ -265,6 +278,54 @@ def _reject_gpu_providers(monkeypatch):
         return real(path, sess_options, providers=kept or ["CPUExecutionProvider"], **kw)
 
     monkeypatch.setattr(ort, "InferenceSession", fake)
+
+
+def test_dl_preload_loads_the_model_before_any_run(cls_model):
+    """选好模型文件就该把权重加载进来，而不是等到第一次运行。"""
+    from cvflow.operators.dl import active_sessions
+    s0 = active_sessions()
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    assert active_sessions() == s0                       # 还没加载
+    node.preload()
+    assert active_sessions() == s0 + 1                   # 一次都没运行，权重已经在了
+    node.preload()
+    assert active_sessions() == s0 + 1                   # 重复调用不会再加载一份
+    node.teardown()
+    assert active_sessions() == s0                       # 只预加载、没跑过的会话也会被放掉
+
+
+def test_dl_preload_drops_the_previous_copy_when_the_model_changes(cls_model, tmp_path):
+    """换了模型文件，上一份没人用的权重要放掉，不能越堆越多。"""
+    from cvflow.operators.dl import active_sessions
+    other = str(make_channel_mean_classifier(tmp_path / "other.onnx", 8, dynamic_batch=True))
+    s0 = active_sessions()
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    node.preload()
+    node.set("model_path", other)
+    node.preload()
+    assert active_sessions() == s0 + 1                    # 还是只有一份
+    node.teardown()
+    assert active_sessions() == s0
+
+
+def test_dl_auto_skips_a_backend_whose_library_cannot_load(cls_model, monkeypatch):
+    """TensorRT 装不全时不能连累 CUDA。
+
+    onnxruntime 只要列表里有一个后端加载失败，整个会话就退回 CPU，
+    所以必须先把加载不了的后端剔掉再建会话。
+    """
+    import onnxruntime as ort
+    from cvflow.operators import dl
+    monkeypatch.setattr(dl, "_FAILED_PROVIDERS", set())
+    monkeypatch.setattr(dl, "_PROVIDER_LOADABLE", {})
+    monkeypatch.setattr(ort, "get_available_providers",
+                        lambda: ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(dl, "_why_provider_failed",
+                        lambda o, p: "libnvinfer.so.10: cannot open shared object file"
+                        if p == "TensorrtExecutionProvider" else "")
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    providers, on_gpu = node._resolve_providers()
+    assert providers == ["CUDAExecutionProvider", "CPUExecutionProvider"] and on_gpu
 
 
 def test_dl_gpu_request_preloads_cuda_runtime(cls_model, monkeypatch):
