@@ -579,13 +579,13 @@ class _OnnxBase(Node):
             if p != "CPUExecutionProvider" and p not in active:
                 _FAILED_PROVIDERS.add(p)
                 why = _why_provider_failed(ort, p)
-                hint = ""
-                if "cublas" in why or "cudart" in why or "cufft" in why or "curand" in why:
-                    hint = "；缺 CUDA 运行库，可装 pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12"
+                # Windows 的加载错误里不一定带库名，所以提示按后端给，不靠关键字猜
+                if p == "TensorrtExecutionProvider":
+                    hint = "；缺 TensorRT 本体，只想用显卡的话把推理后端改成 cuda 或 auto"
                 elif "cudnn" in why:
                     hint = "；缺 cuDNN，可装 pip install nvidia-cudnn-cu12"
-                elif "nvinfer" in why:
-                    hint = "；缺 TensorRT 本体，只想用显卡的话把推理后端改成 cuda 或 auto"
+                else:
+                    hint = "；缺 CUDA 运行库，pip install -e \".[gpu]\" 会把它们一起装上"
                 log.warning("推理后端 %s 无法加载（%s）%s，本次运行不再尝试",
                             p, why or "通常是缺少对应版本的 CUDA/cuDNN 运行库", hint)
         prov = str(self.get("provider"))

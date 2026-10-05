@@ -103,6 +103,10 @@ def cmd_gpu(args) -> int:
             continue
         why = dl._why_provider_failed(ort, prov)
         print(f"  {prov:28s} {'可用' if not why else '加载失败：' + why}")
+        if why and prov == "TensorrtExecutionProvider":
+            print("     （没装 TensorRT 本体，属正常情况：auto 会跳过它直接用 CUDA，不影响使用）")
+        elif why:
+            print("     （缺 CUDA / cuDNN 运行库，pip install -e \".[gpu]\" 会把它们一起装上）")
     if "CUDAExecutionProvider" not in avail:
         both = len(wheels) > 1
         print("  → 当前这份 onnxruntime 里没有 GPU 后端，推理只能在 CPU 上跑。")
