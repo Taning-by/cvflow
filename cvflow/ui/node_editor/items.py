@@ -2,6 +2,7 @@
 
 流程图形语言（产品辨识度的主要来源）：
 * 节点＝浅色卡片，左侧 4px 分类色书脊，标题右侧是状态胶囊（字形＋文字＋颜色，三重编码）。
+  只有 NG／执行失败／运行中用实心胶囊，成功与待运行用浅底，一屏里跳出来的永远是要处理的那几个。
 * 端口统一为圆点，位置与原来一致；必填端口实心，可选端口空心，不靠颜色区分。
 * 底栏左边是参数摘要（扫一眼就知道这个节点在做什么），右边是耗时或错误。
 * 选中＝细品牌色边框 + 浅底 + 四角定位标记，呼应图像上的 ROI。
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPath
 from ...core.graph import Link
 from ...core.node import Node, NodeStatus, Port
 from ..i18n import tr
-from ..theme import C, DTYPE_COLORS, STATUS_COLORS, STATUS_GLYPH, STATUS_TEXT, ui_font
+from ..theme import C, DTYPE_COLORS, STATUS_COLORS, STATUS_GLYPH, STATUS_TEXT, tabular, ui_font
 
 NODE_W = 184          # 与既有方案文件里的节点间距保持一致，不改变旧流程的疏密
 HEADER_H = 28
@@ -26,7 +27,10 @@ RADIUS = 6
 SPINE_W = 4.0
 CORNER = 7.0          # 选中时四角定位标记的长度
 
-_PILL_STATES = (NodeStatus.OK, NodeStatus.NG, NodeStatus.ERROR, NodeStatus.RUNNING)
+# 实心胶囊只留给需要被一眼找到的状态：不合格、执行失败、正在运行。
+# 成功/跳过/待运行用浅底，这样一屏节点里跳出来的永远是要处理的那几个。
+_SOLID_STATES = (NodeStatus.NG, NodeStatus.ERROR, NodeStatus.RUNNING)
+_SOFT_BG = {NodeStatus.OK: C["ok_bg"], NodeStatus.SKIPPED: C["panel2"], NodeStatus.IDLE: C["panel2"]}
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -101,8 +105,10 @@ class NodeItem(QGraphicsItem):
         return path
 
     # ---- 参数摘要：底栏里一行能扫到的关键设置 ----
-    def _summary(self) -> str:
+    def _summary(self) -> tuple[str, Qt.TextElideMode]:
+        """返回 (摘要文字, 省略方式)。只有一个文件/目录时从中间省略，保住名字两头和扩展名。"""
         bits: list[str] = []
+        kinds: list[str] = []
         for p in self.node.params:
             if p.advanced or p.kind in ("code", "json", "rect", "list"):
                 continue
@@ -119,12 +125,14 @@ class NodeItem(QGraphicsItem):
             elif p.kind == "float":
                 bits.append(f"{tr(p.label)} {float(v):g}")
             elif p.kind in ("file", "dir"):
-                bits.append(str(v).replace("\\", "/").rsplit("/", 1)[-1])
+                bits.append(str(v).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
             else:
                 bits.append(f"{tr(p.label)} {v}")
+            kinds.append(p.kind)
             if len(bits) == 2:
                 break
-        return " · ".join(bits)
+        mode = Qt.ElideMiddle if (len(bits) == 1 and kinds[0] in ("file", "dir")) else Qt.ElideRight
+        return " · ".join(bits), mode
 
     def paint(self, painter, option, widget=None) -> None:
         painter.setRenderHint(painter.RenderHint.Antialiasing)
@@ -147,14 +155,18 @@ class NodeItem(QGraphicsItem):
         head.addRect(QRectF(0, HEADER_H - RADIUS, NODE_W, RADIUS))
         painter.fillPath(head.simplified(), QColor(C["accent_bg"] if selected else C["panel2"]))
 
-        # 左侧分类色书脊
-        spine = QPainterPath()
-        spine.addRoundedRect(QRectF(0, 0, SPINE_W * 2, self._h), RADIUS, RADIUS)
-        spine.addRect(QRectF(SPINE_W, 0, SPINE_W, self._h))
+        # 左侧分类色书脊：用卡片轮廓裁剪后填一条直边，
+        # 不能用两个圆角矩形求交——交集会在上下圆角处留下细碎尖角。
         cat = QColor(node.color)
         if not enabled:
             cat.setAlpha(90)
-        painter.fillPath(spine.simplified().intersected(path), cat)
+        painter.save()
+        painter.setClipPath(path)
+        painter.fillRect(QRectF(0, 0, SPINE_W, self._h), cat)
+        painter.restore()
+        # 标题与底栏的分隔线：与书脊对齐，给卡片一个清楚的三段结构
+        painter.setPen(QPen(QColor(C["border"])))
+        painter.drawLine(QPointF(SPINE_W, HEADER_H), QPointF(NODE_W, HEADER_H))
 
         # 标题文字
         painter.setPen(QPen(QColor(C["text"] if enabled else C["faint"])))
@@ -179,8 +191,8 @@ class NodeItem(QGraphicsItem):
         # 底栏：左＝参数摘要，右＝耗时 / 错误 / 已禁用
         foot_y = self._h - FOOT_H
         painter.setPen(QPen(QColor(C["border"])))
-        painter.drawLine(QPointF(SPINE_W + 1, foot_y), QPointF(NODE_W - 1, foot_y))
-        painter.setFont(ui_font(11))
+        painter.drawLine(QPointF(SPINE_W, foot_y), QPointF(NODE_W, foot_y))
+        painter.setFont(tabular(ui_font(11)))     # 等宽数字：连续运行时耗时不会左右跳动
         if not enabled:
             right = "已禁用"
         elif st in (NodeStatus.OK, NodeStatus.NG, NodeStatus.ERROR):
@@ -189,14 +201,17 @@ class NodeItem(QGraphicsItem):
             right = node.last_error
         else:
             right = ""
-        fm = ui_font(11)
-        metrics = QFontMetricsF(fm)
+        metrics = QFontMetricsF(tabular(ui_font(11)))
         right = metrics.elidedText(right, Qt.ElideRight, NODE_W * 0.45)
         rw = metrics.horizontalAdvance(right) + 10
-        painter.setPen(QPen(QColor(C["ng"] if (st == NodeStatus.ERROR and enabled) else C["faint"])))
+        painter.setPen(QPen(QColor(C["ng"] if (st == NodeStatus.ERROR and enabled) else
+                                   (C["muted"] if enabled else C["faint"]))))
         painter.drawText(QRectF(NODE_W - 8 - rw, foot_y, rw, FOOT_H), Qt.AlignVCenter | Qt.AlignRight, right)
-        summary = metrics.elidedText(self._summary(), Qt.ElideRight, NODE_W - SPINE_W - 18 - rw)
-        painter.setPen(QPen(QColor(C["muted"] if enabled else C["faint"])))
+        painter.setFont(ui_font(11))
+        metrics = QFontMetricsF(ui_font(11))
+        summary_text, summary_mode = self._summary()
+        summary = metrics.elidedText(summary_text, summary_mode, NODE_W - SPINE_W - 18 - rw)
+        painter.setPen(QPen(QColor(C["faint"])))
         painter.drawText(QRectF(SPINE_W + 8, foot_y, NODE_W - SPINE_W - 16 - rw, FOOT_H),
                          Qt.AlignVCenter | Qt.AlignLeft, summary)
 
@@ -222,16 +237,19 @@ class NodeItem(QGraphicsItem):
         return QFontMetricsF(ui_font(11, True)).horizontalAdvance(text) + 14
 
     def _draw_pill(self, painter, rect: QRectF, st: NodeStatus, col: QColor, enabled: bool) -> None:
-        """状态胶囊：字形 + 文字 + 颜色。成功 / 不合格 / 失败彼此不会混淆。"""
+        """状态胶囊：字形 + 文字 + 颜色三重编码，成功 / 不合格 / 失败不会混淆。"""
         pill = QPainterPath()
         pill.addRoundedRect(rect, rect.height() / 2, rect.height() / 2)
         if not enabled:
-            fill, fg = QColor(C["panel2"]), QColor(C["faint"])
-        elif st in _PILL_STATES:
-            fill, fg = QColor(col), QColor("#FFFFFF")
+            fill, fg, border = QColor(C["panel2"]), QColor(C["faint"]), None
+        elif st in _SOLID_STATES:
+            fill, fg, border = QColor(col), QColor("#FFFFFF"), None
         else:
-            fill, fg = QColor(C["panel2"]), QColor(C["muted"])
+            fill, fg, border = QColor(_SOFT_BG.get(st, C["panel2"])), QColor(col), QColor(col)
         painter.fillPath(pill, fill)
+        if border is not None:
+            painter.setPen(QPen(border, 1))
+            painter.drawPath(pill)
         painter.setPen(QPen(fg))
         painter.setFont(ui_font(11, True))
         painter.drawText(rect, Qt.AlignCenter, f"{STATUS_GLYPH.get(st, '')} {STATUS_TEXT.get(st, st.value)}")
