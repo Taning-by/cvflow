@@ -179,24 +179,70 @@ once, and the outputs are split back to the port belonging to each input.
 |---|---|---|
 | input_count | Number of image input ports, up to 8 | 1 |
 | max_batch | Largest batch handed to one inference | 8 |
-| wait_ms | How long to wait for same-group nodes before running; only meaningful with a batch group | 0 |
-| batch_group | Empty keeps the node independent and parallel; a shared name lets nodes batch together but serialises them | empty |
+| wait_ms | How long to wait for same-group nodes before running; **only applied when a batch group is set** | 0 |
+| batch_group | Empty keeps the node independent and un-queued; a shared name lets nodes batch together but serialises them | empty |
+| provider | `auto` picks the first usable of TensorRT → CUDA → CPU, or force one | auto |
+| device_id | Which GPU to use on a multi-GPU box; ignored by the CPU backend | 0 |
+| session_scope (advanced) | How many copies of the weights: `shared` one per process, `exclusive` one per group/node, `auto` shares on CPU and splits on GPU | auto |
 | overlay_input | Which input's results are drawn on the image view | 1 |
 
 Selecting a node with several image inputs puts a picker above the image view: it switches
 between each input's image and the node's own output image. Overlays are tagged with the input
 they came from, so only the selected input's boxes and labels are drawn.
 
-**Weight sharing and batch sharing are separate.** The inference session is shared per model
-file, so every node pointing at the same model loads the weights once; this costs no parallelism
-because inference itself is thread safe. The batch executor is per node by default, so nodes
-never queue behind each other and really do infer in parallel. To let several nodes batch
-together, give them the same **batch group** name, at the cost of serialising inference among them.
+### Running on the GPU
 
-**The wait window only affects cross-thread batching.** The inputs of one node arrive together
-and are submitted as one batch, so moving `wait_ms` from 0 to 10 changes nothing for a single
-node. Check the `batch_size` output to confirm batching happened, and change `max_batch` rather
-than `wait_ms` to compare batched against one-by-one.
+With the GPU build installed (`pip install -e ".[gpu]"` plus matching CUDA / cuDNN runtimes) the
+default `auto` already prefers the GPU — no parameter change needed. **To see where it actually
+runs, read this log line**:
+
+```
+ONNX Detector (YOLO): model best.onnx using backend CUDAExecutionProvider (device 0)
+```
+
+`CPUExecutionProvider` there means the GPU backend failed to load (usually missing CUDA runtime
+libraries); a warning line explains why. On a multi-GPU box, `device_id` spreads nodes across
+cards — the one form of GPU parallelism that reliably pays off.
+
+### Weight sharing and batch sharing are separate
+
+| | Keyed by | Sharing means |
+|---|---|---|
+| **Inference session** (weights) | model file + mtime + provider + device_id + session owner | one copy of the weights in RAM / VRAM |
+| **Batch executor** (queue) | all of the above + preprocessing + max_batch + wait_ms + batch owner | these nodes batch together and queue behind each other |
+
+The session owner comes from `session_scope`, `auto` by default:
+
+* **Shared on CPU.** A shared session does not block concurrent inference (onnxruntime's `Run` is
+  thread safe — measured 2.01× for two threads on one session), parallelism is limited by cores,
+  so a second copy of the weights would only waste memory.
+* **One copy per batch group / node on GPU.** One session means one CUDA stream, so sharing means
+  queuing; separate copies can at least use separate streams — at the cost of **multiplied VRAM**.
+  If an exclusive copy cannot be allocated, the node falls back to the shared session and says so
+  in the log instead of failing the flow.
+* Set `shared` to save VRAM, or `exclusive` to split on CPU as well.
+
+Note that separate GPU copies only buy throughput when a single inference does not already
+saturate the GPU. Watch `nvidia-smi dmon -s u` during a single-stream run: above ~95% SM
+utilisation, batch instead.
+
+**The wait window only matters across flows.** A node's inputs are submitted in one call and the
+nodes of one flow run in sequence, so without a batch group no second submitter can ever reach
+the queue — the wait is therefore treated as 0 rather than padding the cycle. Check `batch_size`
+to confirm batching, and change `max_batch` rather than `wait_ms` to compare batched against
+one-by-one.
+
+### When the images do not arrive together
+
+Typical case: several cameras, each triggered by the PLC at its own moment. Use **one flow per
+camera** (receive rule → trigger flow), give the deep-learning node in each flow the **same batch
+group**, and set **wait_ms** to the slack your cycle time allows:
+
+* the first image to arrive becomes the leader and waits inside the window for the others;
+* reaching `max_batch` runs immediately, without waiting out the window;
+* when the window expires the batch runs with whatever arrived — stragglers go into the next
+  batch and nothing is ever stuck;
+* each flow gets its own results back, and `batch_size` reports how many images that batch held.
 
 Note also that batching speeds up inference only. Measured on 8 inputs of a 640×640 detector,
 inference drops from 17.8 ms to 7.1 ms while end to end goes from 55.8 ms to 41.3 ms, because

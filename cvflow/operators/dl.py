@@ -65,10 +65,19 @@ def describe_shape(shape: list) -> str:
 
 # --------------------------------------------------------------------------- 共享会话
 _FAILED_PROVIDERS: set[str] = set()       # 本进程内加载失败过的推理后端，不再重复尝试
+_PROVIDER_NAMES = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider",
+                   "tensorrt": "TensorrtExecutionProvider"}
+_GPU_PROVIDERS = ("CUDAExecutionProvider", "TensorrtExecutionProvider")
 
 
 class _SharedSession:
-    """按 (模型文件, 修改时间, 后端) 共享的推理会话。预处理参数不同的节点也复用同一份权重。"""
+    """一份已加载的模型权重。
+
+    共享的粒度由 ``_OnnxBase._session_key`` 决定：
+    ``(模型文件, 修改时间, 后端, 显卡编号, 会话归属)``。归属为空表示全软件共用一份——
+    CPU 上默认如此；GPU 上默认按合批分组/节点各加载一份，以便用各自的 CUDA 流并行。
+    预处理参数不同不影响共享，它只决定批处理器怎么分。
+    """
 
     def __init__(self, session, spec: dict, providers: list[str] | None = None) -> None:
         self.session = session
@@ -231,8 +240,11 @@ class _OnnxBase(Node):
     """共享的模型加载、预处理与批量推理。
 
     节点可以设置多个图像输入。一次运行里，所有已连接输入的图像会被拼成一个批次做一次推理，
-    再按来源把输出拆回各自的端口。``wait_ms`` 大于 0 时还会在该窗口内等待其它线程（例如别的流程）
-    提交的图像一起合批，窗口到期就按当前已有的数量执行。
+    再按来源把输出拆回各自的端口。
+
+    图像不一定同时到达（例如每路相机一个流程、各自被 PLC 触发）。这种情况下给这些节点填上
+    相同的「合批分组」，它们就共用一个批处理器：先到的在等待窗口里等后到的，凑够「批次上限」
+    或窗口到期就执行，没赶上的留给下一批，谁都不会被永远卡住。
     """
 
     #: 每个输入各自对应的输出端口，子类覆盖
@@ -244,7 +256,8 @@ class _OnnxBase(Node):
               Param("max_batch", 8, "int", min=1, max=64,
                     description="一个批次最多几张图。模型的批次维必须是动态的才能大于 1"),
               Param("wait_ms", 0.0, "float", min=0, max=1000,
-                    description="等其它节点的图像一起合批的时间，仅在填了合批分组时有意义；0 表示不等待"),
+                    description="等其它流程/节点的图像一起合批的时间。只有填了合批分组才会生效："
+                                "没有分组时队列里不可能出现第二个提交者，等待只会白白增加节拍"),
               Param("width", 224, "int", min=1, max=8192), Param("height", 224, "int", min=1, max=8192),
               Param("letterbox", False, "bool", description="Keep aspect ratio, pad to size"),
               Param("color", "rgb", "enum", choices=["rgb", "bgr", "gray"]),
@@ -252,10 +265,18 @@ class _OnnxBase(Node):
               Param("mean", "0,0,0", "string", description="Per-channel mean (after scaling)"),
               Param("std", "1,1,1", "string", description="Per-channel std (after scaling)"),
               Param("layout", "NCHW", "enum", choices=["NCHW", "NHWC"]),
-              Param("provider", "auto", "enum", choices=["auto", "cpu", "cuda", "tensorrt"], advanced=True),
+              Param("provider", "auto", "enum", choices=["auto", "cpu", "cuda", "tensorrt"],
+                    description="推理后端。auto 按 TensorRT → CUDA → CPU 挑第一个能用的；"
+                                "想确认实际跑在哪里，看日志里的「使用推理后端」一行"),
+              Param("device_id", 0, "int", min=0, max=15,
+                    description="用哪一块显卡（多卡时有意义）。CPU 后端会忽略这个参数"),
+              Param("session_scope", "auto", "enum", choices=["auto", "shared", "exclusive"], advanced=True,
+                    description="权重加载几份。shared=全软件共用一份；exclusive=按合批分组/节点各加载一份，"
+                                "GPU 上可以用各自的流并行，代价是显存成倍；"
+                                "auto（默认）在 CPU 上共享、在 GPU 上按合批分组/节点各一份"),
               Param("batch_group", "", "string", advanced=True,
                     description="留空（默认）每个节点独立推理，互不排队；填相同的名字则这些节点共用一个"
-                                "批处理器，可跨节点跨流程合批，但它们之间的推理会排队"),
+                                "批处理器，可跨节点跨流程合批——这是让不同时刻到达的图像凑成一批的唯一途径"),
               Param("timeout_s", 30.0, "float", min=0.1, max=600, advanced=True,
                     description="等待批处理结果的超时时间")]
 
@@ -289,18 +310,72 @@ class _OnnxBase(Node):
         return len(self.inputs)
 
     # ---- 会话与批处理执行器 ----
+    def _batch_owner(self) -> str:
+        """批处理器的归属：默认一个节点一个，填了合批分组的节点共用一个。"""
+        group = str(self.get("batch_group")).strip()
+        return f"group:{group}" if group else f"node:{self.id}"
+
+    def _wait_s(self) -> float:
+        """等待窗口。没填合批分组时固定为 0。
+
+        同一个节点的多路输入是一次提交进去的，同一个流程里的节点又是顺序执行的，
+        所以没有分组时队列里不可能出现第二个提交者，等下去只会白白增加节拍。
+        """
+        if not str(self.get("batch_group")).strip():
+            return 0.0
+        return max(0.0, float(self.get("wait_ms"))) / 1000.0
+
     def _preprocess_key(self) -> tuple:
         """批处理器的归属。
 
-        默认每个节点独占一个批处理器，只有本节点的多路输入会合批，不同节点之间可以并行推理。
-        填了合批分组名的节点才会共用一个批处理器，从而能跨节点、跨流程合批，代价是它们之间
-        的推理会被排队。推理会话（权重）始终按模型文件共享，与这里无关。
+        默认每个节点独占一个批处理器，只有本节点的多路输入会合批，不同节点之间互不排队。
+        填了合批分组名的节点才共用一个批处理器，从而能跨节点、跨流程合批（它们之间的推理会
+        排队），这也是让不同时刻到达的图像凑成一批的唯一途径。
         """
         pre = (int(self.get("width")), int(self.get("height")), bool(self.get("letterbox")), self.get("color"),
                float(self.get("scale")), self.get("mean"), self.get("std"), self.get("layout"))
-        group = str(self.get("batch_group")).strip()
-        owner = f"group:{group}" if group else f"node:{self.id}"
-        return (pre, int(self.get("max_batch")), round(float(self.get("wait_ms")), 3), owner)
+        return (pre, int(self.get("max_batch")), round(self._wait_s(), 4), self._batch_owner())
+
+    def _resolve_providers(self) -> tuple[list[str], bool]:
+        """定出本次要尝试的推理后端，并告诉调用方是否会落在 GPU 上。
+
+        get_available_providers() 列的是编译进包里的后端，不代表运行时真能加载；
+        本进程里已经失败过的后端记在 _FAILED_PROVIDERS 里，不再重复尝试。
+        """
+        try:
+            import onnxruntime as ort
+        except ImportError:                       # 真正的报错留给 _create_session
+            return ["CPUExecutionProvider"], False
+        avail = [p for p in ort.get_available_providers() if p not in _FAILED_PROVIDERS]
+        prov = str(self.get("provider"))
+        if prov == "auto":
+            order = ("TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider")
+            providers = [p for p in order if p in avail]
+        else:
+            want = _PROVIDER_NAMES[prov]
+            providers = [want] if want in avail else []
+        providers = providers or ["CPUExecutionProvider"]
+        return providers, providers[0] != "CPUExecutionProvider"
+
+    def _session_owner(self, on_gpu: bool) -> str:
+        """推理会话（权重）的归属：空字符串＝全软件共用一份。
+
+        CPU 上共享永远更划算：权重只占一份内存，而共用会话并不会让推理互相阻塞
+        （onnxruntime 的 Run 本身线程安全），限制并行度的是核心数而不是会话。
+        GPU 上则跟着批处理器走：能合批的节点共用一份权重（它们本来就要排队合批），
+        不能合批的节点各加载一份，才有机会用各自的 CUDA 流并行，代价是显存成倍。
+        """
+        scope = str(self.get("session_scope"))
+        if scope == "shared":
+            return ""
+        if scope == "exclusive":
+            return self._batch_owner()
+        return self._batch_owner() if on_gpu else ""
+
+    def _session_key(self, path: str) -> tuple:
+        providers, on_gpu = self._resolve_providers()
+        device = int(self.get("device_id")) if on_gpu else -1
+        return (path, os.path.getmtime(path), str(self.get("provider")), device, self._session_owner(on_gpu))
 
     def _ensure_runner(self) -> _Runner:
         path = paths.resolve(self.get("model_path"))
@@ -308,8 +383,16 @@ class _OnnxBase(Node):
             raise NodeError("未设置模型文件")
         if not os.path.isfile(path):
             raise NodeError(f"模型文件不存在：{path}")
-        skey = (path, os.path.getmtime(path), self.get("provider"))
-        holder = _get_or_create_session(skey, lambda: self._create_session(path))
+        skey = self._session_key(path)
+        try:
+            holder = _get_or_create_session(skey, lambda: self._create_session(path))
+        except Exception as e:
+            if not skey[-1]:
+                raise
+            # 独占一份权重失败，多半是显存不够：退回共享会话，宁可慢一点也不要整条流程挂掉
+            log.warning("%s：按独占方式加载模型失败（%s），改为与其它节点共用同一份权重", self.name, e)
+            skey = skey[:-1] + ("",)
+            holder = _get_or_create_session(skey, lambda: self._create_session(path))
         self.adopt_model_spec(holder.spec)      # 模型把输入形状写死时，按它修正预处理参数
         key = skey + self._preprocess_key()
         if self._runner_key == key and self._runner is not None:
@@ -321,7 +404,7 @@ class _OnnxBase(Node):
                         "要用上合批需要把模型导出成批次维动态的", self.name, describe_shape(holder.spec["shape"]))
         try:
             self._runner = _acquire_runner(key, lambda: _Runner(
-                skey, holder, int(self.get("max_batch")), float(self.get("wait_ms")) / 1000.0,
+                skey, holder, int(self.get("max_batch")), self._wait_s(),
                 name=os.path.basename(path)))
         except Exception:
             _drop_session(skey)
@@ -355,26 +438,21 @@ class _OnnxBase(Node):
         return changed
 
     def _create_session(self, path: str) -> _SharedSession:
+        # 注意：get_available_providers() 列的是编译进包里的后端，不代表运行时真能加载。
+        # 装了 GPU 版但缺 CUDA 运行库时，CUDA 后端会加载失败并静默回退到 CPU，
+        # 所以失败过的后端记在 _FAILED_PROVIDERS 里不再重试，并把实际用的后端报出来。
         try:
             import onnxruntime as ort
         except ImportError as e:  # pragma: no cover
             raise NodeError("未安装 onnxruntime") from e
-        name = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider", "tensorrt": "TensorrtExecutionProvider"}
-        # 注意：get_available_providers() 列的是编译进包里的后端，不代表运行时真能加载。
-        # 装了 GPU 版但缺 CUDA 运行库时，CUDA 后端会加载失败并静默回退到 CPU，
-        # 所以这里记下本进程内已经失败过的后端，不再重复尝试，并把实际用的后端报出来。
-        avail = [p for p in ort.get_available_providers() if p not in _FAILED_PROVIDERS]
-        prov = self.get("provider")
-        if prov == "auto":
-            providers = [p for p in ("TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider") if p in avail]
-        else:
-            want = name[prov]
-            providers = [want] if want in avail else []
-        providers = providers or ["CPUExecutionProvider"]
+        providers, on_gpu = self._resolve_providers()
+        device = int(self.get("device_id"))
+        # 显卡编号通过 provider 选项传给 CUDA / TensorRT；CPU 后端没有这个概念
+        request = [(p, {"device_id": device}) if p in _GPU_PROVIDERS else p for p in providers]
         so = ort.SessionOptions()
         so.log_severity_level = 3
         try:
-            session = ort.InferenceSession(path, so, providers=providers)
+            session = ort.InferenceSession(path, so, providers=request)
         except Exception as e:
             raise NodeError(f"加载模型失败：{os.path.basename(path)}：{e}") from e
         active = list(session.get_providers())
@@ -382,10 +460,14 @@ class _OnnxBase(Node):
             if p != "CPUExecutionProvider" and p not in active:
                 _FAILED_PROVIDERS.add(p)
                 log.warning("推理后端 %s 无法加载（通常是缺少对应版本的 CUDA/cuDNN 运行库），本次运行不再尝试", p)
-        if prov != "auto" and name[prov] not in active:
-            log.warning("%s：请求的推理后端 %s 不可用，实际使用 %s", self.name, prov, active[0] if active else "?")
+        prov = str(self.get("provider"))
+        where = active[0] if active else "?"
+        if active and active[0] in _GPU_PROVIDERS:
+            where = f"{active[0]}（{device} 号卡）"
+        if prov != "auto" and _PROVIDER_NAMES[prov] not in active:
+            log.warning("%s：请求的推理后端 %s 不可用，实际使用 %s", self.name, prov, where)
         else:
-            log.info("%s：模型 %s 使用推理后端 %s", self.name, os.path.basename(path), active[0] if active else "?")
+            log.info("%s：模型 %s 使用推理后端 %s", self.name, os.path.basename(path), where)
         return _SharedSession(session, read_input_spec(session), active)
 
     def _release_runner(self) -> None:

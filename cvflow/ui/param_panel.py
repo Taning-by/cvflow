@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -37,16 +38,25 @@ def _unit_for(p: Param) -> str:
     return _UNIT_BY_NAME.get(p.name, "")
 
 
-def _decimals(p: Param) -> int:
-    """小数位按步长取，默认 2 位；没有步长但上限不超过 1 的（置信度之类）给 3 位。"""
+def _decimals(p: Param, value: float | None = None) -> int:
+    """小数位按步长取，默认 2 位；上限不超过 1 的（置信度之类）给 3 位。
+
+    最后还要保证当前值显示得出来：像 1/255 这种缩放系数按 2 位会被显示成 0.00，
+    用户一改就把参数毁了，所以按数量级把位数补够。
+    """
+    decimals = 2
     if p.step:
         step = abs(float(p.step))
         for d in range(5):
             if abs(step * 10 ** d - round(step * 10 ** d)) < 1e-9:
-                return d
-    if p.max is not None and abs(float(p.max)) <= 1:
-        return 3
-    return 2
+                decimals = d
+                break
+    elif p.max is not None and abs(float(p.max)) <= 1:
+        decimals = 3
+    v = abs(float(value or 0.0))
+    if v and v < 10 ** -decimals:
+        decimals = min(8, int(math.ceil(-math.log10(v))) + 1)
+    return decimals
 
 
 def _fmt(v) -> str:
@@ -403,7 +413,7 @@ class ParamPanel(QScrollArea):
             return sb
         if k == "float":
             sb = QDoubleSpinBox()
-            sb.setDecimals(_decimals(p))
+            sb.setDecimals(_decimals(p, v))
             sb.setRange(float(p.min) if p.min is not None else -1e12, float(p.max) if p.max is not None else 1e12)
             sb.setSingleStep(float(p.step) if p.step else (0.1 if (p.max or 1) <= 1 else 1.0))
             sb.setValue(float(v))

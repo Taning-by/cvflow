@@ -175,13 +175,26 @@ def test_dl_batch_zero_wait_does_not_add_latency(cls_model):
 
 
 def test_dl_batch_wait_window_expires_and_runs_anyway(cls_model):
-    eng, node = build(cls_model, [channel_image(1)], wait_ms=150.0)
+    """填了合批分组时窗口会真的等；没人来就到期照常执行，不会卡住。"""
+    eng, node = build(cls_model, [channel_image(1)], wait_ms=150.0, batch_group="线A")
     eng.run()                                                 # 预热，排除建会话的开销
     t0 = time.perf_counter()
     nr = eng.run().node_results[node.id]
     waited = time.perf_counter() - t0
     assert nr.outputs["class_id"] == 1 and nr.outputs["batch_size"] == 1
     assert 0.1 < waited < 2.0                                 # 没人来，等到窗口到期照常执行
+    eng.teardown_nodes()
+
+
+def test_dl_batch_wait_is_ignored_without_a_batch_group(cls_model):
+    """没填合批分组时等待窗口不生效：队列里不可能有第二个提交者，等下去纯粹是浪费节拍。"""
+    eng, node = build(cls_model, [channel_image(1)], wait_ms=300.0)
+    eng.run()                                                 # 预热
+    t0 = time.perf_counter()
+    nr = eng.run().node_results[node.id]
+    waited = time.perf_counter() - t0
+    assert nr.outputs["class_id"] == 1 and nr.outputs["batch_size"] == 1
+    assert waited < 0.1                                       # 完全不等
     eng.teardown_nodes()
 
 
@@ -209,6 +222,33 @@ def test_dl_batch_window_merges_two_concurrent_flows(cls_model):
         eng.teardown_nodes()
 
 
+def test_dl_batch_window_merges_flows_that_arrive_at_different_times(cls_model):
+    """两路图像不同时到达（各自被 PLC/定时器触发）时，合批分组 + 等待窗口仍然把它们凑成一批。
+
+    这是"同一流程里的输入不一定同时到达"的解法：每路一个流程，各自被触发，
+    深度学习节点填相同的合批分组，先到的在窗口里等后到的。
+    """
+    engines = [build(cls_model, [channel_image(c)], wait_ms=400.0, max_batch=4, batch_group="线B") for c in (0, 2)]
+    for eng, _ in engines:
+        eng.setup_nodes()
+    out = {}
+
+    def go(k, delay):
+        time.sleep(delay)                                     # 第二路晚 120 ms 才被触发
+        eng, node = engines[k]
+        out[k] = eng.run().node_results[node.id].outputs
+
+    threads = [threading.Thread(target=go, args=(0, 0.0)), threading.Thread(target=go, args=(1, 0.12))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert out[0]["batch_size"] == 2 and out[1]["batch_size"] == 2     # 错开到达也合成了一批
+    assert out[0]["class_id"] == 0 and out[1]["class_id"] == 2         # 各自拿回自己的结果
+    for eng, _ in engines:
+        eng.teardown_nodes()
+
+
 # =============================================================== 会话共享
 def test_dl_batch_nodes_share_weights_but_not_the_batch_executor(cls_model):
     """默认每个节点独占批处理器以保证并行，但模型权重只加载一份。"""
@@ -224,6 +264,80 @@ def test_dl_batch_nodes_share_weights_but_not_the_batch_executor(cls_model):
     assert active_sessions() == s0 + 1 and runners() == r0 + 1
     engines[2][0].teardown_nodes()
     assert active_sessions() == s0 and runners() == r0
+
+
+def test_dl_session_scope_exclusive_loads_one_copy_per_owner(cls_model):
+    """独占会话：每个节点各加载一份权重；同一合批分组的节点仍然只有一份（它们本来就要排队合批）。"""
+    from cvflow.operators.dl import active_sessions
+    s0, r0 = active_sessions(), runners()
+    engines = [build(cls_model, [channel_image(0)], session_scope="exclusive") for _ in range(3)]
+    for eng, _ in engines:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 3 and runners() == r0 + 3      # 权重三份，批处理器三个
+    for eng, _ in engines:
+        eng.teardown_nodes()
+    assert active_sessions() == s0 and runners() == r0
+
+    grouped = [build(cls_model, [channel_image(0)], session_scope="exclusive", batch_group="线A") for _ in range(3)]
+    for eng, _ in grouped:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 1 and runners() == r0 + 1      # 同组：权重一份，批处理器一个
+    for eng, _ in grouped:
+        eng.teardown_nodes()
+    assert active_sessions() == s0 and runners() == r0
+
+
+def test_dl_session_scope_shared_keeps_one_copy_even_across_groups(cls_model):
+    """强制共享：不管分组怎么填，权重都只加载一份。"""
+    from cvflow.operators.dl import active_sessions
+    s0 = active_sessions()
+    engines = [build(cls_model, [channel_image(0)], session_scope="shared", batch_group=g) for g in ("甲", "乙")]
+    for eng, _ in engines:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 1 and runners() >= 2
+    for eng, _ in engines:
+        eng.teardown_nodes()
+    assert active_sessions() == s0
+
+
+def test_dl_device_id_does_not_split_cpu_sessions(cls_model):
+    """显卡编号只在 GPU 后端下参与会话归属，CPU 上填什么都还是同一份权重。"""
+    from cvflow.operators.dl import active_sessions
+    s0 = active_sessions()
+    engines = [build(cls_model, [channel_image(0)], provider="cpu", device_id=d) for d in (0, 1)]
+    for eng, _ in engines:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 1
+    for eng, _ in engines:
+        eng.teardown_nodes()
+    assert active_sessions() == s0
+
+
+def test_dl_gpu_default_gives_each_node_its_own_weights(cls_model, monkeypatch):
+    """GPU 上 auto 的默认：不同节点各加载一份权重（能用各自的流并行），同组的仍共用一份。
+
+    本机不一定有可用的 CUDA 运行库，所以只把"落在 GPU 上"这一判断打桩，
+    验证的是会话归属规则本身，不是真的去跑显卡。
+    """
+    from cvflow.operators import dl
+    from cvflow.operators.dl import active_sessions
+    monkeypatch.setattr(dl, "_FAILED_PROVIDERS", set())          # 别污染其它用例的后端可用性判断
+    monkeypatch.setattr(dl._OnnxBase, "_resolve_providers",
+                        lambda self: (["CUDAExecutionProvider", "CPUExecutionProvider"], True))
+    s0 = active_sessions()
+    engines = [build(cls_model, [channel_image(0)]) for _ in range(2)]
+    for eng, _ in engines:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 2                              # 各一份
+    for eng, _ in engines:
+        eng.teardown_nodes()
+    grouped = [build(cls_model, [channel_image(0)], batch_group="线A") for _ in range(2)]
+    for eng, _ in grouped:
+        eng.setup_nodes()
+    assert active_sessions() == s0 + 1                              # 同组共用一份
+    for eng, _ in grouped:
+        eng.teardown_nodes()
+    assert active_sessions() == s0
 
 
 def test_dl_batch_group_makes_nodes_share_one_executor(cls_model):
