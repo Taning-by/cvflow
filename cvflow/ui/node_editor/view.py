@@ -1,7 +1,7 @@
 """Graphics view: zoom/pan, context menu, drag & drop from the palette, delete key."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QAction, QPainter
 from PySide6.QtWidgets import QGraphicsView, QMenu
 
@@ -14,6 +14,9 @@ MIME = "application/x-cvflow-node"
 
 
 class NodeView(QGraphicsView):
+    zoom_changed = Signal(float)
+    MIN_ZOOM, MAX_ZOOM, FIT_FLOOR = 0.25, 4.0, 0.6
+
     def __init__(self, scene: NodeScene, parent=None) -> None:
         super().__init__(scene, parent)
         self._scene = scene
@@ -24,6 +27,7 @@ class NodeView(QGraphicsView):
         self.setAcceptDrops(True)
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setContextMenuPolicy(Qt.NoContextMenu)   # 右键菜单由鼠标释放时手动弹出（区分拖动与点击）
+        self._fit_mode = True            # 处于"适配"状态：窗格尺寸变化时自动重新适配
         self._panning = False
         self._pan_start = QPointF()
         self._pan_button = None
@@ -31,11 +35,22 @@ class NodeView(QGraphicsView):
         self._press_pos = QPointF()
 
     # ---- zoom / pan ----
+    def zoom(self) -> float:
+        return float(self.transform().m11())
+
+    def set_zoom(self, value: float) -> None:
+        self._fit_mode = False
+        value = max(self.MIN_ZOOM, min(self.MAX_ZOOM, value))
+        self.setTransform(self.transform().fromScale(value, value))
+        self.zoom_changed.emit(value)
+
     def wheelEvent(self, event) -> None:
         factor = 1.12 if event.angleDelta().y() > 0 else 1 / 1.12
-        cur = self.transform().m11()
-        if 0.2 <= cur * factor <= 3.0:
+        cur = self.zoom()
+        if self.MIN_ZOOM <= cur * factor <= self.MAX_ZOOM:
+            self._fit_mode = False
             self.scale(factor, factor)
+            self.zoom_changed.emit(self.zoom())
 
     def mousePressEvent(self, event) -> None:
         b = event.button()
@@ -58,6 +73,7 @@ class NodeView(QGraphicsView):
                 if not self._pan_moved:
                     self.setCursor(Qt.ClosedHandCursor)
                 self._pan_moved = True
+            self._fit_mode = False       # 用户自己平移过视图，就别再自动适配
             self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - d.x()))
             self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y()))
             return
@@ -82,12 +98,27 @@ class NodeView(QGraphicsView):
             return
         super().keyPressEvent(event)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._fit_mode:            # 还没手动缩放过：跟着窗格大小保持适配
+            self.fit_all()
+
     def fit_all(self) -> None:
+        """适配全部节点。缩小有下限：节点名与参数摘要必须还能读，读不全时宁可留给用户滚动。"""
+        self._fit_mode = True
         rect = self._scene.itemsBoundingRect()
         if rect.isValid():
             self.fitInView(rect.adjusted(-40, -40, 40, 40), Qt.KeepAspectRatio)
-            if self.transform().m11() > 1.0:
+            z = self.zoom()
+            if z > 1.0:
                 self.resetTransform()
+                self.centerOn(rect.center())
+            elif z < self.FIT_FLOOR:
+                # 放不下也不再缩小：按下限缩放，并对齐到流程起点（左上），因为流程是从左往右读的
+                self.setTransform(self.transform().fromScale(self.FIT_FLOOR, self.FIT_FLOOR))
+                vis = self.mapToScene(self.viewport().rect()).boundingRect()
+                self.centerOn(rect.left() + vis.width() / 2 - 20, rect.center().y())
+        self.zoom_changed.emit(self.zoom())
 
     # ---- context menu ----
     def _show_context_menu(self, pos, global_pos) -> None:

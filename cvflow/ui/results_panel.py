@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QLabel, QMenu, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QHBoxLayout, QHeaderView, QLabel, QMenu,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..core.engine import RunResult
 from ..core.graph import Graph
 from ..core.node import NodeStatus
 from ..core.types import to_jsonable
 from .i18n import tr
-from .theme import C, STATUS_COLORS
+from .theme import C, M, STATUS_COLORS, STATUS_GLYPH, STATUS_TEXT, tabular, ui_font
 
 FULL_TEXT = Qt.UserRole + 1          # 单元格的完整文本，显示可能被截断，复制用这个
 MAX_SHOWN = 200
@@ -120,38 +120,57 @@ class ResultsPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setContentsMargins(M["gap"], M["gap"], M["gap"], M["gap"])
+        lay.setSpacing(M["gap"])
+        self._last: tuple[RunResult | None, Graph | None] = (None, None)
+
+        head = QHBoxLayout()
+        head.setSpacing(M["gap"])
         self.banner = QLabel(tr("no run yet"))
-        self.banner.setAlignment(Qt.AlignCenter)
+        self.banner.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.banner.setTextInteractionFlags(Qt.TextSelectableByMouse)   # 横幅里的错误也要能选中复制
         self.banner.setCursor(Qt.IBeamCursor)
-        self._banner_style(C["panel2"], C["muted"])
+        self.banner.setFont(tabular(ui_font(M["font"], True)))
+        self._banner_style(C["panel2"], C["muted"], C["border"])
+        self.only_problems = QCheckBox(tr("Problems only"))
+        self.only_problems.setToolTip(tr("Hide nodes that finished OK"))
+        self.only_problems.toggled.connect(lambda _: self.show_result(*self._last))
+        head.addWidget(self.banner, 1)
+        head.addWidget(self.only_problems)
+
         self.tree = _ResultTree()
         self.tree.setHeaderLabels([tr("Name"), tr("Value"), tr("Status / ms")])
-        self.tree.setColumnWidth(0, 200)
-        self.tree.setColumnWidth(1, 360)
+        self.tree.setColumnWidth(0, 220)
+        self.tree.setColumnWidth(1, 420)
+        # 名称与值固定在左侧，状态紧跟其后：视线不用横跨整屏去找状态
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Interactive)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.tree.header().setStretchLastSection(True)
         self.tree.setAlternatingRowColors(True)
-        self.tree.setIndentation(16)
+        self.tree.setIndentation(14)
+        self.tree.setUniformRowHeights(True)
         self.tree.setToolTip("选中后 Ctrl+C 复制，右键可复制单元格、整行或全部")
-        lay.addWidget(self.banner)
+        lay.addLayout(head)
         lay.addWidget(self.tree)
 
-    def _banner_style(self, bg: str, fg: str) -> None:
-        self.banner.setStyleSheet(f"font-size:15px; font-weight:600; padding:6px; background:{bg}; "
-                                  f"border-radius:8px; color:{fg}")
+    def _banner_style(self, bg: str, fg: str, border: str) -> None:
+        self.banner.setStyleSheet(f"font-size:{M['font']}px; font-weight:600; padding:5px 10px; background:{bg}; "
+                                  f"border:1px solid {border}; border-radius:{M['radius']}px; color:{fg}")
 
     def show_result(self, result: RunResult | None, graph: Graph | None = None) -> None:
+        self._last = (result, graph)
         self.tree.clear()
         if result is None:
             self.banner.setText(tr("no run yet"))
-            self._banner_style(C["panel2"], C["muted"])
+            self._banner_style(C["panel2"], C["muted"], C["border"])
             return
-        color = {"OK": "#1f7a3f", "NG": "#a12d2d", "ERROR": "#9a5a00"}[result.status_text]
+        color = {"OK": C["ok"], "NG": C["ng"], "ERROR": C["warn"]}[result.status_text]
+        bg = {"OK": C["ok_bg"], "NG": C["ng_bg"], "ERROR": C["warn_bg"]}[result.status_text]
         extra = f" — {result.error}" if result.error else ""
         self.banner.setText(tr("{status}  ·  run {id}  ·  {ms:.1f} ms").format(
             status=tr(result.status_text), id=result.run_id, ms=result.duration_ms) + extra)
         self.banner.setToolTip(self.banner.text())
-        self._banner_style(color, "white")
+        self._banner_style(bg, color, color)
         if result.outputs:
             pub = QTreeWidgetItem()
             _cell(pub, 0, tr("Published"), raw=True)
@@ -162,15 +181,22 @@ class ResultsPanel(QWidget):
                 pub.addChild(child)
             self.tree.addTopLevelItem(pub)
             pub.setExpanded(True)
+        digits = tabular(ui_font())
         for nr in result.node_results.values():
+            if self.only_problems.isChecked() and nr.status in (NodeStatus.OK, NodeStatus.IDLE):
+                continue
             it = QTreeWidgetItem()
             _cell(it, 0, nr.node_name, raw=True)
             if nr.status in (NodeStatus.ERROR, NodeStatus.SKIPPED):
                 _cell(it, 1, nr.error, raw=True)
-                it.setForeground(1, QColor(C["warn"] if nr.status == NodeStatus.ERROR else C["muted"]))
-            it.setData(2, FULL_TEXT, f"{tr(nr.status.value)}  {nr.time_ms:.2f} ms")
-            it.setText(2, f"●  {tr(nr.status.value)}   {nr.time_ms:.2f} ms")
+                it.setForeground(1, QColor(C["ng"] if nr.status == NodeStatus.ERROR else C["muted"]))
+            # 状态列：字形 + 文字 + 颜色，成功 / 不合格 / 失败不会只靠颜色区分
+            it.setData(2, FULL_TEXT, f"{STATUS_TEXT.get(nr.status, nr.status.value)}  {nr.time_ms:.2f} ms")
+            it.setText(2, f"{STATUS_GLYPH.get(nr.status, '')}  {STATUS_TEXT.get(nr.status, nr.status.value)}"
+                          f"   {nr.time_ms:.2f} ms")
             it.setForeground(2, QColor(STATUS_COLORS[nr.status]))
+            it.setFont(2, digits)
+            it.setFont(1, digits)
             f = it.font(0)
             f.setBold(True)
             it.setFont(0, f)

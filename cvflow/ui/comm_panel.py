@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
 
 from ..comm.manager import DEVICE_KIND_LABELS, DEVICE_KINDS, REGISTER_MATCHES, TEXT_MATCHES, CommManager, ReceiveRule, SendRule
 from .i18n import tr
+from .theme import C
 
 
 # ------------------------------------------------------------------ dialogs
@@ -105,7 +106,7 @@ class ReceiveRuleDialog(QDialog):
             form.addRow(tr(lbl), w)
         hint = QLabel(tr("Text matches apply to TCP/UDP/serial frames; register_* matches apply to Modbus devices "
                          "(rising = 0→non-zero)."))
-        hint.setWordWrap(True); hint.setStyleSheet("color:#888")
+        hint.setWordWrap(True); hint.setStyleSheet(f"color:{C['muted']}")
         form.addRow(hint)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -136,7 +137,7 @@ class SendRuleDialog(QDialog):
         for lbl, w in [("Name", self.name), ("Device", self.device), ("Flow (empty = any)", self.flow), ("When", self.when),
                        ("Text template", self.template), ("Register writes", self.registers), ("Enabled", self.enabled)]:
             form.addRow(tr(lbl), w)
-        self.err = QLabel(""); self.err.setStyleSheet("color:#ff8a65")
+        self.err = QLabel(""); self.err.setWordWrap(True); self.err.setStyleSheet(f"color:{C['ng']}")
         form.addRow(self.err)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self._ok); btns.rejected.connect(self.reject)
@@ -248,9 +249,10 @@ class CommPanel(QWidget):
             status = tr("connected") if d.connected else tr("disconnected")
             cells = [d.name, DEVICE_KIND_LABELS.get(d.kind, d.kind), status, str(info.get("rx", 0)), str(info.get("tx", 0)), d.last_error]
             for c, text in enumerate(cells):
-                it = QTableWidgetItem(("●  " + text) if c == 2 else text)
+                # 连接状态：字形 + 文字 + 颜色，颜色不是唯一线索
+                it = QTableWidgetItem((("● " if d.connected else "○ ") + text) if c == 2 else text)
                 if c == 2:
-                    it.setForeground(QColor("#3ccf6e") if d.connected else QColor("#8d95a3"))
+                    it.setForeground(QColor(C["ok"] if d.connected else C["muted"]))
                 self.dev_table.setItem(r, c, it)
         self.rx_table.setRowCount(len(self.mgr.receive_rules))
         for r, rule in enumerate(self.mgr.receive_rules):

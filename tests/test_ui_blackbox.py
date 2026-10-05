@@ -192,9 +192,11 @@ def node_item(win, name):
 # =============================================================== 启动
 def test_ui_startup_layout_and_title(win):
     assert "demo_holes.json" in win.windowTitle()
-    docks = {d.windowTitle() for d in win.findChildren(type(win.findChild(type(win.palette.parent()))))} if False else None
     titles = {d.windowTitle() for d in win.findChildren(__import__("PySide6.QtWidgets", fromlist=["QDockWidget"]).QDockWidget)}
-    assert {"节点库", "图像", "参数", "输出"} <= titles
+    assert {"节点库", "参数", "输出"} <= titles                      # 左 / 右 / 底 三个停靠面板
+    assert win.center.count() == 2                                  # 中央：图像与流程两个主工作区
+    assert win.center.widget(0) is win.image_pane and win.center.widget(1) is win.flow_pane
+    assert win.image_view.isVisible() and win.view.isVisible()
     assert [win.bottom_tabs.tabText(i) for i in range(win.bottom_tabs.count())] == ["结果", "通信", "变量", "日志"]
     assert win.flow_combo.currentText() == "main" and win.flow_combo.count() == 2
     assert len(win.scene.node_items) == 11 and len(win.scene.link_items) == 13
@@ -499,7 +501,9 @@ def test_ui_results_banner_tree_ok_and_ng(win, app):
     assert {pub.child(i).text(0): pub.child(i).text(1) for i in range(pub.childCount())} == {"holes": "3", "width": "401"}
     node_by_name(win, "孔数判定").set("low", 99)
     win.act_run.trigger(); pump(app); win._apply_pending_result()
-    assert win.results_panel.banner.text().startswith("NG") and "a12d2d" in win.results_panel.banner.styleSheet()
+    from cvflow.ui.theme import C
+    style = win.results_panel.banner.styleSheet()
+    assert win.results_panel.banner.text().startswith("NG") and C["ng"] in style and C["ng_bg"] in style
 
 
 # =============================================================== 变量面板

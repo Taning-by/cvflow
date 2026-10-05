@@ -7,8 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
-                               QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton, QTabWidget,
-                               QToolBar, QVBoxLayout, QWidget)
+                               QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
+                               QSizePolicy, QSplitter, QTabWidget, QToolBar, QToolButton, QVBoxLayout, QWidget)
 
 from ..comm import CommManager, set_manager
 from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, paths, registry
@@ -25,7 +25,7 @@ from .node_editor import NodeScene, NodeView
 from .palette import NodePalette
 from .param_panel import ParamPanel
 from .results_panel import ResultsPanel
-from .theme import C, app_icon, chip_style, make_icon
+from .theme import C, M, app_icon, make_icon, soft_chip_style, tabular, ui_font
 from .variables_panel import VariablesPanel
 
 log = logging.getLogger("cvflow.ui")
@@ -49,6 +49,8 @@ class MainWindow(QMainWindow):
         self.run_mode = False
         self._dirty = False
         self._pending_result: RunResult | None = None
+        self._center_sizes: list[int] = []
+        self._default_docks = False
 
         self._autorun_timer = QTimer(self)
         self._autorun_timer.setSingleShot(True)
@@ -74,6 +76,9 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(s.value("geometry"))
         if s.value("state") is not None:
             self.restoreState(s.value("state"))
+        else:
+            self._default_docks = True          # 没有保存过布局：显示时按窗口高度给一次默认尺寸
+        self._restore_center_layout(s)
 
         if solution_path:
             self.open_solution(solution_path)
@@ -86,99 +91,298 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI construction
     def _build_ui(self) -> None:
+        """工作区结构：顶部项目/执行栏，左侧算法库，中央图像＋流程，右侧参数，底部结果与日志。"""
         self.scene = NodeScene(self)
         self.view = NodeView(self.scene)
-        self.setCentralWidget(self.view)
         self.scene.node_selected.connect(self._on_node_selected)
         self.scene.graph_changed.connect(self._on_graph_changed)
         self.scene.message.connect(lambda m: self.statusBar().showMessage(m, 4000))
 
+        # ---- 中央：图像与流程两个主工作区 ----
+        self.image_pane = self._build_image_pane()
+        self.flow_pane = self._build_flow_pane()
+        self.center = QSplitter(Qt.Horizontal)
+        self.center.setObjectName("center_splitter")
+        self.center.setHandleWidth(6)
+        self.center.addWidget(self.image_pane)
+        self.center.addWidget(self.flow_pane)
+        self.center.setStretchFactor(0, 3)
+        self.center.setStretchFactor(1, 2)
+        self.center.setCollapsible(0, True)
+        self.center.setCollapsible(1, True)
+        self.center.splitterMoved.connect(lambda *_: self._sync_expand_buttons())
+        host = QWidget()
+        hl = QVBoxLayout(host)
+        hl.setContentsMargins(M["gap"], M["gap"], M["gap"], M["gap"])
+        hl.addWidget(self.center)
+        self.setCentralWidget(host)
+
+        # ---- 左侧：算法工具箱 ----
         self.palette = NodePalette()
         self.palette.node_activated.connect(self._add_node_at_center)
-        self._dock(tr("Nodes"), self.palette, Qt.LeftDockWidgetArea, "dock_palette")
+        self.dock_palette = self._dock(tr("Nodes"), self.palette, Qt.LeftDockWidgetArea, "dock_palette")
+        self.dock_palette.setMinimumWidth(190)
 
-        img_w = QWidget()
-        il = QVBoxLayout(img_w)
-        il.setContentsMargins(0, 0, 0, 0)
-        bar = QHBoxLayout()
-        bar.setContentsMargins(8, 4, 8, 4)
-        self.image_title = QLabel("—")
-        self.image_title.setStyleSheet("font-weight:600")
-        fit = QPushButton(tr("Fit"))
-        fit.setFixedWidth(56)
-        self.input_pick = QComboBox()
-        self.input_pick.setToolTip("选择查看该节点的哪一路输入")
-        self.input_pick.setMinimumWidth(96)
-        self.input_pick.hide()
-        self.input_pick.currentIndexChanged.connect(lambda _: self._update_image())
-        self.all_overlays = QCheckBox(tr("All overlays"))
-        self.all_overlays.toggled.connect(lambda _: self._update_image())
-        bar.addWidget(self.image_title, 1)
-        bar.addWidget(self.input_pick)
-        bar.addWidget(self.all_overlays)
-        bar.addWidget(fit)
-        self.image_view = ImageView()
-        fit.clicked.connect(self.image_view.fit)
-        self.pixel_label = QLabel("")
-        self.pixel_label.setObjectName("muted")
-        self.pixel_label.setContentsMargins(8, 2, 8, 2)
-        self.image_view.pixel_info.connect(self.pixel_label.setText)
-        il.addLayout(bar)
-        il.addWidget(self.image_view, 1)
-        il.addWidget(self.pixel_label)
-        self._dock(tr("Image"), img_w, Qt.RightDockWidgetArea, "dock_image")
-
+        # ---- 右侧：当前节点的参数与输出 ----
         self.param_panel = ParamPanel()
         self.param_panel.param_changed.connect(self._on_param_changed)
         self.param_panel.node_renamed.connect(self._on_node_renamed)
         self.param_panel.node_enabled_changed.connect(self.scene.set_node_enabled)
         self.param_panel.roi_edit_requested.connect(self._begin_roi_edit)
         self.param_panel.roi_show_requested.connect(self._show_roi)
-        self._dock(tr("Parameters"), self.param_panel, Qt.RightDockWidgetArea, "dock_params")
+        self.dock_params = self._dock(tr("Parameters"), self.param_panel, Qt.RightDockWidgetArea, "dock_params")
+        self.dock_params.setMinimumWidth(260)
 
+        # ---- 底部：结果、通信、变量、日志 ----
         self.results_panel = ResultsPanel()
         self.log_panel = LogPanel()
         self.comm_panel = CommPanel(CommManager(EventBus()), lambda: list(self.solution.flows) if self.solution else [])
         self.comm_panel.config_changed.connect(self._mark_dirty)
         self.variables_panel = VariablesPanel()
         self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.setDocumentMode(True)
         self.bottom_tabs.addTab(self.results_panel, tr("Results"))
         self.bottom_tabs.addTab(self.comm_panel, tr("Communication"))
         self.bottom_tabs.addTab(self.variables_panel, tr("Variables"))
         self.bottom_tabs.addTab(self.log_panel, tr("Log"))
-        self._dock(tr("Output"), self.bottom_tabs, Qt.BottomDockWidgetArea, "dock_bottom")
+        self.dock_bottom = self._dock(tr("Output"), self.bottom_tabs, Qt.BottomDockWidgetArea, "dock_bottom")
+        self.dock_bottom.setMinimumHeight(140)
 
-        self.status_run = QLabel(tr("edit mode"))
-        self.status_run.setStyleSheet(chip_style(C["panel2"], C["muted"]))
-        self.status_stats = QLabel("")
-        self.statusBar().addPermanentWidget(self.status_stats)
-        self.statusBar().addPermanentWidget(self.status_run)
+        self._build_status_bar()
 
     def _dock(self, title: str, widget: QWidget, area, name: str) -> QDockWidget:
         d = QDockWidget(title, self)
         d.setObjectName(name)
         d.setWidget(widget)
+        d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable)
         self.addDockWidget(area, d)
         return d
 
+    # ---- 工作区面板外壳 ----
+    def _pane(self) -> tuple[QWidget, QHBoxLayout, QVBoxLayout]:
+        """统一的工作区外壳：标题栏（标题 + 工具）+ 内容区，返回 (面板, 标题栏布局, 内容布局)。"""
+        pane = QWidget()
+        pane.setObjectName("pane")
+        lay = QVBoxLayout(pane)
+        lay.setContentsMargins(1, 1, 1, 1)
+        lay.setSpacing(0)
+        header = QFrame()
+        header.setObjectName("paneHeader")
+        header.setFixedHeight(36)
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(M["gap_l"], 0, M["gap"], 0)
+        hl.setSpacing(M["gap"])
+        lay.addWidget(header)
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        lay.addLayout(body, 1)
+        return pane, hl, body
+
+    def _pane_title(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setFont(ui_font(M["font_title"], True))
+        return lbl
+
+    def _tool_button(self, icon: str, tip: str, slot, checkable: bool = False) -> QToolButton:
+        b = QToolButton()
+        b.setIcon(make_icon(icon, C["muted"], 16))
+        b.setIconSize(QSize(16, 16))
+        b.setToolTip(tip)
+        b.setAccessibleName(tip)                       # 图标按钮也要有可访问的名称
+        b.setCheckable(checkable)
+        b.setAutoRaise(True)
+        b.setFixedSize(28, 28)
+        b.clicked.connect(slot)
+        return b
+
+    def _build_image_pane(self) -> QWidget:
+        pane, hl, body = self._pane()
+        self.image_title = QLabel("—")
+        self.image_title.setFont(ui_font(M["font_title"], True))
+        self.image_title.setToolTip(tr("Image of the selected node"))
+        self.input_pick = QComboBox()
+        self.input_pick.setToolTip("选择查看该节点的哪一路输入")
+        self.input_pick.setMinimumWidth(104)
+        self.input_pick.setFixedHeight(26)
+        self.input_pick.hide()
+        self.input_pick.currentIndexChanged.connect(lambda _: self._update_image())
+        self.all_overlays = QCheckBox(tr("All overlays"))
+        self.all_overlays.setToolTip(tr("Show the overlays of every node in this run"))
+        self.all_overlays.toggled.connect(lambda _: self._update_image())
+        self.image_view = ImageView()
+        fit = QPushButton(tr("Fit"))
+        fit.setIcon(make_icon("fit", C["muted"], 16))
+        fit.setFixedHeight(26)
+        fit.setToolTip(tr("Fit the image to the view"))
+        fit.clicked.connect(self.image_view.fit)
+        one = QPushButton("1:1")
+        one.setFixedHeight(26)
+        one.setToolTip(tr("Show the image at 100%"))
+        one.clicked.connect(self.image_view.actual_size)
+        self.btn_expand_image = self._tool_button("expand", tr("Maximise the image area"),
+                                                  lambda: self._toggle_expand(0), checkable=True)
+        hl.addWidget(self.image_title, 1)
+        hl.addWidget(self.input_pick)
+        hl.addWidget(self.all_overlays)
+        hl.addWidget(self._separator())
+        hl.addWidget(fit)
+        hl.addWidget(one)
+        hl.addWidget(self.btn_expand_image)
+
+        body.addWidget(self.image_view, 1)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(M["gap_l"], 3, M["gap_l"], 3)
+        self.pixel_label = QLabel("")
+        self.pixel_label.setObjectName("muted")
+        self.pixel_label.setFont(tabular(ui_font(M["font_s"])))
+        self.image_zoom_label = QLabel("")
+        self.image_zoom_label.setObjectName("muted")
+        self.image_zoom_label.setFont(tabular(ui_font(M["font_s"])))
+        self.image_view.pixel_info.connect(self.pixel_label.setText)
+        self.image_view.zoom_changed.connect(lambda z: self.image_zoom_label.setText(f"{tr('zoom')} {z * 100:.0f}%"))
+        foot.addWidget(self.pixel_label, 1)
+        foot.addWidget(self.image_zoom_label)
+        foot_w = QFrame()
+        foot_w.setObjectName("paneFooter")
+        foot_w.setStyleSheet(f"QFrame#paneFooter {{ background: {C['panel']}; border-top: 1px solid {C['border']}; }}")
+        foot_w.setLayout(foot)
+        body.addWidget(foot_w)
+        return pane
+
+    def _build_flow_pane(self) -> QWidget:
+        pane, hl, body = self._pane()
+        self.flow_title = self._pane_title(tr("Flow"))
+        self.flow_info = QLabel("")
+        self.flow_info.setObjectName("muted")
+        self.flow_zoom_label = QLabel("")
+        self.flow_zoom_label.setObjectName("muted")
+        self.flow_zoom_label.setFont(tabular(ui_font(M["font_s"])))
+        self.view.zoom_changed.connect(lambda z: self.flow_zoom_label.setText(f"{tr('zoom')} {z * 100:.0f}%"))
+        fit = QPushButton(tr("Fit"))
+        fit.setIcon(make_icon("fit", C["muted"], 16))
+        fit.setFixedHeight(26)
+        fit.setToolTip(tr("Fit all nodes (F)"))
+        fit.clicked.connect(self.view.fit_all)
+        self.btn_expand_flow = self._tool_button("expand", tr("Maximise the flow area"),
+                                                 lambda: self._toggle_expand(1), checkable=True)
+        self.btn_orient = self._tool_button("split_v", tr("Switch image / flow arrangement"), self._toggle_orientation)
+        hl.addWidget(self.flow_title)
+        hl.addWidget(self.flow_info, 1)
+        hl.addWidget(self.flow_zoom_label)
+        hl.addWidget(self._separator())
+        hl.addWidget(fit)
+        hl.addWidget(self.btn_orient)
+        hl.addWidget(self.btn_expand_flow)
+        body.addWidget(self.view, 1)
+        return pane
+
+    @staticmethod
+    def _separator() -> QFrame:
+        f = QFrame()
+        f.setFrameShape(QFrame.VLine)
+        f.setFixedWidth(1)
+        f.setStyleSheet(f"color: {C['border']}; margin: 8px 2px;")
+        return f
+
+    # ---- 中央区域的比例 / 排列 / 展开 ----
+    def _toggle_expand(self, index: int) -> None:
+        sizes = self.center.sizes()
+        total = sum(sizes) or 1
+        if min(sizes) <= 2:                       # 已经展开了某一侧 → 还原成记忆中的比例
+            self.center.setSizes(self._center_sizes or [int(total * 0.55), int(total * 0.45)])
+        else:
+            self._center_sizes = sizes
+            self.center.setSizes([total, 0] if index == 0 else [0, total])
+        self._sync_expand_buttons()
+
+    def _sync_expand_buttons(self) -> None:
+        sizes = self.center.sizes()
+        self.btn_expand_image.setChecked(len(sizes) > 1 and sizes[1] <= 2)
+        self.btn_expand_flow.setChecked(len(sizes) > 1 and sizes[0] <= 2)
+        if min(sizes or [1]) > 2:
+            self._center_sizes = sizes
+
+    def _toggle_orientation(self) -> None:
+        vertical = self.center.orientation() == Qt.Horizontal
+        self.set_center_orientation(Qt.Vertical if vertical else Qt.Horizontal)
+
+    def set_center_orientation(self, orientation) -> None:
+        self.center.setOrientation(orientation)
+        horizontal = orientation == Qt.Horizontal
+        self.btn_orient.setIcon(make_icon("split_v" if horizontal else "split_h", C["muted"], 16))
+        tip = tr("Stack image above flow") if horizontal else tr("Place image left of flow")
+        self.btn_orient.setToolTip(tip)
+        self.btn_orient.setAccessibleName(tip)
+        total = sum(self.center.sizes()) or 1000
+        self.center.setSizes([int(total * 0.55), int(total * 0.45)])
+        self._center_sizes = self.center.sizes()
+
+    def _restore_center_layout(self, s: QSettings) -> None:
+        """恢复上次的图像/流程排列与比例；没有记录时用默认的左右 55:45。"""
+        self.set_center_orientation(Qt.Vertical if str(s.value("center_orientation", "h")) == "v" else Qt.Horizontal)
+        sizes = s.value("center_sizes")
+        try:
+            sizes = [int(x) for x in sizes] if sizes else []
+        except (TypeError, ValueError):
+            sizes = []
+        if len(sizes) == 2 and min(sizes) > 2:
+            self.center.setSizes(sizes)
+            self._center_sizes = sizes
+        self._sync_expand_buttons()
+
+    def _reset_layout(self) -> None:
+        for d in (self.dock_palette, self.dock_params, self.dock_bottom):
+            d.setFloating(False)
+            d.show()
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_palette)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_params)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_bottom)
+        self.resizeDocks([self.dock_palette, self.dock_params], [250, 330], Qt.Horizontal)
+        self.resizeDocks([self.dock_bottom], [230], Qt.Vertical)
+        self.set_center_orientation(Qt.Horizontal)
+
+    # ---- 状态栏 ----
+    def _build_status_bar(self) -> None:
+        self.status_source = QLabel("")           # 采集状态：图像来源、尺寸、帧号
+        self.status_source.setFont(tabular(ui_font(M["font_s"])))
+        self.status_stats = QLabel("")            # 执行状态：次数、OK/NG/错误、耗时
+        self.status_stats.setFont(tabular(ui_font(M["font_s"])))
+        self.status_run = QLabel(tr("edit mode"))
+        self.status_run.setObjectName("statusChip")
+        self.status_run.setStyleSheet(soft_chip_style(C["muted"], C["panel2"], C["border"], "QLabel#statusChip"))
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(True)
+        bar.addPermanentWidget(self.status_source)
+        bar.addPermanentWidget(self._separator())
+        bar.addPermanentWidget(self.status_stats)
+        bar.addPermanentWidget(self.status_run)
+
     def _build_toolbar(self) -> None:
+        """一条工具栏，两组动作：左边是项目/流程，中间是执行，右边是视图与设备。"""
         tb = QToolBar("Main")
         tb.setObjectName("toolbar_main")
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
+
+        # 项目操作
         self.act_new = QAction(make_icon("new"), tr("New"), self, shortcut=QKeySequence.New, triggered=self.new_solution)
         self.act_open = QAction(make_icon("open"), tr("Open…"), self, shortcut=QKeySequence.Open, triggered=self._open_dialog)
         self.act_save = QAction(make_icon("save"), tr("Save"), self, shortcut=QKeySequence.Save, triggered=lambda: self.save_solution())
         for a in (self.act_new, self.act_open, self.act_save):
             tb.addAction(a)
         tb.addSeparator()
+
+        # 流程选择
         flow_lbl = QLabel(tr(" Flow: "))
         flow_lbl.setObjectName("muted")
         tb.addWidget(flow_lbl)
         self.flow_combo = QComboBox()
-        self.flow_combo.setMinimumWidth(140)
+        self.flow_combo.setMinimumWidth(150)
+        self.flow_combo.setFixedHeight(M["ctl_h"])
+        self.flow_combo.setToolTip(tr("Flow shown in the editor"))
         self.flow_combo.currentTextChanged.connect(self._set_current_flow)
         tb.addWidget(self.flow_combo)
         self.act_add_flow = QAction(make_icon("plus"), "", self, toolTip=tr("Add flow"), triggered=self._add_flow)
@@ -186,15 +390,22 @@ class MainWindow(QMainWindow):
         tb.addAction(self.act_add_flow)
         tb.addAction(self.act_del_flow)
         tb.addSeparator()
-        self.act_run = QAction(make_icon("play", "#ffffff"), tr("▶ Run once"), self, shortcut="F5", triggered=self.run_once)
+
+        # 执行操作：单次 / 连续 / 运行模式，位置固定，按钮宽度固定，状态变化不会让它们移位
+        self.act_run = QAction(make_icon("play", "#FFFFFF"), tr("Run once"), self, shortcut="F5", triggered=self.run_once)
+        self.act_run.setToolTip(tr("Run the current flow once (F5)"))
         tb.addAction(self.act_run)
         run_btn = tb.widgetForAction(self.act_run)
         if run_btn is not None:
             run_btn.setObjectName("primary")
-        self.autorun = QCheckBox(tr("Auto-run on change"))
-        self.autorun.setChecked(True)
-        tb.addWidget(self.autorun)
-        self.continuous = QCheckBox(tr("Continuous"))
+            run_btn.setMinimumWidth(104)
+        self.continuous = QToolButton()
+        self.continuous.setText(tr("Continuous"))
+        self.continuous.setIcon(make_icon("loop", C["muted"], 18))
+        self.continuous.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.continuous.setCheckable(True)
+        self.continuous.setMinimumWidth(104)
+        self.continuous.setToolTip(tr("Run the flow repeatedly at the interval below"))
         self.continuous.toggled.connect(self._apply_continuous)
         tb.addWidget(self.continuous)
         self.interval = QDoubleSpinBox()
@@ -202,17 +413,72 @@ class MainWindow(QMainWindow):
         self.interval.setDecimals(2)
         self.interval.setValue(0.5)
         self.interval.setSuffix(" s")
+        self.interval.setFixedWidth(84)
+        self.interval.setFixedHeight(M["ctl_h"])
+        self.interval.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.interval.setFont(tabular(ui_font()))
         self.interval.setToolTip(tr("Interval for continuous runs"))
         self.interval.valueChanged.connect(lambda _: self._apply_continuous(self.continuous.isChecked()))
         tb.addWidget(self.interval)
+        self.autorun = QCheckBox(tr("Auto-run on change"))
+        self.autorun.setChecked(True)
+        self.autorun.setToolTip(tr("Re-run the flow after every parameter or wiring change"))
+        tb.addWidget(self.autorun)
         tb.addSeparator()
         self.act_run_mode = QAction(make_icon("record", C["ok"]), tr("● Start run mode"), self, shortcut="F9", checkable=True)
+        self.act_run_mode.setToolTip(tr("Connect the devices and let PLC / timer triggers drive the flows (F9)"))
         self.act_run_mode.toggled.connect(self.toggle_run_mode)
         tb.addAction(self.act_run_mode)
-        self.act_fit = QAction(make_icon("fit"), tr("Fit"), self, shortcut="F", triggered=self.view.fit_all)
+        mode_btn = tb.widgetForAction(self.act_run_mode)
+        if mode_btn is not None:
+            mode_btn.setObjectName("runmode")
+            mode_btn.setMinimumWidth(132)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+
+        # 视图与设备
+        self.act_fit = QAction(make_icon("fit"), tr("Fit"), self, triggered=self.view.fit_all)
+        self.act_fit.setToolTip(tr("Fit all nodes (F)"))
         tb.addAction(self.act_fit)
-        tb.addSeparator()
-        tb.addAction(QAction(make_icon("camera"), "相机管理", self, triggered=self._camera_dialog))
+        self.act_camera = QAction(make_icon("camera"), "相机管理", self, triggered=self._camera_dialog)
+        self.act_camera.setToolTip("相机管理：搜索、测试、添加相机")
+        tb.addAction(self.act_camera)
+        self._compact_actions = [self.act_new, self.act_open, self.act_save, self.act_camera]
+        for a in self._compact_actions:
+            if not a.toolTip():
+                a.setToolTip(a.text())
+        self._toolbar_compact: bool | None = None
+        self._apply_toolbar_density()
+
+    def _apply_toolbar_density(self) -> None:
+        """窄屏时项目/设备按钮只留图标（名称仍在提示里），保证执行按钮与相机管理始终可见。"""
+        tb = self.findChild(QToolBar, "toolbar_main")
+        if tb is None:
+            return
+        compact = self.width() < 1500
+        if compact == self._toolbar_compact:
+            return
+        self._toolbar_compact = compact
+        style = Qt.ToolButtonIconOnly if compact else Qt.ToolButtonTextBesideIcon
+        for a in self._compact_actions:
+            w = tb.widgetForAction(a)
+            if w is not None:
+                w.setToolButtonStyle(style)
+        self.autorun.setText(tr("Auto-run") if compact else tr("Auto-run on change"))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_toolbar_density()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._default_docks:                 # 首次启动：按实际窗口大小分配面板，矮屏幕上底部不抢高度
+            self._default_docks = False
+            self.resizeDocks([self.dock_palette, self.dock_params],
+                             [max(210, int(self.width() * 0.14)), max(300, int(self.width() * 0.19))], Qt.Horizontal)
+            self.resizeDocks([self.dock_bottom], [max(168, int(self.height() * 0.22))], Qt.Vertical)
 
     def _build_menu(self) -> None:
         m = self.menuBar()
@@ -232,6 +498,16 @@ class MainWindow(QMainWindow):
         fl.addAction(self.act_run)
         fl.addAction(self.act_run_mode)
         fl.addAction(QAction(tr("Validate flow"), self, triggered=self._validate))
+        v = m.addMenu(tr("&View"))
+        for d in (self.dock_palette, self.dock_params, self.dock_bottom):
+            act = d.toggleViewAction()
+            act.setText(d.windowTitle())
+            v.addAction(act)
+        v.addSeparator()
+        v.addAction(QAction(tr("Image left of flow"), self, triggered=lambda: self.set_center_orientation(Qt.Horizontal)))
+        v.addAction(QAction(tr("Image above flow"), self, triggered=lambda: self.set_center_orientation(Qt.Vertical)))
+        v.addSeparator()
+        v.addAction(QAction(tr("Reset layout"), self, triggered=self._reset_layout))
         cam = m.addMenu("相机(&C)")
         cam.addAction(QAction("相机管理…", self, triggered=self._camera_dialog))
         p = m.addMenu(tr("&Plugins"))
@@ -375,6 +651,8 @@ class MainWindow(QMainWindow):
         s = QSettings()
         s.setValue("geometry", self.saveGeometry())
         s.setValue("state", self.saveState())
+        s.setValue("center_sizes", [int(x) for x in (self._center_sizes or self.center.sizes())])
+        s.setValue("center_orientation", "v" if self.center.orientation() == Qt.Vertical else "h")
         self._teardown_current()
         self.log_panel.detach()
         event.accept()
@@ -392,6 +670,7 @@ class MainWindow(QMainWindow):
         if not self.solution or not name or name not in self.solution.flows:
             return
         self.current_flow = name
+        self.flow_title.setText(name)
         self.scene.set_graph(self.solution.flows[name])
         self.scene.set_locked(self.run_mode)
         self.view.fit_all()
@@ -399,6 +678,7 @@ class MainWindow(QMainWindow):
         self.param_panel.set_node(None, None)
         r = self.runner
         self.results_panel.show_result(r.last_result if r else None, self.graph)
+        self._update_flow_info()
         self._update_image()
         if self.flow_combo.currentText() != name:
             self.flow_combo.blockSignals(True)
@@ -456,6 +736,7 @@ class MainWindow(QMainWindow):
 
     def _on_graph_changed(self) -> None:
         self._mark_dirty()
+        self._update_flow_info()
         self._schedule_autorun()
 
     def _on_node_selected(self, node_id) -> None:
@@ -463,7 +744,33 @@ class MainWindow(QMainWindow):
         g = self.graph
         node = g.nodes.get(node_id) if (g and node_id) else None
         self.param_panel.set_node(node, g)
+        self.param_panel.set_result(self._node_result(node_id))
+        self._reveal_node(node_id)
         self._update_image()
+
+    def _reveal_node(self, node_id) -> None:
+        """选中的节点如果不在可视区内就滚动过去；已经看得见时不动，免得画面乱跳。"""
+        item = self.scene.node_items.get(node_id) if node_id else None
+        if item is None:
+            return
+        visible = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
+        if not visible.contains(item.sceneBoundingRect()):
+            self.view.ensureVisible(item, 60, 60)
+
+    def _node_result(self, node_id) -> object | None:
+        """选中节点在最近一次运行里的结果，供参数面板的"本次输出"分组显示。"""
+        r = self.runner
+        res = r.last_result if r else None
+        return res.node_results.get(node_id) if (res and node_id) else None
+
+    def _update_flow_info(self) -> None:
+        g = self.graph
+        if g is None:
+            self.flow_info.setText("")
+            return
+        disabled = sum(1 for n in g.nodes.values() if not n.enabled)
+        text = tr("{n} nodes · {l} links").format(n=len(g.nodes), l=len(g.links))
+        self.flow_info.setText(text + (tr(" · {d} disabled").format(d=disabled) if disabled else ""))
 
     def _on_param_changed(self, node_id: str, name: str, value) -> None:
         g = self.graph
@@ -578,7 +885,8 @@ class MainWindow(QMainWindow):
         img = self._input_image(node_id, r.last_result if r else None)
         if img is not None:
             self.image_view.set_image(img)
-        self.image_view.set_overlays([Overlay.rect(rect, "#ffa500", param)] if rect else [])
+        # ROI 预览用 ROI 色（与品牌色分开，便于在各种图像上看清），不是算法叠加层
+        self.image_view.set_overlays([Overlay.rect(rect, C["roi"], param)] if rect else [])
 
     # ------------------------------------------------------------------ running
     def run_once(self) -> None:
@@ -607,20 +915,21 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, tr("Run mode"), tr("Started with problems:\n") + "\n".join(errors))
             self._apply_continuous(self.continuous.isChecked())
             self.act_run_mode.setText(tr("■ Stop run mode"))
-            self.act_run_mode.setIcon(make_icon("stop", "#ffb3b3"))
+            self.act_run_mode.setIcon(make_icon("stop", C["ng"]))
             self.status_run.setText(tr("RUN MODE"))
-            self.status_run.setStyleSheet(chip_style("#1f7a3f"))
+            self.status_run.setStyleSheet(soft_chip_style("#FFFFFF", C["ok"], C["ok"], "QLabel#statusChip"))
         else:
             for r in self.runners.values():
                 r.stop()
             self.act_run_mode.setText(tr("● Start run mode"))
             self.act_run_mode.setIcon(make_icon("record", C["ok"]))
             self.status_run.setText(tr("edit mode"))
-            self.status_run.setStyleSheet(chip_style(C["panel2"], C["muted"]))
+            self.status_run.setStyleSheet(soft_chip_style(C["muted"], C["panel2"], C["border"], "QLabel#statusChip"))
             self._apply_continuous(self.continuous.isChecked())
         self.scene.set_locked(on)
         self.param_panel.set_locked(on)
         self.palette.setEnabled(not on)
+        self.flow_combo.setEnabled(not on)
         for a in (self.act_add_flow, self.act_del_flow, self.act_new, self.act_open):
             a.setEnabled(not on)
         if self.act_run_mode.isChecked() != on:
@@ -663,14 +972,17 @@ class MainWindow(QMainWindow):
         self.scene.refresh_status()
         self.results_panel.show_result(result, self.graph)
         self.param_panel.refresh()
+        self.param_panel.set_result(self._node_result(self.selected_node))
         self._update_image(result)
         r = self.runner
         st = r.stats if r else None
         if st:
+            # 状态栏的执行状态：真实的次数、判定分布与耗时
             self.status_stats.setText(
                 f"<span style='color:{C['muted']}'>运行</span> {st.count} &nbsp; "
                 f"<span style='color:{C['ok']}'>OK {st.ok}</span> &nbsp; <span style='color:{C['ng']}'>NG {st.ng}</span> &nbsp; "
                 f"<span style='color:{C['warn']}'>错误 {st.error}</span> &nbsp; "
+                f"<span style='color:{C['muted']}'>本次</span> {result.duration_ms:.1f} ms &nbsp;"
                 f"<span style='color:{C['muted']}'>平均</span> {st.avg_ms:.1f} ms &nbsp;")
         self.statusBar().showMessage(tr("run {id}: {status} in {ms:.1f} ms").format(id=result.run_id, status=result.status_text, ms=result.duration_ms)
                                      + (f" – {result.error}" if result.error else ""), 5000)
@@ -682,7 +994,9 @@ class MainWindow(QMainWindow):
         if result is None or g is None or self.image_view.roi_editing:
             if result is None:
                 self.image_view.clear()
+                self.image_view.set_hint(tr("Run the flow (F5) to see the image here."))
                 self.image_title.setText("—")
+                self._set_source_status(None)
             return
         nid = self.selected_node
         if nid is None or nid not in g.nodes:
@@ -715,7 +1029,9 @@ class MainWindow(QMainWindow):
             img = in_img if (overlays and in_img is not None) else (out_img or in_img)
         if img is None:
             self.image_view.clear()
+            self.image_view.set_hint(tr("This node produces no image. Select an upstream node to see its picture."))
             self.image_title.setText(tr("{name}: no image").format(name=node.name))
+            self._set_source_status(None)
             return
         self.image_view.set_image(img)
         self.image_view.set_overlays(overlays)
@@ -723,6 +1039,17 @@ class MainWindow(QMainWindow):
         if self.input_pick.isVisible():
             title = f"{title}  ·  {self.input_pick.currentText()}"
         self.image_title.setText(title)
+        self.image_title.setToolTip(title)
+        self._set_source_status(img)
+
+    def _set_source_status(self, img: Image | None) -> None:
+        """状态栏左侧的采集状态：当前显示图像的尺寸、通道与帧号（都是真实数据）。"""
+        if img is None:
+            self.status_source.setText("")
+            return
+        ch = 1 if img.data.ndim == 2 else int(img.data.shape[2])
+        kind = {1: "灰度", 3: "彩色", 4: "彩色+α"}.get(ch, f"{ch} 通道")
+        self.status_source.setText(f"{tr('frame')} {img.frame_id} · {img.width}×{img.height} · {kind}")
 
     # ------------------------------------------------------------------ recent files / shortcut
     @staticmethod

@@ -5,13 +5,14 @@ from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsLineItem, QGraphicsPathItem,
                                QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem,
-                               QGraphicsView)
+                               QGraphicsView, QLabel)
 
 from ..core.types import Image, Overlay, Rect
 from .i18n import tr
+from .theme import C, ui_font
 
 
 def to_qimage(data: np.ndarray) -> QImage:
@@ -34,6 +35,8 @@ def to_qimage(data: np.ndarray) -> QImage:
 class ImageView(QGraphicsView):
     pixel_info = Signal(str)
     roi_drawn = Signal(object)  # Rect
+    zoom_changed = Signal(float)
+    MIN_ZOOM, MAX_ZOOM = 0.02, 64.0
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -48,14 +51,32 @@ class ImageView(QGraphicsView):
         self._roi_start: QPointF | None = None
         self._roi_item: QGraphicsRectItem | None = None
         self._fit_pending = True
+        self._fit_mode = True          # 处于"适配"状态：窗格尺寸变化时自动重新适配
         self._rpan: QPointF | None = None
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setBackgroundBrush(QBrush(QColor("#121418")))
+        # 查看器底色是中性深灰：图像本身不加任何滤镜或色调，深灰只是让图像边界清楚。
+        self.setBackgroundBrush(QBrush(QColor(C["viewer_bg"])))
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setMouseTracking(True)
+        # 没有图像时在查看器中央给一句说明，而不是留一块空的深灰
+        self._hint = QLabel("", self)
+        self._hint.setAlignment(Qt.AlignCenter)
+        self._hint.setWordWrap(True)
+        self._hint.setStyleSheet("background: transparent; color: #9AA6B2; font-size: 13px;")
+        self._hint.hide()
+
+    def set_hint(self, text: str) -> None:
+        self._hint.setText(text)
+        self._hint.setVisible(bool(text))
+        self._place_hint()
+
+    def _place_hint(self) -> None:
+        m = 24
+        self._hint.setGeometry(m, 0, max(0, self.viewport().width() - 2 * m), self.viewport().height())
+        self._hint.raise_()
 
     # ---- content ----
     @property
@@ -64,6 +85,8 @@ class ImageView(QGraphicsView):
 
     def set_image(self, image: Image | None) -> None:
         self._image = image
+        if image is not None:
+            self.set_hint("")
         if image is None:
             self._pix.setPixmap(QPixmap())
             return
@@ -80,8 +103,25 @@ class ImageView(QGraphicsView):
         self.set_overlays([])
 
     def fit(self) -> None:
+        self._fit_mode = True
         if not self._pix.pixmap().isNull():
-            self.fitInView(self._pix, Qt.KeepAspectRatio)
+            self.fitInView(self._pix, Qt.KeepAspectRatio)     # 始终等比，不拉伸图像
+            self.zoom_changed.emit(self.zoom())
+
+    # ---- 缩放 ----
+    def zoom(self) -> float:
+        return float(self.transform().m11())
+
+    def set_zoom(self, value: float) -> None:
+        value = max(self.MIN_ZOOM, min(self.MAX_ZOOM, float(value)))
+        self.setTransform(self.transform().fromScale(value, value))
+        self._fit_pending = False
+        self._fit_mode = False
+        self.zoom_changed.emit(self.zoom())
+
+    def actual_size(self) -> None:
+        """1:1 显示（一个图像像素对应一个逻辑像素），检查细节时用。"""
+        self.set_zoom(1.0)
 
     def set_overlays(self, overlays: list[Overlay]) -> None:
         for it in self._overlay_items:
@@ -160,9 +200,7 @@ class ImageView(QGraphicsView):
         px = max(9, int(h / 36))
         t = QGraphicsSimpleTextItem(text)
         t.setBrush(QBrush(QColor(color)))
-        f = QFont("Sans")
-        f.setPixelSize(px)
-        f.setBold(True)
+        f = ui_font(px, True)
         t.setFont(f)
         br = t.boundingRect()
         bg = QGraphicsRectItem(QRectF(0, 0, br.width() + px * 0.5, br.height() + px * 0.2))
@@ -200,11 +238,16 @@ class ImageView(QGraphicsView):
     # ---- events ----
     def wheelEvent(self, event) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+        if self.MIN_ZOOM <= self.zoom() * factor <= self.MAX_ZOOM:
+            self.scale(factor, factor)
+            self._fit_pending = False
+            self._fit_mode = False
+            self.zoom_changed.emit(self.zoom())
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self._fit_pending:
+        self._place_hint()
+        if self._fit_pending or self._fit_mode:   # 还没手动缩放过：跟着窗格大小保持适配
             self.fit()
 
     def mouseDoubleClickEvent(self, event) -> None:
@@ -218,7 +261,7 @@ class ImageView(QGraphicsView):
         if self._roi_cb is not None and event.button() == Qt.LeftButton:
             self._roi_start = self.mapToScene(event.position().toPoint())
             self._roi_item = QGraphicsRectItem(QRectF(self._roi_start, self._roi_start))
-            pen = QPen(QColor("#ffa500"), 1.5, Qt.DashLine)
+            pen = QPen(QColor(C["roi"]), 1.6, Qt.DashLine)
             pen.setCosmetic(True)
             self._roi_item.setPen(pen)
             self._roi_item.setZValue(20)
@@ -235,7 +278,10 @@ class ImageView(QGraphicsView):
             return
         pos = self.mapToScene(event.position().toPoint())
         if self._roi_start is not None and self._roi_item is not None:
-            self._roi_item.setRect(QRectF(self._roi_start, pos).normalized())
+            r = QRectF(self._roi_start, pos).normalized()
+            self._roi_item.setRect(r)
+            self.pixel_info.emit(f"ROI  x {r.x():.0f}  y {r.y():.0f}  {r.width():.0f} × {r.height():.0f}")
+            return
         if self._image is not None:
             x, y = int(pos.x()), int(pos.y())
             if 0 <= x < self._image.width and 0 <= y < self._image.height:

@@ -36,8 +36,8 @@ class NodeScene(QGraphicsScene):
         painter.setRenderHint(painter.RenderHint.Antialiasing, False)
         small, big = 24, 120
         left, top = int(rect.left()) - int(rect.left()) % small, int(rect.top()) - int(rect.top()) % small
-        pen_s = QPen(QColor("#1f232a"), 1)
-        pen_b = QPen(QColor("#262b34"), 1)
+        pen_s = QPen(QColor("#E9EDF1"), 1)       # 细格：提供对位参考
+        pen_b = QPen(QColor("#DCE3E8"), 1)       # 粗格：每 120 单位一条
         x = left
         while x < rect.right():
             painter.setPen(pen_b if x % big == 0 else pen_s)
@@ -168,7 +168,7 @@ class NodeScene(QGraphicsScene):
             return
         self._temp_src = port
         self._temp = QGraphicsPathItem(bezier(port.scene_center(), pos))
-        pen = QPen(QColor(C["sel"]), 2.2, Qt.DashLine)
+        pen = QPen(QColor(C["accent"]), 2.0, Qt.DashLine)
         self._temp.setPen(pen)
         self._temp.setZValue(5)
         self.addItem(self._temp)

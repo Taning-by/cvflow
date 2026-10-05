@@ -87,8 +87,16 @@ solution, the app reopens the last one; *File → Recent* lists the last eight.
 
 ## Using the editor
 
+The workspace has five zones: a top bar grouping project actions (new / open / save, flow picker)
+and execution actions (run once, continuous, run mode); a searchable node palette on the left;
+**image** and **flow** side by side in the centre (drag the splitter to rebalance, maximise either
+one from its header, switch between side-by-side and stacked from the *View* menu — the arrangement
+is remembered); the selected node's parameters and last outputs on the right; results /
+communication / variables / log at the bottom, with frame, run statistics and mode in the status bar.
+
 * Drag nodes from the palette (or double-click), drag from an output port to an input port
-  to link, `Delete` removes, `F` fits the view, right-button (or middle / Alt+left) drag pans, wheel zooms.
+  to link, `Delete` removes, `F` fits the view (while the flow area has focus), right-button
+  (or middle / Alt+left) drag pans, wheel zooms.
 * Select a node to edit its parameters; for ROI parameters press **Draw** and drag a
   rectangle on the image.
 * **Auto-run on change** re-runs the flow on every edit; **Run once** (F5); **Continuous**

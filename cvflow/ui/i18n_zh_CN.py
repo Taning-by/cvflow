@@ -209,4 +209,51 @@ DESCRIPTIONS = {
     "value * scale before conversion": "转换前先乘以缩放系数",
 }
 
-TABLE = {**DESCRIPTIONS, **PARAM_LABELS, **NODE_LABELS, **CATEGORIES, **UI}
+# 2026 界面改版新增的文字
+UI_WORKSPACE = {
+    # 工作区与布局
+    "Flow": "流程", "zoom": "缩放", "frame": "帧",
+    "Image of the selected node": "当前选中节点的图像",
+    "Show the overlays of every node in this run": "显示本次运行中所有节点的叠加层",
+    "Fit the image to the view": "把图像缩放到适合窗口",
+    "Show the image at 100%": "以 100% 显示图像（1 像素对 1 像素）",
+    "Maximise the image area": "最大化图像区（再次点击还原）",
+    "Maximise the flow area": "最大化流程区（再次点击还原）",
+    "Switch image / flow arrangement": "切换图像与流程的排列方式",
+    "Stack image above flow": "改为上下排列：图像在上，流程在下",
+    "Place image left of flow": "改为左右排列：图像在左，流程在右",
+    "{n} nodes · {l} links": "{n} 个节点 · {l} 条连线",
+    " · {d} disabled": " · {d} 个已禁用",
+    "&View": "视图(&V)", "Image left of flow": "图像在左，流程在右",
+    "Image above flow": "图像在上，流程在下", "Reset layout": "恢复默认布局",
+    # 工具栏
+    "Run once": "运行一次", "Auto-run": "自动运行",
+    "Run the current flow once (F5)": "把当前流程执行一次（F5）",
+    "Run the flow repeatedly at the interval below": "按右侧间隔反复执行当前流程",
+    "Re-run the flow after every parameter or wiring change": "改参数或改连线后自动重跑一次",
+    "Connect the devices and let PLC / timer triggers drive the flows (F9)":
+        "连接通信设备，由 PLC／定时器触发流程（F9）",
+    "Fit all nodes (F)": "适配全部节点（F）",
+    "Flow shown in the editor": "编辑器中显示的流程",
+    # 参数面板
+    "Outputs": "本次输出", "Node state": "节点状态", "No node selected": "未选中节点",
+    "This node has no parameters.": "该节点没有可调参数。",
+    "Run the flow to see this node's outputs.": "运行一次流程，这里会显示该节点的输出。",
+    "Status": "状态", "Message": "说明", "Node type id": "节点类型标识",
+    "Name shown on the node and in results": "显示在节点上和结果里的名称",
+    "Disabled nodes are skipped when the flow runs": "禁用后该节点在流程运行时会被跳过",
+    "Browse…": "浏览…", "comma separated": "多个值用逗号分隔",
+    "ROI in image pixels": "ROI 以图像像素为单位",
+    "Show this ROI on the image": "在图像上显示该 ROI",
+    "Clear ROI": "清除该 ROI",
+    # 结果与日志
+    "This node produces no image. Select an upstream node to see its picture.":
+        "该节点没有图像输出。选中它上游的节点即可查看图像。",
+    "Run the flow (F5) to see the image here.": "运行一次流程（F5），这里会显示图像。",
+    "Problems only": "只看异常", "Hide nodes that finished OK": "隐藏执行成功且合格的节点",
+    "Level": "级别",
+    # 节点库
+    "No node matches the filter.": "没有符合筛选条件的算法。",
+}
+
+TABLE = {**DESCRIPTIONS, **PARAM_LABELS, **NODE_LABELS, **CATEGORIES, **UI, **UI_WORKSPACE}

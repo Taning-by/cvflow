@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QInputDialog, QPushButton, QTableWid
 
 from ..core.variables import GlobalVariables
 from .i18n import tr
+from .theme import M
 
 
 class VariablesPanel(QWidget):
@@ -16,10 +17,14 @@ class VariablesPanel(QWidget):
         super().__init__(parent)
         self._vars: GlobalVariables | None = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setContentsMargins(M["gap"], M["gap"], M["gap"], M["gap"])
+        lay.setSpacing(M["gap"])
         bar = QHBoxLayout()
+        bar.setSpacing(M["gap"])
         add = QPushButton(tr("Add"))
         rem = QPushButton(tr("Remove"))
+        add.setFixedHeight(M["ctl_h"])
+        rem.setFixedHeight(M["ctl_h"])
         add.clicked.connect(self._add)
         rem.clicked.connect(self._remove)
         bar.addWidget(add)
