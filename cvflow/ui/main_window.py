@@ -338,9 +338,14 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_palette)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_params)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.dock_bottom)
-        self.resizeDocks([self.dock_palette, self.dock_params], [250, 330], Qt.Horizontal)
-        self.resizeDocks([self.dock_bottom], [230], Qt.Vertical)
+        self._apply_default_dock_sizes()
         self.set_center_orientation(Qt.Horizontal)
+
+    def _apply_default_dock_sizes(self) -> None:
+        """按当前窗口大小分配三个面板：矮屏幕上底部不抢高度，宽屏幕上左右不过宽。"""
+        self.resizeDocks([self.dock_palette, self.dock_params],
+                         [max(210, int(self.width() * 0.14)), max(300, int(self.width() * 0.19))], Qt.Horizontal)
+        self.resizeDocks([self.dock_bottom], [max(168, int(self.height() * 0.22))], Qt.Vertical)
 
     # ---- 状态栏 ----
     def _build_status_bar(self) -> None:
@@ -474,11 +479,9 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if self._default_docks:                 # 首次启动：按实际窗口大小分配面板，矮屏幕上底部不抢高度
+        if self._default_docks:                 # 首次启动（没有保存过布局）：按实际窗口大小分配面板
             self._default_docks = False
-            self.resizeDocks([self.dock_palette, self.dock_params],
-                             [max(210, int(self.width() * 0.14)), max(300, int(self.width() * 0.19))], Qt.Horizontal)
-            self.resizeDocks([self.dock_bottom], [max(168, int(self.height() * 0.22))], Qt.Vertical)
+            self._apply_default_dock_sizes()
 
     def _build_menu(self) -> None:
         m = self.menuBar()
