@@ -97,6 +97,29 @@ def _preload_gpu_runtime(ort) -> None:
         log.debug("预加载 CUDA/cuDNN 运行库失败：%s", e)
 
 
+_BACKEND_CHOICE_LOGGED = False
+
+
+def _log_backend_choice(avail: list[str], chosen: list[str]) -> None:
+    """把"包里有哪些后端、这次打算用哪些"说一次。
+
+    推理悄悄落在 CPU 上是最难查的情况：装好了 GPU 版、命令行自检也说可用，
+    界面里却还是 CPU。把判断过程写进日志，看一眼就知道是哪一步把 GPU 排除掉的。
+    """
+    global _BACKEND_CHOICE_LOGGED
+    if _BACKEND_CHOICE_LOGGED:
+        return
+    _BACKEND_CHOICE_LOGGED = True
+    log.info("推理后端：包里有 %s；本次按顺序尝试 %s", "、".join(avail) or "（无）", "、".join(chosen))
+    if any(p in _GPU_PROVIDERS for p in avail) and not any(p in _GPU_PROVIDERS for p in chosen):
+        skipped = [p for p in avail if p in _GPU_PROVIDERS]
+        why = {p: (_PROVIDER_LOADABLE.get(p), p in _FAILED_PROVIDERS) for p in skipped}
+        log.warning("包里有 GPU 后端却没用上，推理会落在 CPU 上。各 GPU 后端的状态：%s；"
+                    "可执行 cvflow gpu 看详细原因",
+                    "，".join(f"{p}（{'运行库加载不了' if ok is False else '先前加载失败过' if failed else '未知'}）"
+                              for p, (ok, failed) in why.items()))
+
+
 def _provider_loadable(ort, provider: str) -> bool:
     """GPU 后端的动态库能不能真的加载进来，探测一次就记住。
 
@@ -109,9 +132,10 @@ def _provider_loadable(ort, provider: str) -> bool:
         return cached
     why = _why_provider_failed(ort, provider)
     _PROVIDER_LOADABLE[provider] = not why
-    if why:
-        extra = "；只想用显卡的话推理后端选 cuda 或 auto 即可" if provider == "TensorrtExecutionProvider" else ""
-        log.info("推理后端 %s 的运行库加载不了（%s），本次运行跳过它%s", provider, why, extra)
+    if why and provider == "TensorrtExecutionProvider":
+        log.info("推理后端 %s 的运行库加载不了（%s），跳过它；没装 TensorRT 本体时这是正常的", provider, why)
+    elif why:
+        log.warning("推理后端 %s 的运行库加载不了（%s），本次运行跳过它，推理会落在 CPU 上", provider, why)
     return not why
 
 
@@ -123,7 +147,13 @@ def _why_provider_failed(ort, provider: str) -> str:
     base = os.path.join(os.path.dirname(os.path.abspath(ort.__file__)), "capi")
     for lib in sorted(glob.glob(os.path.join(base, f"*providers_{tag}*"))):
         try:
-            ctypes.CDLL(lib)
+            if os.name == "nt":
+                # 按绝对路径加载时，Windows 默认不会去这个 DLL 自己的目录里找它的依赖
+                # （provider 库要用到同目录的 onnxruntime_providers_shared.dll），
+                # 必须带上 LOAD_WITH_ALTERED_SEARCH_PATH，否则会误判成"加载不了"。
+                ctypes.CDLL(lib, winmode=0x00000008)
+            else:
+                ctypes.CDLL(lib)
         except OSError as e:
             return str(e)
         except Exception:                              # pragma: no cover
@@ -468,6 +498,7 @@ class _OnnxBase(Node):
             _preload_gpu_runtime(ort)             # 先把 CUDA/cuDNN 拉进来，否则探测必然失败
             providers = [p for p in providers if p not in _GPU_PROVIDERS or _provider_loadable(ort, p)]
         providers = providers or ["CPUExecutionProvider"]
+        _log_backend_choice(avail, providers)
         return providers, providers[0] != "CPUExecutionProvider"
 
     def _session_owner(self, on_gpu: bool) -> str:
