@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog,
                                QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
@@ -25,7 +25,7 @@ from .node_editor import NodeScene, NodeView
 from .palette import NodePalette
 from .param_panel import ParamPanel
 from .results_panel import ResultsPanel
-from .theme import C, M, app_icon, make_icon, soft_chip_style, tabular, ui_font
+from .theme import C, ElidedLabel, M, app_icon, make_icon, soft_chip_style, tabular, ui_font
 from .variables_panel import VariablesPanel
 
 log = logging.getLogger("cvflow.ui")
@@ -163,6 +163,7 @@ class MainWindow(QMainWindow):
         """统一的工作区外壳：标题栏（标题 + 工具）+ 内容区，返回 (面板, 标题栏布局, 内容布局)。"""
         pane = QWidget()
         pane.setObjectName("pane")
+        pane.setMinimumWidth(180)          # 工作区可以被拖得很窄（再窄就折叠），分隔条始终有行程
         lay = QVBoxLayout(pane)
         lay.setContentsMargins(1, 1, 1, 1)
         lay.setSpacing(0)
@@ -172,6 +173,7 @@ class MainWindow(QMainWindow):
         hl = QHBoxLayout(header)
         hl.setContentsMargins(M["gap_l"], 0, M["gap"], 0)
         hl.setSpacing(M["gap"])
+        header.installEventFilter(self)              # 变窄时按优先级收起次要控件
         lay.addWidget(header)
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -180,8 +182,9 @@ class MainWindow(QMainWindow):
         return pane, hl, body
 
     def _pane_title(self, text: str) -> QLabel:
-        lbl = QLabel(text)
+        lbl = ElidedLabel(text)
         lbl.setFont(ui_font(M["font_title"], True))
+        lbl.setMinimumWidth(56)                   # 同上：流程名不至于被挤没
         return lbl
 
     def _tool_button(self, icon: str, tip: str, slot, checkable: bool = False) -> QToolButton:
@@ -198,12 +201,13 @@ class MainWindow(QMainWindow):
 
     def _build_image_pane(self) -> QWidget:
         pane, hl, body = self._pane()
-        self.image_title = QLabel("—")
+        self.image_title = ElidedLabel("—", Qt.ElideMiddle)
         self.image_title.setFont(ui_font(M["font_title"], True))
+        self.image_title.setMinimumWidth(56)      # 窗格被拖得很窄时标题也至少留几个字，不整条消失
         self.image_title.setToolTip(tr("Image of the selected node"))
         self.input_pick = QComboBox()
         self.input_pick.setToolTip("选择查看该节点的哪一路输入")
-        self.input_pick.setMinimumWidth(104)
+        self.input_pick.setMinimumWidth(84)
         self.input_pick.setFixedHeight(26)
         self.input_pick.hide()
         self.input_pick.currentIndexChanged.connect(lambda _: self._update_image())
@@ -222,18 +226,21 @@ class MainWindow(QMainWindow):
         one.clicked.connect(self.image_view.actual_size)
         self.btn_expand_image = self._tool_button("expand", tr("Maximise the image area"),
                                                   lambda: self._toggle_expand(0), checkable=True)
+        self.btn_one_to_one = one
+        self.image_header_sep = self._separator()
         hl.addWidget(self.image_title, 1)
         hl.addWidget(self.input_pick)
         hl.addWidget(self.all_overlays)
-        hl.addWidget(self._separator())
+        hl.addWidget(self.image_header_sep)
         hl.addWidget(fit)
         hl.addWidget(one)
         hl.addWidget(self.btn_expand_image)
+        self.image_header = hl.parentWidget()      # 标题栏，用来按宽度收起次要控件
 
         body.addWidget(self.image_view, 1)
         foot = QHBoxLayout()
         foot.setContentsMargins(M["gap_l"], 3, M["gap_l"], 3)
-        self.pixel_label = QLabel("")
+        self.pixel_label = ElidedLabel("")
         self.pixel_label.setObjectName("muted")
         self.pixel_label.setFont(tabular(ui_font(M["font_s"])))
         self.image_zoom_label = QLabel("")
@@ -253,9 +260,9 @@ class MainWindow(QMainWindow):
     def _build_flow_pane(self) -> QWidget:
         pane, hl, body = self._pane()
         self.flow_title = self._pane_title(tr("Flow"))
-        self.flow_info = QLabel("")
+        self.flow_info = ElidedLabel("")
         self.flow_info.setObjectName("muted")
-        self.flow_zoom_label = QLabel("")
+        self.flow_zoom_label = QLabel("")        # 短文字，不省略：放不下时整条收起（见 eventFilter）
         self.flow_zoom_label.setObjectName("muted")
         self.flow_zoom_label.setFont(tabular(ui_font(M["font_s"])))
         self.view.zoom_changed.connect(lambda z: self.flow_zoom_label.setText(f"{tr('zoom')} {z * 100:.0f}%"))
@@ -267,15 +274,36 @@ class MainWindow(QMainWindow):
         self.btn_expand_flow = self._tool_button("expand", tr("Maximise the flow area"),
                                                  lambda: self._toggle_expand(1), checkable=True)
         self.btn_orient = self._tool_button("split_v", tr("Switch image / flow arrangement"), self._toggle_orientation)
+        self.flow_header_sep = self._separator()
         hl.addWidget(self.flow_title)
         hl.addWidget(self.flow_info, 1)
         hl.addWidget(self.flow_zoom_label)
-        hl.addWidget(self._separator())
+        hl.addWidget(self.flow_header_sep)
         hl.addWidget(fit)
         hl.addWidget(self.btn_orient)
         hl.addWidget(self.btn_expand_flow)
+        self.flow_header = hl.parentWidget()
         body.addWidget(self.view, 1)
         return pane
+
+    def eventFilter(self, obj, event):
+        """窗格标题栏变窄时按优先级收起次要控件：先收分隔线和 1:1，再收说明文字。
+
+        这样用户可以把工作区拖得很窄而标题栏不会糊成一团，适配与最大化这两个
+        核心操作任何宽度下都在。
+        """
+        if event.type() == QEvent.Resize:
+            if obj is getattr(self, "image_header", None):
+                w = obj.width()
+                self.image_header_sep.setVisible(w >= 330)
+                self.btn_one_to_one.setVisible(w >= 330)
+                self.all_overlays.setText("" if w < 250 else tr("All overlays"))
+            elif obj is getattr(self, "flow_header", None):
+                w = obj.width()
+                self.flow_header_sep.setVisible(w >= 360)
+                self.flow_zoom_label.setVisible(w >= 360)
+                self.flow_info.setVisible(w >= 250)
+        return super().eventFilter(obj, event)
 
     @staticmethod
     def _separator() -> QFrame:
@@ -349,9 +377,9 @@ class MainWindow(QMainWindow):
 
     # ---- 状态栏 ----
     def _build_status_bar(self) -> None:
-        self.status_source = QLabel("")           # 采集状态：图像来源、尺寸、帧号
+        self.status_source = ElidedLabel("")      # 采集状态：图像来源、尺寸、帧号
         self.status_source.setFont(tabular(ui_font(M["font_s"])))
-        self.status_stats = QLabel("")            # 执行状态：次数、OK/NG/错误、耗时
+        self.status_stats = QLabel("")            # 执行状态：次数、OK/NG/错误、耗时（富文本，不做省略）
         self.status_stats.setFont(tabular(ui_font(M["font_s"])))
         self.status_run = QLabel(tr("edit mode"))
         self.status_run.setObjectName("statusChip")

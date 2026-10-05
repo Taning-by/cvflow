@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap,
+                           QPolygonF)
+from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy
 
 from ..core.node import NodeStatus
 from ..core.types import DataType
@@ -428,6 +429,53 @@ def app_icon(size: int = 64) -> QIcon:
         p.drawEllipse(pt, size * 0.085, size * 0.085)
     p.end()
     return QIcon(pm)
+
+
+class ElidedLabel(QLabel):
+    """放不下时用省略号显示的标签。
+
+    普通 QLabel 的最小宽度等于整行文字的宽度，放在面板标题栏里会把整个面板的最小宽度
+    撑到"文字有多长就有多宽"，用户就再也拖不动面板之间的分隔条了。这个标签把最小宽度
+    压到很小，宽度不够时自己省略。``text()`` 仍返回完整文字，提示信息与自动化测试照常工作。
+
+    只用于纯文本；富文本（带标签的）按原样显示，不做省略。
+    """
+
+    def __init__(self, text: str = "", mode: Qt.TextElideMode = Qt.ElideRight, parent=None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self._mode = mode
+        # 横向用 Preferred：有地方时按文字宽度排布，地方不够时能一路缩到
+        # 下面 minimumSizeHint 给的那个很小的值（Ignored 会让它直接被压成 0）。
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full = text or ""
+        self._elide()
+
+    def text(self) -> str:
+        return self._full
+
+    def setElideMode(self, mode: Qt.TextElideMode) -> None:
+        self._mode = mode
+        self._elide()
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), 24), hint.height())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        if "<" in self._full:          # 富文本按原样显示：省略是按纯文本算的，会把标签截坏
+            super().setText(self._full)
+            return
+        width = max(0, self.width() - 2)
+        shown = QFontMetrics(self.font()).elidedText(self._full, self._mode, width) if width else self._full
+        super().setText(shown)
 
 
 def chip_style(color: str, fg: str = "white") -> str:

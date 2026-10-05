@@ -203,6 +203,29 @@ def test_ui_startup_layout_and_title(win):
     assert win.status_run.text() == "编辑模式"
 
 
+def test_ui_startup_panels_stay_resizable_with_long_titles(win, app):
+    """面板之间的分隔条必须一直拖得动（回归）。
+
+    曾经的问题：工作区标题栏里的普通 QLabel 最小宽度等于整行文字宽度，运行一次、
+    选中一个名字长的节点之后，中央区的最小宽度被撑到和实际宽度一样，分隔条就彻底拖不动了。
+    """
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    win.scene.select_node(node_by_name(win, "孔").id); pump(app)
+    win.image_title.setText("一个名字特别长的检测节点" * 4 + "（4096×3000，第 123456 帧） · 输入 8")
+    win.flow_info.setText("节点与连线统计" * 12)
+    win.pixel_label.setText("x=4095 y=2999 value=(255, 255, 255)")
+    pump(app)
+    assert win.centralWidget().minimumSizeHint().width() <= 480      # 中央区能缩，分隔条才有行程
+
+    before = win.dock_palette.width()
+    sep_x = win.dock_palette.geometry().right() + 3                  # 节点库与中央区之间的分隔条
+    y = win.dock_palette.geometry().center().y()
+    drag(app, win, QPoint(sep_x, y), QPoint(sep_x + 150, y))
+    pump(app)
+    assert win.dock_palette.width() >= before + 100                  # 真的被拖宽了
+    assert win.image_title.text().startswith("一个名字特别长的检测节点")   # 完整文字仍可读取
+
+
 def test_ui_startup_without_file_reopens_last(app, settings, modal):
     from cvflow.ui.main_window import MainWindow
     w = MainWindow(str(DEMO)); w.close(); pump(app)
