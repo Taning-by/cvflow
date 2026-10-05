@@ -249,6 +249,21 @@ def test_dl_batch_window_merges_flows_that_arrive_at_different_times(cls_model):
         eng.teardown_nodes()
 
 
+def test_dl_provider_unavailable_says_why_and_how_to_fix(cls_model, monkeypatch, caplog):
+    """请求 GPU 后端但包里没有时，日志要说清原因和解决办法，而不是只说"不可用"。"""
+    import onnxruntime as ort
+    from cvflow.operators import dl
+    monkeypatch.setattr(dl, "_FAILED_PROVIDERS", set())
+    monkeypatch.setattr(ort, "get_available_providers", lambda: ["AzureExecutionProvider", "CPUExecutionProvider"])
+    eng, node = build(cls_model, [channel_image(1)], provider="cuda")
+    with caplog.at_level("WARNING", logger="cvflow.dl"):
+        nr = eng.run().node_results[node.id]
+    assert nr.status.value == "ok"                                   # 退回 CPU，照常出结果
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "没有这个后端" in text and "onnxruntime-gpu" in text        # 原因 + 解决办法
+    eng.teardown_nodes()
+
+
 # =============================================================== 会话共享
 def test_dl_batch_nodes_share_weights_but_not_the_batch_executor(cls_model):
     """默认每个节点独占批处理器以保证并行，但模型权重只加载一份。"""

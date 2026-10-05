@@ -192,8 +192,19 @@ they came from, so only the selected input's boxes and labels are drawn.
 
 ### Running on the GPU
 
-With the GPU build installed (`pip install -e ".[gpu]"` plus matching CUDA / cuDNN runtimes) the
-default `auto` already prefers the GPU — no parameter change needed. **To see where it actually
+**The default install is CPU-only**: `pip install -e .` / `.[dev]` pulls `onnxruntime`, which
+carries no GPU backend, so selecting `cuda` or `tensorrt` reports "unavailable" and falls back to
+the CPU. For GPU:
+
+```bash
+pip uninstall onnxruntime            # both wheels provide the same module; remove the CPU one first
+pip install -e ".[gpu]"              # installs onnxruntime-gpu
+python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+```
+
+Then install matching CUDA 12 / cuDNN 9 runtimes (`TensorrtExecutionProvider` additionally needs
+TensorRT itself; `cuda` or `auto` is usually what you want). After that the default `auto` already
+prefers the GPU — no parameter change needed. **To see where it actually
 runs, read this log line**:
 
 ```

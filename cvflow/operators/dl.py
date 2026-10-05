@@ -68,6 +68,32 @@ _FAILED_PROVIDERS: set[str] = set()       # 本进程内加载失败过的推理
 _PROVIDER_NAMES = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider",
                    "tensorrt": "TensorrtExecutionProvider"}
 _GPU_PROVIDERS = ("CUDAExecutionProvider", "TensorrtExecutionProvider")
+_PROVIDER_FIX = {
+    "CUDAExecutionProvider": "GPU 后端要装 GPU 版：pip uninstall onnxruntime && pip install onnxruntime-gpu"
+                             "（或 pip install -e \".[gpu]\"），再装对应版本的 CUDA 12 与 cuDNN 9 运行库",
+    "TensorrtExecutionProvider": "TensorRT 后端除了 GPU 版 onnxruntime，还要另外安装 TensorRT 本体；"
+                                 "只想用显卡的话，推理后端选 cuda 或 auto 即可",
+}
+_WHEEL_CONFLICT_WARNED = False
+
+
+def _warn_if_both_wheels_installed() -> None:
+    """同时装了 onnxruntime 和 onnxruntime-gpu 时提醒一次。
+
+    两个包装的是同一个 Python 模块，谁后装谁覆盖，常见症状就是"明明装了 GPU 版还是只有 CPU 后端"。
+    """
+    global _WHEEL_CONFLICT_WARNED
+    if _WHEEL_CONFLICT_WARNED:
+        return
+    _WHEEL_CONFLICT_WARNED = True
+    try:
+        from importlib.metadata import distributions
+        names = {d.metadata["Name"].lower() for d in distributions() if d.metadata["Name"]}
+    except Exception:                                  # pragma: no cover
+        return
+    if {"onnxruntime", "onnxruntime-gpu"} <= names:
+        log.warning("同时安装了 onnxruntime 与 onnxruntime-gpu，它们会互相覆盖，可能导致 GPU 后端不可用；"
+                    "建议 pip uninstall onnxruntime，只保留 onnxruntime-gpu")
 
 
 class _SharedSession:
@@ -469,7 +495,15 @@ class _OnnxBase(Node):
         if active and active[0] in _GPU_PROVIDERS:
             where = f"{active[0]}（{device} 号卡）"
         if prov != "auto" and _PROVIDER_NAMES[prov] not in active:
-            log.warning("%s：请求的推理后端 %s 不可用，实际使用 %s", self.name, prov, where)
+            want = _PROVIDER_NAMES[prov]
+            if want not in ort.get_available_providers():
+                # 根本没编译进这个 onnxruntime 包里——装的多半是 CPU 版
+                reason = "当前安装的 onnxruntime 里没有这个后端"
+            else:
+                reason = "这个后端在本机加载失败（缺少对应的运行库）"
+            log.warning("%s：请求的推理后端 %s 不可用（%s），实际使用 %s。%s",
+                        self.name, prov, reason, where, _PROVIDER_FIX.get(want, ""))
+            _warn_if_both_wheels_installed()
         else:
             log.info("%s：模型 %s 使用推理后端 %s", self.name, os.path.basename(path), where)
         return _SharedSession(session, read_input_spec(session), active)

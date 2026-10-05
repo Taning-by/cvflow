@@ -148,7 +148,20 @@ PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复�
 
 ### 在 GPU 上跑
 
-装了 GPU 版 onnxruntime（`pip install -e ".[gpu]"`，再加上对应版本的 CUDA / cuDNN 运行库）之后，默认的 `auto` 就会优先用 GPU，不需要改任何参数。**想确认实际跑在哪里，看日志里的这一行**：
+**默认装的是 CPU 版**：`pip install -e .` / `.[dev]` 带的是 `onnxruntime`，包里只有 CPU 后端，这时把推理后端选成 `cuda` 或 `tensorrt` 会报"不可用"并退回 CPU。要用显卡：
+
+```bash
+pip uninstall onnxruntime            # 两个包装的是同一个模块，必须先卸掉 CPU 版
+pip install -e ".[gpu]"              # 装 onnxruntime-gpu
+```
+
+再装上对应版本的 CUDA 12 / cuDNN 9 运行库（`TensorrtExecutionProvider` 还要另外装 TensorRT 本体，一般用 `cuda` 或 `auto` 就够）。装好之后默认的 `auto` 就会优先用 GPU，不需要改任何参数。确认包里有哪些后端：
+
+```bash
+python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+```
+
+**想确认实际跑在哪里，看日志里的这一行**：
 
 ```
 ONNX 检测 (YOLO)：模型 best.onnx 使用推理后端 CUDAExecutionProvider（0 号卡）
