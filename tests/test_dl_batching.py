@@ -294,6 +294,15 @@ def test_dl_preload_loads_the_model_before_any_run(cls_model):
     assert active_sessions() == s0                       # 只预加载、没跑过的会话也会被放掉
 
 
+def test_dl_gpu_selfcheck_command_runs(cls_model, capsys):
+    """cvflow gpu 自检命令：没有显卡也要能跑完并说清实际用的后端。"""
+    from cvflow.cli import main
+    assert main(["gpu", cls_model, "--provider", "cpu"]) == 0
+    out = capsys.readouterr().out
+    assert "推理运行时" in out and "后端" in out
+    assert "CPUExecutionProvider" in out                  # 实测那段报出了真正用的后端
+
+
 def test_dl_disabling_a_node_unloads_its_weights(cls_model):
     """禁用节点就把权重放掉，重新启用再加载回来。"""
     from cvflow.operators.dl import active_sessions

@@ -65,6 +65,7 @@ cvflow nodes                                          # list the 40 built-in nod
 cvflow run examples/solutions/demo_holes.json -n 10   # run the demo flow in the terminal
 cvflow gui examples/solutions/demo_holes.json         # open the desktop editor
 cvflow serve examples/solutions/demo_holes.json       # headless production mode
+cvflow gpu                                           # self-check the inference backend / GPUs
 pytest -q                                             # 35 tests, GUI tests run offscreen
 ```
 
@@ -211,7 +212,17 @@ Install with `.[dev,gpu]` (see [Install](#install) — `.[gpu]` and `.[cpu]` are
 and the default `auto` already prefers the GPU. Check what the wheel actually carries:
 
 ```bash
-python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+cvflow gpu                 # self-check: backends present, whether they load, GPUs found
+cvflow gpu your-model.onnx # plus a real load: which backend it lands on, VRAM it takes
+```
+
+The VRAM line is the direct evidence — it does not move when inference runs on the CPU:
+
+```
+  CUDAExecutionProvider        available
+  TensorrtExecutionProvider    failed to load: libnvinfer.so.10: cannot open shared object file
+  backend in use: CUDAExecutionProvider (device 0)
+  process VRAM: 0 -> 942 MiB (+942)
 ```
 
 `auto` skips backends whose libraries cannot load: on a GPU box without TensorRT the log shows

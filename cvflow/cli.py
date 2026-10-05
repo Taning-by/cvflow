@@ -7,6 +7,7 @@
   cvflow validate 方案.json              检查方案是否有问题
   cvflow new 方案.json                   新建一个空方案
   cvflow shortcut [方案.json]            在桌面创建快捷方式（点击图标打开软件）
+  cvflow gpu [模型.onnx]                 自检推理环境：装了什么后端、能不能加载、实际跑在哪、占多少显存
 """
 from __future__ import annotations
 
@@ -43,6 +44,110 @@ def cmd_nodes(args) -> int:
             outs = ", ".join(f"{p.name}:{p.dtype.value}" for p in c.outputs)
             print(f"  {c.type_id:28s} {tr(c.label):18s} 输入[{ins}] 输出[{outs}]")
     print(f"\n共 {len(registry.all())} 个节点类型")
+    return 0
+
+
+def _nvidia_smi(query: str, extra: list[str] | None = None) -> list[str]:
+    import subprocess
+    try:
+        out = subprocess.run(["nvidia-smi", f"--query-{query}", "--format=csv,noheader,nounits", *(extra or [])],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()] if out.returncode == 0 else []
+
+
+def _vram_mib(pid: int) -> int | None:
+    """本进程占用的显存。驱动不支持按进程查询时（常见于 Windows/WSL）返回 None。"""
+    rows = _nvidia_smi("compute-apps=pid,used_memory")
+    if not rows:
+        return None
+    for row in rows:
+        parts = [x.strip() for x in row.split(",")]
+        if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == pid:
+            return int(parts[1])
+    return 0
+
+
+def cmd_gpu(args) -> int:
+    """自检推理环境：装了哪个 onnxruntime、后端能不能加载、模型实际跑在哪、占多少显存。"""
+    import os
+    print("== 推理运行时 ==")
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("  未安装 onnxruntime。CPU 装 pip install -e \".[cpu]\"，显卡装 pip install -e \".[gpu]\"（二选一）")
+        return 1
+    print(f"  onnxruntime {ort.__version__}  {os.path.dirname(ort.__file__)}")
+    try:
+        from importlib.metadata import distributions
+        names = {d.metadata["Name"].lower() for d in distributions() if d.metadata["Name"]}
+        wheels = sorted(n for n in names if n in ("onnxruntime", "onnxruntime-gpu"))
+        print(f"  已安装的包：{'、'.join(wheels) or '未知'}")
+        if len(wheels) > 1:
+            print("  ⚠ 同时装了 CPU 版和 GPU 版，它们会互相覆盖。"
+                  "请 pip uninstall -y onnxruntime onnxruntime-gpu 之后只装需要的那一个")
+    except Exception:                                            # pragma: no cover
+        pass
+
+    print("\n== 后端 ==")
+    from .operators import dl
+    avail = list(ort.get_available_providers())
+    print(f"  包里编译进来的：{'、'.join(avail)}")
+    dl._preload_gpu_runtime(ort)
+    for prov in ("TensorrtExecutionProvider", "CUDAExecutionProvider"):
+        if prov not in avail:
+            print(f"  {prov:28s} 包里没有")
+            continue
+        why = dl._why_provider_failed(ort, prov)
+        print(f"  {prov:28s} {'可用' if not why else '加载失败：' + why}")
+    if "CUDAExecutionProvider" not in avail:
+        print("  → 装的是 CPU 版 onnxruntime，推理只能在 CPU 上跑。"
+              "换成 pip install -e \".[gpu]\"（先卸掉 CPU 版）")
+
+    print("\n== 显卡 ==")
+    gpus = _nvidia_smi("gpu=index,name,driver_version,memory.used,memory.total")
+    if not gpus:
+        print("  没找到 nvidia-smi（没有 NVIDIA 显卡，或驱动没装好）")
+    for row in gpus:
+        idx, name, driver, used, total = [x.strip() for x in row.split(",")]
+        print(f"  {idx} 号卡 {name}　驱动 {driver}　已用 {used}/{total} MiB")
+
+    if not args.model:
+        print("\n加上一个模型文件可以实测它跑在哪、占多少显存：cvflow gpu 你的模型.onnx")
+        return 0
+
+    print("\n== 实测加载 ==")
+    from .core import paths, registry
+    registry.load_builtins()
+    paths.set_base_dir(None)
+    node = registry.create("dl.onnx")
+    node.set("model_path", str(Path(args.model).resolve()))
+    node.set("provider", args.provider)
+    node.set("device_id", args.device)
+    pid = os.getpid()
+    before = _vram_mib(pid)
+    t0 = time.perf_counter()
+    try:
+        node.preload()
+    except Exception as e:
+        print(f"  加载失败：{e}")
+        return 1
+    ms = (time.perf_counter() - t0) * 1000
+    holder = dl._SESSIONS.get(node._preloaded_key) if node._preloaded_key else None
+    where = (holder.providers[0] if holder and holder.providers else "?")
+    after = _vram_mib(pid)
+    print(f"  实际使用的后端：{where}" + (f"（{args.device} 号卡）" if where in dl._GPU_PROVIDERS else ""))
+    print(f"  加载耗时：{ms:.0f} ms")
+    if before is None or after is None:
+        print("  显存：驱动不支持按进程查询（Windows/WSL 常见），请看 nvidia-smi 里整卡的已用显存变化")
+    else:
+        print(f"  本进程显存：{before} → {after} MiB（+{after - before}）")
+        if where in dl._GPU_PROVIDERS and after - before < 50:
+            print("  ⚠ 跑在显卡上但显存几乎没涨，请确认看的是同一块卡")
+        elif where not in dl._GPU_PROVIDERS:
+            print("  → 跑在 CPU 上，所以显存不会变。按上面的提示修好后端即可")
+    node.unload()
     return 0
 
 
@@ -191,6 +296,11 @@ def main(argv=None) -> int:
     w = sub.add_parser("new", help="新建空方案"); w.add_argument("solution", help="方案文件"); w.set_defaults(fn=cmd_new)
     sc = sub.add_parser("shortcut", help="在桌面创建快捷方式"); sc.add_argument("solution", nargs="?", help="快捷方式打开的方案（可选）")
     sc.add_argument("--name", default="CVFlow", help="快捷方式名称"); sc.set_defaults(fn=cmd_shortcut)
+    gp = sub.add_parser("gpu", help="自检推理环境（后端、显卡、实测加载）")
+    gp.add_argument("model", nargs="?", help="用来实测的 ONNX 模型文件（可选）")
+    gp.add_argument("--provider", default="auto", choices=["auto", "cpu", "cuda", "tensorrt"], help="指定推理后端")
+    gp.add_argument("--device", type=int, default=0, help="显卡编号")
+    gp.set_defaults(fn=cmd_gpu)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")

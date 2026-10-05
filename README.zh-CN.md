@@ -52,6 +52,7 @@ cvflow nodes                                          # 列出 40 个内置节�
 cvflow run examples/solutions/demo_holes.json -n 10   # 终端跑示例流程
 cvflow gui examples/solutions/demo_holes.json         # 打开桌面程序
 cvflow serve examples/solutions/demo_holes.json       # 无界面生产模式
+cvflow gpu                                           # 自检推理环境（后端 / 显卡 / 实测加载）
 pytest -q                                             # 35 个测试，界面测试 offscreen 运行
 ```
 
@@ -161,7 +162,17 @@ PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复�
 按[安装](#安装)里的 `.[dev,gpu]` 装好（`.[gpu]` 与 `.[cpu]` 二选一），默认的 `auto` 就会优先用 GPU，不需要改任何参数。先确认包里有哪些后端：
 
 ```bash
-python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+cvflow gpu                 # 自检：装了哪些后端、能不能加载、有哪些显卡
+cvflow gpu 你的模型.onnx    # 再加一步实测：这个模型实际跑在哪、加载后占多少显存
+```
+
+典型输出（显存那一行是最直接的证据——跑在 CPU 上时它不会变）：
+
+```
+  CUDAExecutionProvider        可用
+  TensorrtExecutionProvider    加载失败：libnvinfer.so.10: cannot open shared object file
+  实际使用的后端：CUDAExecutionProvider（0 号卡）
+  本进程显存：0 → 942 MiB（+942）
 ```
 
 `auto` 会自动跳过加载不了的后端：装了 GPU 版但没装 TensorRT 时，日志里会看到 `推理后端 TensorrtExecutionProvider 的运行库加载不了（libnvinfer.so.10: ...），本次运行跳过它`，然后继续用 CUDA。这一步很关键——onnxruntime 只要收到一个加载失败的后端就会把整个会话退回 CPU，连本来能用的 CUDA 一起丢掉。
