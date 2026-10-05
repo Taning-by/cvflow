@@ -284,6 +284,7 @@ class _OnnxBase(Node):
         super().__init__(*a, **k)
         self._runner: _Runner | None = None
         self._runner_key: tuple | None = None
+        self._failed_exclusive: tuple | None = None   # 独占会话失败过的键，不再反复重试
         self._rebuild_ports()
 
     # ---- 动态端口 ----
@@ -384,6 +385,8 @@ class _OnnxBase(Node):
         if not os.path.isfile(path):
             raise NodeError(f"模型文件不存在：{path}")
         skey = self._session_key(path)
+        if skey[-1] and skey == self._failed_exclusive:
+            skey = skey[:-1] + ("",)          # 这套配置上次独占就失败了，直接用共享的，别每次运行都重试
         try:
             holder = _get_or_create_session(skey, lambda: self._create_session(path))
         except Exception as e:
@@ -391,6 +394,7 @@ class _OnnxBase(Node):
                 raise
             # 独占一份权重失败，多半是显存不够：退回共享会话，宁可慢一点也不要整条流程挂掉
             log.warning("%s：按独占方式加载模型失败（%s），改为与其它节点共用同一份权重", self.name, e)
+            self._failed_exclusive = skey
             skey = skey[:-1] + ("",)
             holder = _get_or_create_session(skey, lambda: self._create_session(path))
         self.adopt_model_spec(holder.spec)      # 模型把输入形状写死时，按它修正预处理参数

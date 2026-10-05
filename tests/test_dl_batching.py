@@ -287,6 +287,29 @@ def test_dl_session_scope_exclusive_loads_one_copy_per_owner(cls_model):
     assert active_sessions() == s0 and runners() == r0
 
 
+def test_dl_session_exclusive_falls_back_to_shared_when_it_cannot_be_created(cls_model, monkeypatch):
+    """独占一份权重失败（显存不够）时退回共享会话，流程照常跑完，不是直接报错。"""
+    from cvflow.operators import dl
+    from cvflow.operators.dl import active_sessions
+    real = dl._OnnxBase._create_session
+    calls = {"n": 0}
+
+    def flaky(self, path):
+        calls["n"] += 1
+        if calls["n"] == 1:                                   # 第一次（独占）失败
+            raise RuntimeError("CUDA out of memory（模拟）")
+        return real(self, path)
+
+    monkeypatch.setattr(dl._OnnxBase, "_create_session", flaky)
+    s0 = active_sessions()
+    eng, node = build(cls_model, [channel_image(1)], session_scope="exclusive")
+    nr = eng.run().node_results[node.id]
+    assert nr.status.value == "ok" and nr.outputs["class_id"] == 1     # 没有因此失败
+    assert active_sessions() == s0 + 1 and calls["n"] == 2             # 退回到了共享的那一份
+    eng.teardown_nodes()
+    assert active_sessions() == s0
+
+
 def test_dl_session_scope_shared_keeps_one_copy_even_across_groups(cls_model):
     """强制共享：不管分组怎么填，权重都只加载一份。"""
     from cvflow.operators.dl import active_sessions
