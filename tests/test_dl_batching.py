@@ -29,7 +29,6 @@ def cpu_backend_only(monkeypatch):
     from cvflow.operators import dl
     monkeypatch.setattr(ort, "get_available_providers", lambda: ["CPUExecutionProvider"])
     monkeypatch.setattr(dl, "_PROVIDER_LOADABLE", {})
-    monkeypatch.setattr(dl, "_BACKEND_CHOICE_LOGGED", False)
 
 
 def runners() -> int:
