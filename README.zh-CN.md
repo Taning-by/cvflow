@@ -30,10 +30,18 @@ git clone https://github.com/Taning-by/cvflow.git
 cd cvflow
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"            # 核心 + 界面 + 测试依赖
+pip install -e ".[dev,cpu]"        # 核心 + 界面 + 测试依赖 + CPU 推理
 ```
 
-可选依赖：`.[gpu]`（onnxruntime-gpu）、`.[genicam]`（harvesters，GigE/USB3 Vision 相机）、`.[plc]`（python-snap7，西门子 S7）、`.[dl]`（PyTorch，给插件模板用）。
+**推理运行时要在 `cpu` 和 `gpu` 里二选一**，不能同时装：`onnxruntime` 与 `onnxruntime-gpu` 装的是同一个 Python 模块，共存时会互相覆盖，典型症状就是"装了 GPU 版却只有 CPU 后端"。用显卡就把上面那行换成：
+
+```bash
+pip install -e ".[dev,gpu]"        # 装 onnxruntime-gpu，另需 CUDA 12 / cuDNN 9 运行库
+```
+
+已经装错了的话，先清干净再装：`pip uninstall -y onnxruntime onnxruntime-gpu`，然后只装需要的那一个。
+
+其它可选依赖：`.[genicam]`（harvesters，GigE/USB3 Vision 相机）、`.[plc]`（python-snap7，西门子 S7）、`.[dl]`（PyTorch，给插件模板用）。
 
 ## 运行
 
@@ -148,18 +156,13 @@ PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复�
 
 ### 在 GPU 上跑
 
-**默认装的是 CPU 版**：`pip install -e .` / `.[dev]` 带的是 `onnxruntime`，包里只有 CPU 后端，这时把推理后端选成 `cuda` 或 `tensorrt` 会报"不可用"并退回 CPU。要用显卡：
-
-```bash
-pip uninstall onnxruntime            # 两个包装的是同一个模块，必须先卸掉 CPU 版
-pip install -e ".[gpu]"              # 装 onnxruntime-gpu
-```
-
-再装上对应版本的 CUDA 12 / cuDNN 9 运行库（`TensorrtExecutionProvider` 还要另外装 TensorRT 本体，一般用 `cuda` 或 `auto` 就够）。装好之后默认的 `auto` 就会优先用 GPU，不需要改任何参数。确认包里有哪些后端：
+装 GPU 版推理运行时（见[安装](#安装)：`.[gpu]` 与 `.[cpu]` 二选一），再装上对应版本的 CUDA 12 / cuDNN 9 运行库，默认的 `auto` 就会优先用 GPU，不需要改任何参数。先确认包里有哪些后端：
 
 ```bash
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 ```
+
+列表里没有 `CUDAExecutionProvider`，说明装的是 CPU 版（或者 CPU 版把 GPU 版覆盖了）：`pip uninstall -y onnxruntime onnxruntime-gpu` 之后只装 `onnxruntime-gpu`。有它但运行时加载失败，则是缺 CUDA / cuDNN 运行库，日志里会写明。`TensorrtExecutionProvider` 还要另外安装 TensorRT 本体，一般用 `cuda` 或 `auto` 就够。
 
 **想确认实际跑在哪里，看日志里的这一行**：
 

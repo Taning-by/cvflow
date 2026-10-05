@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("onnxruntime")      # 没装推理运行时就跳过（onnxruntime / onnxruntime-gpu 二选一）
+
 from cvflow.core import DataType, Graph, Image, Node, Port, registry
 from cvflow.core.engine import Engine
 from cvflow.core.node import NodeStatus

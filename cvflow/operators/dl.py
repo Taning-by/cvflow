@@ -474,7 +474,8 @@ class _OnnxBase(Node):
         try:
             import onnxruntime as ort
         except ImportError as e:  # pragma: no cover
-            raise NodeError("未安装 onnxruntime") from e
+            raise NodeError("未安装推理运行时。CPU 用 pip install -e \".[cpu]\"，"
+                            "显卡用 pip install -e \".[gpu]\"（两者互斥，只装一个）") from e
         providers, on_gpu = self._resolve_providers()
         device = int(self.get("device_id"))
         # 显卡编号通过 provider 选项传给 CUDA / TensorRT；CPU 后端没有这个概念

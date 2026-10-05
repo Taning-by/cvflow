@@ -37,11 +37,22 @@ git clone https://github.com/Taning-by/cvflow.git
 cd cvflow
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"            # core + GUI + tests
+pip install -e ".[dev,cpu]"        # core + GUI + tests + CPU inference
 ```
 
-Optional extras: `.[gpu]` (onnxruntime-gpu), `.[genicam]` (harvesters for GigE / USB3 Vision
-cameras), `.[plc]` (python-snap7 for Siemens S7), `.[dl]` (PyTorch for the plugin template).
+**Pick exactly one of `cpu` and `gpu`.** `onnxruntime` and `onnxruntime-gpu` ship the same Python
+module and overwrite each other when both are installed — the usual symptom is "installed the GPU
+build but only the CPU backend is there". For a GPU box use instead:
+
+```bash
+pip install -e ".[dev,gpu]"        # onnxruntime-gpu; also needs CUDA 12 / cuDNN 9 runtimes
+```
+
+If both ended up installed, clean out first: `pip uninstall -y onnxruntime onnxruntime-gpu`, then
+install the one you need.
+
+Other extras: `.[genicam]` (harvesters for GigE / USB3 Vision cameras), `.[plc]` (python-snap7 for
+Siemens S7), `.[dl]` (PyTorch for the plugin template).
 
 ## Run
 
@@ -192,19 +203,19 @@ they came from, so only the selected input's boxes and labels are drawn.
 
 ### Running on the GPU
 
-**The default install is CPU-only**: `pip install -e .` / `.[dev]` pulls `onnxruntime`, which
-carries no GPU backend, so selecting `cuda` or `tensorrt` reports "unavailable" and falls back to
-the CPU. For GPU:
+Install the GPU runtime (see [Install](#install) — `.[gpu]` and `.[cpu]` are mutually exclusive)
+plus matching CUDA 12 / cuDNN 9 runtimes, and the default `auto` already prefers the GPU. Check
+what the wheel actually carries:
 
 ```bash
-pip uninstall onnxruntime            # both wheels provide the same module; remove the CPU one first
-pip install -e ".[gpu]"              # installs onnxruntime-gpu
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 ```
 
-Then install matching CUDA 12 / cuDNN 9 runtimes (`TensorrtExecutionProvider` additionally needs
-TensorRT itself; `cuda` or `auto` is usually what you want). After that the default `auto` already
-prefers the GPU — no parameter change needed. **To see where it actually
+No `CUDAExecutionProvider` in the list means a CPU wheel is installed (or it overwrote the GPU
+one): `pip uninstall -y onnxruntime onnxruntime-gpu`, then install `onnxruntime-gpu` alone. If it
+is listed but fails at runtime, the CUDA / cuDNN libraries are missing — the log says so.
+`TensorrtExecutionProvider` additionally needs TensorRT itself; `cuda` or `auto` is usually what
+you want. **To see where it actually
 runs, read this log line**:
 
 ```
