@@ -28,6 +28,7 @@ class NodeView(QGraphicsView):
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setContextMenuPolicy(Qt.NoContextMenu)   # 右键菜单由鼠标释放时手动弹出（区分拖动与点击）
         self._fit_mode = True            # 处于"适配"状态：窗格尺寸变化时自动重新适配
+        self._mouse_down = False         # 用户正在视图里按着鼠标（点选、框选、拖动节点或连线）
         self._panning = False
         self._pan_start = QPointF()
         self._pan_button = None
@@ -52,8 +53,14 @@ class NodeView(QGraphicsView):
             self.scale(factor, factor)
             self.zoom_changed.emit(self.zoom())
 
+    def is_interacting(self) -> bool:
+        """用户正按着鼠标操作视图。这期间任何代码都不该去滚动视图：
+        滚动会改变光标与场景的对应关系，接着的一点点移动就会把节点整块拖走。"""
+        return self._mouse_down
+
     def mousePressEvent(self, event) -> None:
         b = event.button()
+        self._mouse_down = True
         if b == Qt.RightButton or b == Qt.MiddleButton or (b == Qt.LeftButton and event.modifiers() & Qt.AltModifier):
             self._panning = True
             self._pan_button = b
@@ -80,6 +87,7 @@ class NodeView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        self._mouse_down = False
         if self._panning and event.button() == self._pan_button:
             self._panning = False
             self._pan_button = None

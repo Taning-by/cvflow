@@ -752,9 +752,13 @@ class MainWindow(QMainWindow):
         self._update_image()
 
     def _reveal_node(self, node_id) -> None:
-        """选中的节点如果不在可视区内就滚动过去；已经看得见时不动，免得画面乱跳。"""
+        """选中的节点如果不在可视区内就滚动过去；已经看得见时不动，免得画面乱跳。
+
+        用户正在视图里按着鼠标时一律不滚动：那会改变光标与场景的对应关系，
+        随后哪怕一两像素的抖动也会把刚点中的节点整块拖到别处。
+        """
         item = self.scene.node_items.get(node_id) if node_id else None
-        if item is None:
+        if item is None or self.view.is_interacting():
             return
         visible = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
         if not visible.contains(item.sceneBoundingRect()):

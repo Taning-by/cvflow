@@ -378,6 +378,38 @@ def test_ui_editor_context_menu_add_duplicate_disable(win, app):
     assert item.node.enabled is False
 
 
+def test_ui_editor_clicking_a_partly_visible_node_does_not_move_it(win, app):
+    """放大后点选一个只露出一半的节点：视图不该滚动，节点也不该被挪走（回归）。
+
+    曾经的问题：选中时会把节点滚进可视区，滚动改变了光标与场景的对应关系，
+    接着一两像素的手抖就把刚点中的节点拖出几百个单位。
+    """
+    view = win.view
+    target = node_by_name(win, "阈值")
+    item = win.scene.node_items[target.id]
+    win.scene.select_node(node_by_name(win, "取图").id)         # 先选中另一个节点
+    pump(app)
+    view.set_zoom(1.5)                                          # 放大到局部
+    view.centerOn(item)
+    pump(app)
+    # 把目标推到窗口右边缘：右半边伸到视野外，左半边还能点
+    view.horizontalScrollBar().setValue(view.horizontalScrollBar().value() - (view.viewport().width() // 2 - 100))
+    pump(app)
+    visible = view.mapToScene(view.viewport().rect()).boundingRect()
+    assert not visible.contains(item.sceneBoundingRect())       # 前提：节点确实只露出一部分
+
+    before_pos = list(target.position)
+    before_scroll = (view.horizontalScrollBar().value(), view.verticalScrollBar().value())
+    p = view_pos(view, item.mapToScene(QPointF(30, 12)))       # 点它露在外面的标题栏
+    assert view.viewport().rect().contains(p)
+    drag(app, view.viewport(), p, QPoint(p.x() + 3, p.y() + 2), steps=1)   # 带 3px 手抖的点击
+    pump(app)
+
+    assert win.param_panel._node is target                     # 确实选中了它
+    assert (view.horizontalScrollBar().value(), view.verticalScrollBar().value()) == before_scroll
+    assert max(abs(a - b) for a, b in zip(target.position, before_pos)) < 8   # 只跟着手抖几像素
+
+
 def test_ui_editor_zoom_and_fit(win, app):
     view = win.view
     from PySide6.QtGui import QWheelEvent
