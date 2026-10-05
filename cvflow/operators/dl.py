@@ -180,6 +180,31 @@ def _get_or_create_session(key: tuple, factory) -> _SharedSession:
         return holder
 
 
+def _acquire_preloaded(key: tuple, factory) -> None:
+    """为"提前加载"占一个引用。
+
+    权重是跨节点共享的，预加载也必须计数：否则两个节点都预加载了同一个模型，
+    其中一个被禁用就会把另一个还在用的那份权重也删掉。
+    """
+    with _CACHE_LOCK:
+        holder = _SESSIONS.get(key)
+        if holder is None:
+            holder = factory()
+            _SESSIONS[key] = holder
+        holder.refs += 1
+
+
+def _release_preloaded(key: tuple) -> None:
+    """放掉一个"提前加载"的引用，没人再用时才真正释放权重。"""
+    with _CACHE_LOCK:
+        holder = _SESSIONS.get(key)
+        if holder is None:
+            return
+        holder.refs -= 1
+        if holder.refs <= 0:
+            _SESSIONS.pop(key, None)
+
+
 def _drop_session(key: tuple) -> None:
     with _CACHE_LOCK:
         holder = _SESSIONS.get(key)
@@ -586,6 +611,18 @@ class _OnnxBase(Node):
             _release_runner(self._runner_key)
         self._runner, self._runner_key = None, None
 
+    def on_enabled_changed(self, enabled: bool) -> None:
+        """禁用就把权重从显存/内存里放掉；重新启用时由界面触发预加载。"""
+        if not enabled:
+            self.unload()
+
+    def unload(self) -> None:
+        """释放本节点占用的推理资源。权重是共享的，只有没人再用时才真正被释放。"""
+        self._release_runner()
+        if self._preloaded_key is not None:
+            stale, self._preloaded_key = self._preloaded_key, None
+            _release_preloaded(stale)
+
     def preload(self) -> None:
         """把模型提前加载进内存/显存，让第一次运行不用再等几秒的加载时间。
 
@@ -593,16 +630,19 @@ class _OnnxBase(Node):
         界面是在后台线程调用这个方法的，而此刻流程可能正在运行，动 runner 会把正在用的执行器关掉。
         """
         path = paths.resolve(self.get("model_path"))
-        if not path or not os.path.isfile(path):
-            return
+        if not path or not os.path.isfile(path) or not self.enabled:
+            return                                    # 禁用的节点不占显存
         skey = self._session_key(path)
         if skey == self._preloaded_key:
             return                                    # 这套配置已经加载过了
         t0 = time.perf_counter()
-        _get_or_create_session(skey, lambda: self._create_session(path))
+        _acquire_preloaded(skey, lambda: self._create_session(path))
         stale, self._preloaded_key = self._preloaded_key, skey
         if stale is not None and stale != skey:
-            _drop_session(stale)                      # 换了模型/后端/显卡：上一份没人用就放掉
+            _release_preloaded(stale)                 # 换了模型/后端/显卡：上一份没人用就放掉
+        if not self.enabled:                          # 加载过程中被禁用了：别把它留在显存里
+            self.unload()
+            return
         log.info("%s：模型 %s 已就绪（加载耗时 %.0f ms）",
                  self.name, os.path.basename(path), (time.perf_counter() - t0) * 1000)
 
@@ -611,10 +651,7 @@ class _OnnxBase(Node):
             self._ensure_runner()
 
     def teardown(self):
-        self._release_runner()
-        if self._preloaded_key is not None:
-            _drop_session(self._preloaded_key)        # 只预热、没真正跑过的会话也要放掉
-            self._preloaded_key = None
+        self.unload()
 
     @property
     def supports_batching(self) -> bool:

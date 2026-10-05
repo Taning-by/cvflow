@@ -513,6 +513,35 @@ def test_ui_params_choosing_a_model_loads_it_right_away(win, app, tmp_path):
     node.teardown()
 
 
+def test_ui_params_disabling_a_model_node_unloads_its_weights(win, app, tmp_path):
+    """取消勾选"启用"之后，模型权重要从显存/内存里放掉；重新勾选再加载回来。"""
+    pytest.importorskip("onnxruntime")
+    from cvflow.operators.dl import active_sessions
+    from nodes_helpers import make_constant_detector
+    model = str(make_constant_detector(tmp_path / "det2.onnx", [(320, 320, 80, 40, 0, 0.9)]))
+    node = win.scene.add_node("dl.onnx_detector", QPointF(100, 640))
+    win.scene.select_node(node.id)
+    pump(app)
+    before = active_sessions()
+    win._on_param_changed(node.id, "model_path", model)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and active_sessions() == before:
+        pump(app, 50)
+    assert active_sessions() == before + 1
+
+    enabled_box = next(c for c in win.param_panel.widget().findChildren(QCheckBox) if c.text() == "启用")
+    enabled_box.setChecked(False)                      # 用户在参数面板里取消启用
+    pump(app)
+    assert not node.enabled and active_sessions() == before          # 权重已卸载
+
+    enabled_box.setChecked(True)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and active_sessions() == before:
+        pump(app, 50)
+    assert active_sessions() == before + 1                           # 重新启用后又加载回来
+    node.teardown()
+
+
 # =============================================================== 运行控制
 def test_ui_run_once_autorun_continuous(win, app):
     win.act_run.trigger(); pump(app); win._apply_pending_result()

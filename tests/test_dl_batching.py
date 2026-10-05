@@ -294,6 +294,40 @@ def test_dl_preload_loads_the_model_before_any_run(cls_model):
     assert active_sessions() == s0                       # 只预加载、没跑过的会话也会被放掉
 
 
+def test_dl_disabling_a_node_unloads_its_weights(cls_model):
+    """禁用节点就把权重放掉，重新启用再加载回来。"""
+    from cvflow.operators.dl import active_sessions
+    s0 = active_sessions()
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    node.preload()
+    assert active_sessions() == s0 + 1
+
+    node.set_enabled(False)
+    assert active_sessions() == s0                        # 显存/内存里不再留着它
+
+    node.preload()
+    assert active_sessions() == s0                        # 禁用状态下不会被重新加载
+    node.set_enabled(True)
+    node.preload()
+    assert active_sessions() == s0 + 1                    # 重新启用后又能加载回来
+    node.teardown()
+    assert active_sessions() == s0
+
+
+def test_dl_disabling_one_node_keeps_the_weights_another_node_still_uses(cls_model):
+    """权重是共享的：只要还有别的节点在用，禁用其中一个不该把它从显存里删掉。"""
+    from cvflow.operators.dl import active_sessions
+    s0 = active_sessions()
+    a = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    b = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    a.preload(); b.preload()
+    assert active_sessions() == s0 + 1                     # 同一个模型，本来就只有一份
+    a.set_enabled(False)
+    assert active_sessions() == s0 + 1                     # b 还在用，不能放掉
+    b.set_enabled(False)
+    assert active_sessions() == s0                         # 都不用了才真正释放
+
+
 def test_dl_preload_drops_the_previous_copy_when_the_model_changes(cls_model, tmp_path):
     """换了模型文件，上一份没人用的权重要放掉，不能越堆越多。"""
     from cvflow.operators.dl import active_sessions

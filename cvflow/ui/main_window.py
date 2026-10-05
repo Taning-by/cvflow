@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.scene = NodeScene(self)
         self.view = NodeView(self.scene)
         self.scene.node_selected.connect(self._on_node_selected)
+        self.scene.node_enabled_changed.connect(self._on_node_enabled_changed)
         self.scene.graph_changed.connect(self._on_graph_changed)
         self.scene.message.connect(lambda m: self.statusBar().showMessage(m, 4000))
 
@@ -802,14 +803,21 @@ class MainWindow(QMainWindow):
         if not visible.contains(item.sceneBoundingRect()):
             self.view.ensureVisible(item, 60, 60)
 
+    def _on_node_enabled_changed(self, node_id: str, enabled: bool) -> None:
+        """重新启用的节点把模型再加载回来；禁用时节点自己已经把权重放掉了。"""
+        g = self.graph
+        node = g.nodes.get(node_id) if g else None
+        if node is not None and enabled:
+            self._preload_node(node)
+
     def _preload_node(self, node) -> None:
         """在后台线程把节点的重资源（模型权重）准备好。
 
         界面线程一步都不能卡：加载一个检测模型到显存常常要好几秒。失败不弹窗，
         只写日志与状态栏——真正运行时还会再试一次，那时才是该报错的地方。
         """
-        if type(node).preload is Node.preload or node.id in self._preloading:
-            return                                   # 该节点不支持预加载，或已经在加载了
+        if type(node).preload is Node.preload or node.id in self._preloading or not node.enabled:
+            return                                   # 不支持预加载 / 已经在加载 / 已禁用
         self._preloading.add(node.id)
 
         def work(n=node):

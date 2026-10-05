@@ -15,6 +15,7 @@ from .items import LinkItem, NodeItem, PortItem, bezier
 
 class NodeScene(QGraphicsScene):
     node_selected = Signal(object)        # node id or None
+    node_enabled_changed = Signal(str, bool)
     node_double_clicked = Signal(str)
     graph_changed = Signal()
     message = Signal(str)
@@ -129,8 +130,9 @@ class NodeScene(QGraphicsScene):
 
     def set_node_enabled(self, node_id: str, enabled: bool) -> None:
         node = self.graph.nodes[node_id]
-        node.enabled = enabled
+        node.set_enabled(enabled)          # 统一入口：禁用的节点会顺带放掉模型权重等资源
         self.node_items[node_id].update()
+        self.node_enabled_changed.emit(node_id, bool(enabled))
         self.graph_changed.emit()
 
     def rename_node(self, node_id: str, name: str) -> None:

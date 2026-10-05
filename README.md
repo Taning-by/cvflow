@@ -291,6 +291,13 @@ as `model xxx.onnx ready (nnn ms)`; opening a solution preloads every deep-learn
 first run then costs no loading time and the UI never blocks. A failed preload only logs — the run
 itself retries and reports the error as usual.
 
+**Disabling a node unloads its weights.** Clearing the *enabled* checkbox (or disabling the node
+from the canvas context menu) releases its weights from VRAM / RAM, and re-enabling loads them
+again. Weights are shared across nodes, so they are only really freed once no other node holds
+them. Measured with a 384 MiB model: 942 MiB of VRAM while loaded, 420 MiB after disabling — 522
+MiB returned. The remainder is the CUDA context and the cuDNN / cuBLAS handles, which are
+process-level and only come back when the process exits.
+
 Real batching needs a model exported with a dynamic batch dimension. A model with a fixed batch
 of 1 falls back to one image at a time, and the `batch_size` output reports what actually ran.
 

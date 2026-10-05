@@ -191,6 +191,17 @@ class Node:
         """Hook for nodes that cache derived data (e.g. reload a template image)."""
 
     # ---- lifecycle ----
+    def set_enabled(self, enabled: bool) -> None:
+        """启用 / 禁用节点。禁用的节点在流程里会被跳过，顺带让它把占用的资源放掉。"""
+        enabled = bool(enabled)
+        if enabled == self.enabled:
+            return
+        self.enabled = enabled
+        self.on_enabled_changed(enabled)
+
+    def on_enabled_changed(self, enabled: bool) -> None:  # noqa: B027
+        """可选钩子：节点被启用/禁用时调用。禁用时适合把重资源（模型权重、相机连接）放掉。"""
+
     def preload(self) -> None:  # noqa: B027
         """可选钩子：参数选好之后提前把重资源准备好（例如把模型加载进显存）。
 
