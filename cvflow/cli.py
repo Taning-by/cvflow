@@ -79,6 +79,7 @@ def cmd_gpu(args) -> int:
         print("  未安装 onnxruntime。CPU 装 pip install -e \".[cpu]\"，显卡装 pip install -e \".[gpu]\"（二选一）")
         return 1
     print(f"  onnxruntime {ort.__version__}  {os.path.dirname(ort.__file__)}")
+    wheels: list[str] = []
     try:
         from importlib.metadata import distributions
         names = {d.metadata["Name"].lower() for d in distributions() if d.metadata["Name"]}
@@ -94,7 +95,8 @@ def cmd_gpu(args) -> int:
     from .operators import dl
     avail = list(ort.get_available_providers())
     print(f"  包里编译进来的：{'、'.join(avail)}")
-    dl._preload_gpu_runtime(ort)
+    if any(p in dl._GPU_PROVIDERS for p in avail):
+        dl._preload_gpu_runtime(ort)      # 包里没有 GPU 后端时别预加载，否则会打一条误导人的警告
     for prov in ("TensorrtExecutionProvider", "CUDAExecutionProvider"):
         if prov not in avail:
             print(f"  {prov:28s} 包里没有")
@@ -102,8 +104,15 @@ def cmd_gpu(args) -> int:
         why = dl._why_provider_failed(ort, prov)
         print(f"  {prov:28s} {'可用' if not why else '加载失败：' + why}")
     if "CUDAExecutionProvider" not in avail:
-        print("  → 装的是 CPU 版 onnxruntime，推理只能在 CPU 上跑。"
-              "换成 pip install -e \".[gpu]\"（先卸掉 CPU 版）")
+        both = len(wheels) > 1
+        print("  → 当前这份 onnxruntime 里没有 GPU 后端，推理只能在 CPU 上跑。")
+        if both:
+            print("     原因是 CPU 版把 GPU 版覆盖了（两个包装的是同一个模块）。按下面三步修：")
+        else:
+            print("     装 GPU 版：")
+        print("       1) pip uninstall -y onnxruntime onnxruntime-gpu   （重复执行到两个都显示未安装）")
+        print(f"       2) 确认 {os.path.dirname(ort.__file__)} 已经不存在，残留就手动删掉")
+        print("       3) pip install -e \".[dev,gpu]\"")
 
     print("\n== 显卡 ==")
     gpus = _nvidia_smi("gpu=index,name,driver_version,memory.used,memory.total")
