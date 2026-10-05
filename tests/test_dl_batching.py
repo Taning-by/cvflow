@@ -303,6 +303,24 @@ def test_dl_gpu_selfcheck_command_runs(cls_model, capsys):
     assert "CPUExecutionProvider" in out                  # 实测那段报出了真正用的后端
 
 
+def test_dl_gpu_selfcheck_survives_windows_na_memory(cls_model, monkeypatch, capsys):
+    """Windows 的 WDDM 驱动按进程查询显存会返回 [N/A]，不能把自检命令跑崩（回归）。"""
+    import os
+    from cvflow import cli
+    real = cli._nvidia_smi
+
+    def fake(query, extra=None):
+        if query.startswith("compute-apps"):
+            return [f"{os.getpid()}, [N/A]"]                  # Windows 的典型输出
+        if query.startswith("gpu=memory.used"):
+            return ["1544"]
+        return real(query, extra)
+
+    monkeypatch.setattr(cli, "_nvidia_smi", fake)
+    assert cli.main(["gpu", cls_model, "--provider", "cpu"]) == 0
+    assert "Traceback" not in capsys.readouterr().out
+
+
 def test_dl_disabling_a_node_unloads_its_weights(cls_model):
     """禁用节点就把权重放掉，重新启用再加载回来。"""
     from cvflow.operators.dl import active_sessions

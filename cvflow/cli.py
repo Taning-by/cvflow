@@ -58,15 +58,25 @@ def _nvidia_smi(query: str, extra: list[str] | None = None) -> list[str]:
 
 
 def _vram_mib(pid: int) -> int | None:
-    """本进程占用的显存。驱动不支持按进程查询时（常见于 Windows/WSL）返回 None。"""
+    """本进程占用的显存（MiB）。
+
+    Windows 的 WDDM 驱动不支持按进程查询，这一列会是 ``[N/A]``；WSL 里干脆没有这张表。
+    查不到就返回 None，让调用方改用整卡的已用显存。
+    """
     rows = _nvidia_smi("compute-apps=pid,used_memory")
     if not rows:
         return None
     for row in rows:
         parts = [x.strip() for x in row.split(",")]
         if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == pid:
-            return int(parts[1])
-    return 0
+            return int(parts[1]) if parts[1].isdigit() else None
+    return 0                                   # 本进程还没用显存
+
+
+def _device_vram_mib(index: int) -> int | None:
+    """某块卡上已用的显存（含其它程序），按进程查不到时的兜底。"""
+    rows = _nvidia_smi("gpu=memory.used", ["-i", str(index)])
+    return int(rows[0]) if rows and rows[0].isdigit() else None
 
 
 def cmd_gpu(args) -> int:
@@ -139,7 +149,7 @@ def cmd_gpu(args) -> int:
     node.set("provider", args.provider)
     node.set("device_id", args.device)
     pid = os.getpid()
-    before = _vram_mib(pid)
+    before, before_dev = _vram_mib(pid), _device_vram_mib(args.device)
     t0 = time.perf_counter()
     try:
         node.preload()
@@ -149,17 +159,24 @@ def cmd_gpu(args) -> int:
     ms = (time.perf_counter() - t0) * 1000
     holder = dl._SESSIONS.get(node._preloaded_key) if node._preloaded_key else None
     where = (holder.providers[0] if holder and holder.providers else "?")
-    after = _vram_mib(pid)
-    print(f"  实际使用的后端：{where}" + (f"（{args.device} 号卡）" if where in dl._GPU_PROVIDERS else ""))
+    after, after_dev = _vram_mib(pid), _device_vram_mib(args.device)
+    on_gpu = where in dl._GPU_PROVIDERS
+    print(f"  实际使用的后端：{where}" + (f"（{args.device} 号卡）" if on_gpu else ""))
     print(f"  加载耗时：{ms:.0f} ms")
-    if before is None or after is None:
-        print("  显存：驱动不支持按进程查询（Windows/WSL 常见），请看 nvidia-smi 里整卡的已用显存变化")
+    if before is not None and after is not None:
+        delta = after - before
+        print(f"  本进程显存：{before} → {after} MiB（+{delta}）")
+    elif before_dev is not None and after_dev is not None:
+        delta = after_dev - before_dev
+        print(f"  {args.device} 号卡已用显存：{before_dev} → {after_dev} MiB（+{delta}）"
+              "　（驱动不支持按进程查询，这里是整卡数字，含其它程序）")
     else:
-        print(f"  本进程显存：{before} → {after} MiB（+{after - before}）")
-        if where in dl._GPU_PROVIDERS and after - before < 50:
-            print("  ⚠ 跑在显卡上但显存几乎没涨，请确认看的是同一块卡")
-        elif where not in dl._GPU_PROVIDERS:
-            print("  → 跑在 CPU 上，所以显存不会变。按上面的提示修好后端即可")
+        delta = None
+        print("  显存：这台机器查不到（没有 nvidia-smi 或驱动不支持），请手动对比 nvidia-smi 的输出")
+    if not on_gpu:
+        print("  → 跑在 CPU 上，所以显存不会变。按上面的提示修好后端即可")
+    elif delta is not None and delta < 50:
+        print("  ⚠ 跑在显卡上但显存几乎没涨，请确认看的是同一块卡（--device 可以指定）")
     node.unload()
     return 0
 
