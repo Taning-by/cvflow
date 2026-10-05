@@ -75,6 +75,41 @@ _PROVIDER_FIX = {
                                  "只想用显卡的话，推理后端选 cuda 或 auto 即可",
 }
 _WHEEL_CONFLICT_WARNED = False
+_GPU_RUNTIME_PRELOADED = False
+
+
+def _preload_gpu_runtime(ort) -> None:
+    """把 pip 装的 CUDA / cuDNN 运行库预加载进来，让 GPU 后端能被 dlopen 到。
+
+    onnxruntime-gpu 的 CUDA 后端是一个单独的动态库，运行时才去找 libcublasLt、libcudnn 等等。
+    用 pip 装的 nvidia-* 包并不在系统库搜索路径里（Linux 的 LD_LIBRARY_PATH / Windows 的 PATH），
+    于是会出现"包里明明有 CUDA 后端却加载失败"。onnxruntime 自带的 preload_dlls() 正是为此准备的，
+    Windows 与 Linux 都适用；没有这个接口的老版本就跳过，行为和以前一样。
+    """
+    global _GPU_RUNTIME_PRELOADED
+    if _GPU_RUNTIME_PRELOADED or not hasattr(ort, "preload_dlls"):
+        return
+    _GPU_RUNTIME_PRELOADED = True
+    try:
+        ort.preload_dlls()
+    except Exception as e:                             # pragma: no cover - 取决于本机安装
+        log.debug("预加载 CUDA/cuDNN 运行库失败：%s", e)
+
+
+def _why_provider_failed(ort, provider: str) -> str:
+    """GPU 后端加载失败时，把缺的那个库名找出来（onnxruntime 自己只把它写到 stderr）。"""
+    import ctypes
+    import glob
+    tag = "tensorrt" if provider == "TensorrtExecutionProvider" else "cuda"
+    base = os.path.join(os.path.dirname(os.path.abspath(ort.__file__)), "capi")
+    for lib in sorted(glob.glob(os.path.join(base, f"*providers_{tag}*"))):
+        try:
+            ctypes.CDLL(lib)
+        except OSError as e:
+            return str(e)
+        except Exception:                              # pragma: no cover
+            return ""
+    return ""
 
 
 def _warn_if_both_wheels_installed() -> None:
@@ -477,6 +512,8 @@ class _OnnxBase(Node):
             raise NodeError("未安装推理运行时。CPU 用 pip install -e \".[cpu]\"，"
                             "显卡用 pip install -e \".[gpu]\"（两者互斥，只装一个）") from e
         providers, on_gpu = self._resolve_providers()
+        if any(p in _GPU_PROVIDERS for p in providers):
+            _preload_gpu_runtime(ort)                  # 先把 CUDA/cuDNN 拉进来，否则 GPU 后端会加载失败
         device = int(self.get("device_id"))
         # 显卡编号通过 provider 选项传给 CUDA / TensorRT；CPU 后端没有这个概念
         request = [(p, {"device_id": device}) if p in _GPU_PROVIDERS else p for p in providers]
@@ -490,7 +527,16 @@ class _OnnxBase(Node):
         for p in providers:
             if p != "CPUExecutionProvider" and p not in active:
                 _FAILED_PROVIDERS.add(p)
-                log.warning("推理后端 %s 无法加载（通常是缺少对应版本的 CUDA/cuDNN 运行库），本次运行不再尝试", p)
+                why = _why_provider_failed(ort, p)
+                hint = ""
+                if "cublas" in why or "cudart" in why or "cufft" in why or "curand" in why:
+                    hint = "；缺 CUDA 运行库，可装 pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12"
+                elif "cudnn" in why:
+                    hint = "；缺 cuDNN，可装 pip install nvidia-cudnn-cu12"
+                elif "nvinfer" in why:
+                    hint = "；缺 TensorRT 本体，只想用显卡的话把推理后端改成 cuda 或 auto"
+                log.warning("推理后端 %s 无法加载（%s）%s，本次运行不再尝试",
+                            p, why or "通常是缺少对应版本的 CUDA/cuDNN 运行库", hint)
         prov = str(self.get("provider"))
         where = active[0] if active else "?"
         if active and active[0] in _GPU_PROVIDERS:

@@ -40,7 +40,9 @@ Issues = "https://github.com/Taning-by/cvflow/issues"
 [project.optional-dependencies]
 dev = ["pytest>=7", "onnx>=1.14"]
 cpu = ["onnxruntime>=1.16"]            # 与 gpu 互斥，二选一
-gpu = ["onnxruntime-gpu>=1.16"]        # 另需 CUDA 12 / cuDNN 9 运行库
+# onnxruntime-gpu 自带的 cuda / cudnn extra 会把 CUDA 12、cuDNN 9 的 pip 包一并装上，
+# 配合运行时的 preload_dlls()，不需要系统装 CUDA，也不用配 LD_LIBRARY_PATH / PATH。
+gpu = ["onnxruntime-gpu[cuda,cudnn]>=1.19"]
 genicam = ["harvesters>=1.4"]
 plc = ["python-snap7>=1.3"]
 dl = ["torch", "torchvision"]

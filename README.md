@@ -45,8 +45,12 @@ module and overwrite each other when both are installed — the usual symptom is
 build but only the CPU backend is there". For a GPU box use instead:
 
 ```bash
-pip install -e ".[dev,gpu]"        # onnxruntime-gpu; also needs CUDA 12 / cuDNN 9 runtimes
+pip install -e ".[dev,gpu]"        # onnxruntime-gpu + CUDA 12 / cuDNN 9 from pip (~2 GB)
 ```
+
+The GPU extra pulls the CUDA 12 and cuDNN 9 pip packages with it, so **no system CUDA install and
+no `LD_LIBRARY_PATH` / `PATH` fiddling are needed**: those libraries are not on the loader path, and
+CVFlow preloads them before creating an inference session.
 
 If both ended up installed, clean out first: `pip uninstall -y onnxruntime onnxruntime-gpu`, then
 install the one you need.
@@ -203,17 +207,17 @@ they came from, so only the selected input's boxes and labels are drawn.
 
 ### Running on the GPU
 
-Install the GPU runtime (see [Install](#install) — `.[gpu]` and `.[cpu]` are mutually exclusive)
-plus matching CUDA 12 / cuDNN 9 runtimes, and the default `auto` already prefers the GPU. Check
-what the wheel actually carries:
+Install with `.[dev,gpu]` (see [Install](#install) — `.[gpu]` and `.[cpu]` are mutually exclusive)
+and the default `auto` already prefers the GPU. Check what the wheel actually carries:
 
 ```bash
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 ```
 
 No `CUDAExecutionProvider` in the list means a CPU wheel is installed (or it overwrote the GPU
-one): `pip uninstall -y onnxruntime onnxruntime-gpu`, then install `onnxruntime-gpu` alone. If it
-is listed but fails at runtime, the CUDA / cuDNN libraries are missing — the log says so.
+one): `pip uninstall -y onnxruntime onnxruntime-gpu`, then reinstall `.[gpu]`. If it is listed but
+inference still falls back to the CPU, a runtime library failed to load and the log names it, e.g.
+`libcublasLt.so.12: cannot open shared object file`.
 `TensorrtExecutionProvider` additionally needs TensorRT itself; `cuda` or `auto` is usually what
 you want. **To see where it actually
 runs, read this log line**:

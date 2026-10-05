@@ -36,8 +36,10 @@ pip install -e ".[dev,cpu]"        # 核心 + 界面 + 测试依赖 + CPU 推理
 **推理运行时要在 `cpu` 和 `gpu` 里二选一**，不能同时装：`onnxruntime` 与 `onnxruntime-gpu` 装的是同一个 Python 模块，共存时会互相覆盖，典型症状就是"装了 GPU 版却只有 CPU 后端"。用显卡就把上面那行换成：
 
 ```bash
-pip install -e ".[dev,gpu]"        # 装 onnxruntime-gpu，另需 CUDA 12 / cuDNN 9 运行库
+pip install -e ".[dev,gpu]"        # onnxruntime-gpu + CUDA 12 / cuDNN 9（都从 pip 装，约 2 GB）
 ```
+
+GPU 版连同 CUDA 12 与 cuDNN 9 的 pip 包一起装好，**系统不需要另外装 CUDA，也不用配 `LD_LIBRARY_PATH` / `PATH`**：这些库不在系统搜索路径里，软件会在建立推理会话前自动预加载它们。
 
 已经装错了的话，先清干净再装：`pip uninstall -y onnxruntime onnxruntime-gpu`，然后只装需要的那一个。
 
@@ -156,13 +158,18 @@ PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复�
 
 ### 在 GPU 上跑
 
-装 GPU 版推理运行时（见[安装](#安装)：`.[gpu]` 与 `.[cpu]` 二选一），再装上对应版本的 CUDA 12 / cuDNN 9 运行库，默认的 `auto` 就会优先用 GPU，不需要改任何参数。先确认包里有哪些后端：
+按[安装](#安装)里的 `.[dev,gpu]` 装好（`.[gpu]` 与 `.[cpu]` 二选一），默认的 `auto` 就会优先用 GPU，不需要改任何参数。先确认包里有哪些后端：
 
 ```bash
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 ```
 
-列表里没有 `CUDAExecutionProvider`，说明装的是 CPU 版（或者 CPU 版把 GPU 版覆盖了）：`pip uninstall -y onnxruntime onnxruntime-gpu` 之后只装 `onnxruntime-gpu`。有它但运行时加载失败，则是缺 CUDA / cuDNN 运行库，日志里会写明。`TensorrtExecutionProvider` 还要另外安装 TensorRT 本体，一般用 `cuda` 或 `auto` 就够。
+列表里没有 `CUDAExecutionProvider`，说明装的是 CPU 版（或者 CPU 版把 GPU 版覆盖了）：`pip uninstall -y onnxruntime onnxruntime-gpu` 之后重新装 `.[gpu]`。列表里有它、运行时却仍然回退到 CPU，就是运行库加载失败，日志会写明缺的是哪个库，比如：
+
+```
+推理后端 CUDAExecutionProvider 无法加载（libcublasLt.so.12: cannot open shared object file...）；
+缺 CUDA 运行库，可装 pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12，本次运行不再尝试
+````TensorrtExecutionProvider` 还要另外安装 TensorRT 本体，一般用 `cuda` 或 `auto` 就够。
 
 **想确认实际跑在哪里，看日志里的这一行**：
 

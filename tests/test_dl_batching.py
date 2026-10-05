@@ -251,6 +251,39 @@ def test_dl_batch_window_merges_flows_that_arrive_at_different_times(cls_model):
         eng.teardown_nodes()
 
 
+def _reject_gpu_providers(monkeypatch):
+    """把 onnxruntime 换成"收到 GPU 后端就只用 CPU 建会话"，复现缺运行库时的静默回退。
+
+    不这么做的话，用例在真有显卡的机器上会走到 GPU 分支，结论就反了。
+    """
+    import onnxruntime as ort
+    real = ort.InferenceSession
+
+    def fake(path, sess_options=None, providers=None, **kw):
+        kept = [p for p in (providers or []) if (p[0] if isinstance(p, tuple) else p) not in
+                ("CUDAExecutionProvider", "TensorrtExecutionProvider")]
+        return real(path, sess_options, providers=kept or ["CPUExecutionProvider"], **kw)
+
+    monkeypatch.setattr(ort, "InferenceSession", fake)
+
+
+def test_dl_gpu_request_preloads_cuda_runtime(cls_model, monkeypatch):
+    """请求 GPU 后端时要先预加载 CUDA/cuDNN，否则 pip 装的运行库不在库搜索路径里会加载失败。"""
+    import onnxruntime as ort
+    from cvflow.operators import dl
+    called = []
+    monkeypatch.setattr(dl, "_GPU_RUNTIME_PRELOADED", False)
+    monkeypatch.setattr(dl, "_FAILED_PROVIDERS", set())
+    monkeypatch.setattr(ort, "preload_dlls", lambda *a, **k: called.append(1), raising=False)
+    monkeypatch.setattr(ort, "get_available_providers",
+                        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    _reject_gpu_providers(monkeypatch)
+    eng, node = build(cls_model, [channel_image(1)], provider="cuda")
+    eng.run()                                                    # 会退回 CPU，但预加载必须发生过
+    assert called, "请求 GPU 后端时没有调用 preload_dlls"
+    eng.teardown_nodes()
+
+
 def test_dl_provider_unavailable_says_why_and_how_to_fix(cls_model, monkeypatch, caplog):
     """请求 GPU 后端但包里没有时，日志要说清原因和解决办法，而不是只说"不可用"。"""
     import onnxruntime as ort
@@ -729,6 +762,7 @@ def test_dl_provider_load_failure_is_reported_and_not_retried(cls_model, monkeyp
     from cvflow.operators import dl
     monkeypatch.setattr(ort, "get_available_providers",
                         lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    _reject_gpu_providers(monkeypatch)                               # 本机有没有显卡都走同一条路径
     caplog.set_level(logging.INFO, logger="cvflow.dl")
     eng, node = build(cls_model, [channel_image(0)])
     nr = eng.run().node_results[node.id]
