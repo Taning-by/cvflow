@@ -69,15 +69,15 @@ bootstrap_python() {
   asset="cpython-$PY_VER+$PY_RELEASE-$triple-install_only.tar.gz"
   url="https://github.com/astral-sh/python-build-standalone/releases/download/$PY_RELEASE/$asset"
   say "把便携版 CPython 下到 $PY_DIR/（机器上不需要预装 Python）"
-  tgz="$(mktemp -d)/$asset"
-  curl -fL --progress-bar "$url" -o "$tgz" || die "下载失败：$url"
-  got=$( { sha256sum "$tgz" 2>/dev/null || shasum -a 256 "$tgz"; } | cut -d' ' -f1)
-  [ "$got" = "$sha" ] || die "下载内容校验不过：期望 $sha，实到 $got。网络被劫持或文件损坏，别用它"
-  note "SHA256 校验通过"
   rm -rf "$PY_DIR.tmp"; mkdir -p "$PY_DIR.tmp"
-  tar -xzf "$tgz" -C "$PY_DIR.tmp" || die "解压失败：$tgz"
+  # 压缩包下到解压目录里，解压时用相对文件名：路径里含冒号时 GNU tar 会当成远程磁带机的 host:path
+  curl -fL --progress-bar "$url" -o "$PY_DIR.tmp/$asset" || die "下载失败：$url"
+  got=$( { sha256sum "$PY_DIR.tmp/$asset" 2>/dev/null || shasum -a 256 "$PY_DIR.tmp/$asset"; } | cut -d' ' -f1)
+  [ "$got" = "$sha" ] || { rm -rf "$PY_DIR.tmp"; die "下载内容校验不过：期望 $sha，实到 $got。网络被劫持或文件损坏，别用它"; }
+  note "SHA256 校验通过"
+  ( cd "$PY_DIR.tmp" && tar -xf "$asset" ) || die "解压失败：$PY_DIR.tmp/$asset"
   [ -x "$PY_DIR.tmp/python/bin/python3" ] || die "解压出来的内容不对，没找到 python/bin/python3"
-  mv "$PY_DIR.tmp/python" "$PY_DIR"; rm -rf "$PY_DIR.tmp" "$(dirname "$tgz")"
+  mv "$PY_DIR.tmp/python" "$PY_DIR"; rm -rf "$PY_DIR.tmp"
   ok "装好了：$(cd "$PY_DIR" && pwd)/bin/python3"
 }
 

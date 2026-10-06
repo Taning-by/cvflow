@@ -76,8 +76,11 @@ if ($BootstrapPython) {
     } else {
         Say "把便携版 CPython 下到 $PyDir\（约 44 MB，机器上不需要预装 Python）"
         $url = "https://github.com/astral-sh/python-build-standalone/releases/download/$PyRelease/$PyAsset"
-        $tgz = Join-Path $env:TEMP $PyAsset
         $tmp = "$PyDir.tmp"
+        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        # 压缩包直接下到解压目录里：待会儿用相对文件名调 tar，命令行里就不会出现带盘符的路径
+        $tgz = Join-Path $tmp $PyAsset
         try {
             # IWR 默认画进度条，大文件会慢十倍以上
             $old = $ProgressPreference; $ProgressPreference = "SilentlyContinue"
@@ -86,20 +89,27 @@ if ($BootstrapPython) {
         } catch { Die "下载失败：$url`n$($_.Exception.Message)" }
         $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz).Hash.ToLower()
         if ($got -ne $PySha256) {
-            Remove-Item -LiteralPath $tgz -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
             Die "下载内容校验不过：期望 $PySha256，实到 $got。网络被劫持或文件损坏，别用它"
         }
         Note "SHA256 校验通过"
-        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
-        New-Item -ItemType Directory -Path $tmp | Out-Null
-        # Windows 10 1803 以后自带 tar.exe
-        & tar -xzf $tgz -C $tmp
+        # Windows 自带的 tar 是 bsdtar（System32\tar.exe），处理 C:\ 这种路径没问题；而 PATH 上
+        # 常常先命中 Git for Windows 的 GNU tar，它把 "C:\..." 当成远程磁带机的 host:path，
+        # 报 "Cannot connect to C: resolve failed"。所以指名用 System32 的那个，
+        # 并且切进解压目录用相对文件名调用——两种 tar 都能过。
+        $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+        if (-not (Test-Path $tarExe)) { $tarExe = "tar" }
+        Push-Location $tmp
+        try { & $tarExe -xf $PyAsset } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $tmp "python\python.exe"))) {
-            Die "解压失败。确认有 tar.exe（Windows 10 1803 以后自带），或手工解压 $tgz 后把里面的 python 目录改名成 $PyDir"
+            Die @"
+解压失败（用的是 $tarExe）。
+Windows 10 1803 以后自带 System32\tar.exe；如果 PATH 上是 Git for Windows 的 GNU tar，
+它不认带盘符的路径。手工解开也行：把 $tgz 解压后，里面的 python 目录改名成 $PyDir
+"@
         }
         Move-Item -LiteralPath (Join-Path $tmp "python") -Destination $PyDir
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $tgz -Force -ErrorAction SilentlyContinue
         Ok "装好了：$((Resolve-Path -LiteralPath $bootstrapPy).Path)"
     }
     $Python = (Resolve-Path -LiteralPath $bootstrapPy).Path
