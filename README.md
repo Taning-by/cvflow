@@ -39,6 +39,10 @@ cd cvflow
 ./install.sh                 # Linux / macOS，参数同上：--cpu / --recreate / --model best.onnx
 ```
 
+机器上只有 conda 的话，**别用 conda 的解释器**（脚本默认会拒绝）：装个普通 CPython，
+`conda deactivate` 之后用 `-Python` 明确指定它，理由和步骤见
+[docs/install.md 第 1.5 节](docs/install.md#15-机器上只有-conda-怎么办)。
+
 ### 手工装
 
 ```bash

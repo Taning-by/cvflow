@@ -5,6 +5,8 @@
 #   ./install.sh --cpu                  没有 NVIDIA 显卡：装 .[dev,cpu]
 #   ./install.sh --model best.onnx      装完再拿这个模型实测一次
 #   ./install.sh --recreate             删掉旧的虚拟环境从头来（装乱了用这个，代码不受影响）
+#   ./install.sh --python /usr/bin/python3.12   指定解释器（机器上只有 conda 时要这样）
+#   ./install.sh --allow-conda          允许用 conda 的解释器建 venv（默认拒绝）
 #   ./install.sh --python python3.12 --venv .venv
 #
 # 做的事和 docs/install.md 里的手工步骤一样，只是不会漏步、不会装错顺序。
@@ -15,11 +17,13 @@ VENV=.venv
 MODEL=""
 USE_GPU=1
 RECREATE=0
+ALLOW_CONDA=0
 MIN_DRIVER=525.60          # CUDA 12 在 Linux 上要求的最低驱动版本
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cpu)    USE_GPU=0; shift ;;
+    --allow-conda) ALLOW_CONDA=1; shift ;;
     --recreate) RECREATE=1; shift ;;
     --python) PYTHON="$2"; shift 2 ;;
     --venv)   VENV="$2"; shift 2 ;;
@@ -40,11 +44,22 @@ cd "$(dirname "$(readlink -f "$0")")"
 # ------------------------------------------------------------------ 1. Python
 say "检查 Python"
 command -v "$PYTHON" >/dev/null 2>&1 || die "找不到 $PYTHON。装 Python 3.10-3.13，或用 --python 指定"
-read -r PYVER PYBITS <<<"$("$PYTHON" -c 'import sys,struct;print("%d.%d %d" % (sys.version_info[0], sys.version_info[1], struct.calcsize("P")*8))')"
+# conda-meta 目录是 conda 安装/环境的标志；conda 环境本身不是 venv，靠 sys.prefix 认不出来
+read -r PYVER PYBITS PYKIND <<<"$("$PYTHON" -c 'import os,sys,struct;print("%d.%d %d %s" % (sys.version_info[0], sys.version_info[1], struct.calcsize("P")*8, "conda" if os.path.isdir(os.path.join(sys.base_prefix, "conda-meta")) else "plain"))')"
 [ "$PYBITS" = "64" ] || die "Python 是 $PYBITS 位的，onnxruntime 只有 64 位轮子"
 "$PYTHON" -c 'import sys;sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) else 1)' \
   || die "Python $PYVER 不行：onnxruntime-gpu 只有 3.10-3.14 的轮子。用 --python 指定一个合适的版本"
-ok "Python $PYVER（$PYBITS 位）"
+if [ "$PYKIND" = conda ] && [ "$ALLOW_CONDA" = 0 ]; then
+  die "'$PYTHON' 是 conda 里的解释器（Python $PYVER）。默认拒绝用它建 venv：conda 环境里的
+CUDA / cuDNN 会跟 pip 装进环境的那套撞版本，而且基于 conda 解释器的 venv 以后不激活 conda 可能起不来。
+  · 用普通 CPython：./install.sh --python /usr/bin/python3.12
+  · 或先 conda deactivate，确认 which python 不再指向 conda
+  · 确实要用：加 --allow-conda"
+fi
+ok "Python $PYVER（$PYBITS 位，$([ "$PYKIND" = conda ] && echo 'conda 解释器' || echo '普通 CPython')）"
+if [ -n "${CONDA_PREFIX:-}" ]; then
+  note "注意：当前有 conda 环境处于激活状态（$CONDA_PREFIX），装之前先 conda deactivate 更干净"
+fi
 
 # ------------------------------------------------------------------ 2. 显卡驱动
 if [ "$USE_GPU" = 1 ]; then
@@ -78,6 +93,11 @@ if [ "$RECREATE" = 1 ] && [ -d "$VENV" ]; then
 fi
 if [ -x "$VENV_PY" ]; then
   say "复用已有虚拟环境 $VENV"
+  if [ "$ALLOW_CONDA" = 0 ] && [ "$("$VENV_PY" -c 'import os,sys;print("conda" if os.path.isdir(os.path.join(sys.base_prefix, "conda-meta")) else "plain")')" = conda ]; then
+    die "已有的 $VENV 是用 conda 的解释器建的。换成普通 CPython 建的干净环境：
+    ./install.sh --recreate --python /usr/bin/python3.12
+就想接着用它：加 --allow-conda"
+  fi
 else
   say "创建虚拟环境 $VENV"
   "$PYTHON" -m venv "$VENV"

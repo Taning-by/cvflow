@@ -78,6 +78,54 @@ cd cvflow
 
 ---
 
+## 1.5 机器上只有 conda 怎么办
+
+本项目用的是标准的 `venv` + `pip`，**不要用 conda 装**。原因有两个，都是排查起来很费劲的那种：
+
+1. conda 的 `python.exe` 依赖 `<env>\Library\bin` 里的 DLL（ssl、sqlite 这些），那个目录只在
+   conda 环境**激活时**才在 `PATH` 上。基于 conda 解释器建出来的 venv 继承了这个依赖，
+   以后不激活 conda 就可能报 `DLL load failed` 或 `No module named '_ssl'`。
+2. conda 环境里装过 `cudnn` / `cudatoolkit` 的话，它们的 DLL 也在 `PATH` 上，
+   会和 pip 装进环境的 CUDA 12 / cuDNN 9 撞版本。
+
+所以 `install.ps1` / `install.sh` **默认拒绝**用 conda 里的解释器建 venv（靠 `sys.base_prefix`
+下有没有 `conda-meta` 目录判断；conda 环境本身不是 venv，`sys.prefix` 认不出来），
+并会提醒你当前是不是还有 conda 环境处于激活状态。
+
+干净的做法，三步：
+
+```powershell
+# 1) 装一个普通 CPython（任选其一，都不会动你的 conda）
+winget install Python.Python.3.12
+#   或者去 python.org 下 64 位安装包，装的时候不勾 "Add to PATH" 也没关系，下一步用绝对路径
+
+# 2) 退出 conda，让这个窗口干净
+conda deactivate
+conda config --set auto_activate_base false     # 以后新开的窗口不再自动进 base（可选但推荐）
+
+# 3) 明确用那个 CPython 装
+.\install.ps1 -Python "C:\Users\<你>\AppData\Local\Programs\Python\Python312\python.exe"
+#   装了 py 启动器更省事：.\install.ps1 -Python "py -3.12"
+```
+
+装完确认这个 venv 跟 conda 没关系：
+
+```powershell
+.venv\Scripts\python -c "import sys;print(sys.base_prefix)"
+```
+
+打出来的路径里**不带 conda / miniconda / anaconda** 就对了。之后用 `.venv\Scripts\activate`
+激活，不要再 `conda activate`。
+
+确实非要用 conda 的解释器（比如机器上就是装不了别的 Python）：加 `-AllowConda` / `--allow-conda`
+就能过，但上面那两个风险你自己要记着，出问题先想到它。
+
+另外，本项目**不支持**直接装进 conda 环境（`conda activate` 后 `pip install -e .`）：
+`tools/venv_clean.py` 的清理动作只肯在 venv 里动文件，conda 环境会被它拒绝，
+混装过 onnxruntime 的 conda 环境清不干净。
+
+---
+
 ## 2. 正确的安装顺序（Windows + NVIDIA 显卡）
 
 下面六步照顺序执行，不要跳、不要换序。命令在 PowerShell 或 CMD 里都一样。
@@ -331,6 +379,7 @@ cvflow gpu --require-gpu                   # 照样要自检
 | `cvflow gpu` 说“没找到 nvidia-smi” | 没有 NVIDIA 显卡，或驱动没装好 | 装/更新驱动；确实没有独显就走[第 4 节](#4-没有-nvidia-显卡只用-cpu) |
 | `缺 CUDA 运行库…libcublasLt / cublasLt64_12.dll` | cuDNN 没装上（cuBLAS 由它带入） | `pip install nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12`，或按[第 3 节](#3-已经装成-cpu-版了怎么切过去)重装 |
 | 后端是 CUDA，但显存一点没涨 | 看的不是同一块卡 | `cvflow gpu 模型.onnx --device 1` 指定卡号 |
+| `DLL load failed` / `No module named '_ssl'`（venv 里） | 这个 venv 是用 conda 的解释器建的，conda 环境没激活时缺 `Library\bin` 里的 DLL | 用普通 CPython 重建：`.\install.ps1 -Recreate -Python "C:\Python312\python.exe"`，见[第 1.5 节](#15-机器上只有-conda-怎么办) |
 | 装完还是找不到 `cvflow` 命令 | 虚拟环境没激活 | 重新 `.venv\Scripts\activate`；或用 `python -m cvflow gpu` |
 | `pip` 装的是 `onnxruntime-gpu 1.19/1.20`，CUDA 库一个没装 | 这两个版本**没有** `cuda`/`cudnn` extra | 本项目已要求 `>=1.21`；用公司内网镜像时确认镜像里有 1.21+ |
 | 装的是 `onnxruntime-gpu 1.27+`，CUDA 后端却加载失败 | 1.27 起要 CUDA 13：驱动 < 580，或显卡算力 < 7.5（GTX 10 系这类 Pascal 卡） | 回到 CUDA 12 那条线：卸干净后 `pip install -e ".[dev,gpu]"`（已限制 <1.27） |

@@ -26,11 +26,16 @@
 .EXAMPLE
     .\install.ps1 -Recreate
     之前装乱了：删掉旧虚拟环境从头装一遍（代码不受影响）
+
+.EXAMPLE
+    .\install.ps1 -Python "C:\Python312\python.exe"
+    机器上装的都是 conda 时，明确用一个普通 CPython 建 venv（推荐这么做）
 #>
 [CmdletBinding()]
 param(
     [switch] $Cpu,                  # 强制装 CPU 版（没有 NVIDIA 显卡时用）
     [switch] $Recreate,             # 删掉旧的虚拟环境从头装（装乱了用这个，代码不受影响）
+    [switch] $AllowConda,           # 允许用 conda 环境里的解释器建 venv（默认拒绝，见下）
     [string] $Python = "python",    # 用哪个 Python 建虚拟环境，可写 py -3.12 或绝对路径
     [string] $Venv   = ".venv",     # 虚拟环境目录
     [string] $Model  = ""           # 可选：装完用这个 ONNX 模型实测一次
@@ -52,16 +57,37 @@ if (-not (Test-Path "pyproject.toml")) { Die "这个脚本要放在 CVFlow 仓�
 Say "检查 Python"
 $pyCmd = $Python.Split(" ")[0]
 $pyArgs = @($Python.Split(" ") | Select-Object -Skip 1)
-try   { $probe = & $pyCmd @pyArgs "-c" "import sys,struct;print('%d.%d %d' % (sys.version_info[0], sys.version_info[1], struct.calcsize('P')*8))" }
+# conda-meta 目录是 conda 安装/环境的标志，conda 环境本身不是 venv（sys.prefix == sys.base_prefix），认不出来
+$PROBE = "import os,sys,struct;print('%d.%d %d %s' % (sys.version_info[0], sys.version_info[1], " +
+         "struct.calcsize('P')*8, 'conda' if os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')) else 'plain'))"
+try   { $probe = & $pyCmd @pyArgs "-c" $PROBE }
 catch { Die "找不到 Python（试的是 '$Python'）。装 64 位 Python 3.10-3.14，或用 -Python 指定，例如 .\install.ps1 -Python 'py -3.12'" }
 # 有些 Python 启动时会多打几行（比如虚拟环境提示），所以合成一串再按空白切
 $parts = (($probe | Out-String).Trim() -split '\s+')
-if ($parts.Count -lt 2) { Die "探测 Python 版本失败，输出是：$probe" }
-$ver, $bits = $parts[-2], $parts[-1]
+if ($parts.Count -lt 3) { Die "探测 Python 版本失败，输出是：$probe" }
+$ver, $bits, $kind = $parts[-3], $parts[-2], $parts[-1]
 $v = [version] $ver
 if ($bits -ne "64")                                { Die "Python 是 $bits 位的，onnxruntime 只有 64 位轮子。请装 64 位 Python" }
 if ($v -lt [version]"3.10" -or $v -ge [version]"3.15") { Die "Python $ver 不行：onnxruntime-gpu 只有 3.10-3.14 的轮子。用 -Python 指定一个合适的版本" }
-Ok "Python $ver（$bits 位）"
+if ($kind -eq "conda" -and -not $AllowConda) {
+    Die @"
+'$Python' 是 conda 里的解释器（Python $ver）。默认拒绝用它建 venv，原因有两个：
+  1) conda 的 python.exe 要靠 <env>\Library\bin 里的 DLL，那个目录只在 conda 环境激活时才在 PATH 上；
+     基于它建的 venv 继承这个依赖，以后不激活 conda 就可能报 DLL load failed / No module named '_ssl'
+  2) conda 环境里若装过 cudnn / cudatoolkit，它们的 DLL 也在 PATH 上，会和 pip 装进 venv 的
+     CUDA 12 / cuDNN 9 撞版本，排查起来非常费劲
+怎么办（任选其一）：
+  · 装一个普通 CPython（python.org 或 winget install Python.Python.3.12），然后指定它：
+      .\install.ps1 -Python "C:\Python312\python.exe"        （或 -Python "py -3.12"）
+  · 先 conda deactivate 退出 conda，再确认 where python 指向的不是 conda
+  · 确实要用 conda 的解释器：加 -AllowConda
+"@
+}
+Ok "Python $ver（$bits 位，$(if ($kind -eq 'conda') { 'conda 解释器' } else { '普通 CPython' })）"
+if ($env:CONDA_PREFIX) {
+    Note "注意：当前有 conda 环境处于激活状态（$env:CONDA_PREFIX）。装之前先 conda deactivate 更干净，"
+    Note "      免得 conda 的 Library\bin 往 PATH 里塞 CUDA / cuDNN 的 DLL，和环境里 pip 装的那套撞版本"
+}
 
 # --------------------------------------------------------------------- 2. 显卡驱动
 $useGpu = -not $Cpu
@@ -103,6 +129,15 @@ if ($Recreate -and (Test-Path $Venv)) {
 }
 if (Test-Path $venvPy) {
     Say "复用已有虚拟环境 $Venv"
+    $venvKind = & $venvPy -c "import os,sys;print('conda' if os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')) else 'plain')"
+    if ($venvKind -eq "conda" -and -not $AllowConda) {
+        Die @"
+已有的 $Venv 是用 conda 的解释器建的（它的 sys.base_prefix 指向一个 conda 环境）。
+要换成普通 CPython 建的干净环境：
+    .\install.ps1 -Recreate -Python "C:\Python312\python.exe"
+就想接着用它：加 -AllowConda
+"@
+    }
 } else {
     Say "创建虚拟环境 $Venv"
     & $pyCmd @pyArgs "-m" "venv" $Venv
