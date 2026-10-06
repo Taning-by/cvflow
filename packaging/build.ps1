@@ -39,21 +39,26 @@ param(
     [string] $Version = "0.1.0"
 )
 
-$ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 的坑：$ErrorActionPreference = "Stop" 时，**原生命令**（python、pip、
+# PyInstaller、ISCC…）只要往 stderr 写一个字，就会被包成 NativeCommandError 当成终止错误，
+# 连 2>$null 都拦不住——PyInstaller 的日志恰恰全写 stderr。所以这里用 Continue，
+# 原生命令一律显式查 $LASTEXITCODE（下面每处都查了）；会动文件的 cmdlet 单独加 -ErrorAction Stop。
+$ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 
 # 构建过程里的输出会被重定向（CI 抓日志、管道），而本地编码在英文 Windows 上是 cp1252，
 # 打中文会抛 UnicodeEncodeError 把构建弄挂。把子进程的 I/O 编码定死成 UTF-8。
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# 没有真实控制台时（CI 里输出被重定向）这一句可能失败，失败了也不影响构建
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 function Say  { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok   { param($m) Write-Host "    $m"   -ForegroundColor Green }
 function Note { param($m) Write-Host "    $m"   -ForegroundColor DarkGray }
 function Die  { param($m) Write-Host "`n✗ $m`n" -ForegroundColor Red; exit 1 }
 
-Set-Location -LiteralPath $Root
+Set-Location -LiteralPath $Root -ErrorAction Stop
 
 # --------------------------------------------------------------------- 1. Python
 if (-not $Python) {
@@ -62,17 +67,22 @@ if (-not $Python) {
     }
 }
 if (-not $Python) { $Python = "python" }
-try { $ver = & $Python -c "import sys;print('%d.%d %d' % (sys.version_info[0], sys.version_info[1], __import__('struct').calcsize('P')*8))" }
-catch { Die "找不到 Python（试的是 '$Python'）。先跑 .\install.ps1 建好环境，或用 -Python 指定" }
+# 用 Get-Command 显式判断"在不在"：ErrorActionPreference 是 Continue，命令不存在不会抛异常，
+# try/catch 捕不到，报错会变成后面莫名其妙的"版本探测失败"
+if (-not (Get-Command $Python -ErrorAction SilentlyContinue)) {
+    Die "找不到 Python（试的是 '$Python'）。先跑 .\install.ps1 建好环境，或用 -Python 指定"
+}
+$ver = & $Python -c "import sys;print('%d.%d %d' % (sys.version_info[0], sys.version_info[1], __import__('struct').calcsize('P')*8))"
+if ($LASTEXITCODE -ne 0 -or -not $ver) { Die "'$Python' 跑不起来，探测版本失败" }
 Say "构建用的 Python"
 Ok "$Python  →  $ver"
 if (-not ($ver -match " 64$")) { Die "必须是 64 位 Python" }
 
 # --------------------------------------------------------------------- 2. 构建依赖
 Say "检查构建依赖"
-& $Python -c "import cvflow" 2>$null
+& $Python -c "import cvflow" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Die "这个 Python 环境里没装 cvflow。先在仓库根目录跑 .\install.ps1" }
-& $Python -c "import PyInstaller" 2>$null
+& $Python -c "import PyInstaller" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Note "装 PyInstaller…"
     & $Python -m pip install -q "pyinstaller>=6.6"
@@ -92,7 +102,7 @@ if (($ortPkg -eq "cpu") -and (-not $SkipGpu)) {
 # --------------------------------------------------------------------- 3. 冻结
 if ($Clean) {
     Say "清理 build\ 和 dist\"
-    foreach ($d in @("$Root\build", "$Root\dist")) { if (Test-Path $d) { Remove-Item -LiteralPath $d -Recurse -Force } }
+    foreach ($d in @("$Root\build", "$Root\dist")) { if (Test-Path $d) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction Stop } }
 }
 Say "PyInstaller 冻结程序（第一次比较久）"
 $env:CVFLOW_SKIP_NVIDIA = if ($SkipGpu) { "1" } else { "" }
@@ -109,7 +119,7 @@ if ($TrimCudnn) {
     $adv = Get-ChildItem "$app\_internal\nvidia\cudnn\bin\cudnn_adv64_*.dll" -ErrorAction SilentlyContinue
     foreach ($f in $adv) {
         Note "按 -TrimCudnn 去掉 $($f.Name)（$([math]::Round($f.Length/1MB)) MB）"
-        Remove-Item -LiteralPath $f.FullName -Force
+        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
     }
 }
 

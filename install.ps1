@@ -47,7 +47,11 @@ param(
     [string] $Model  = ""           # 可选：装完用这个 ONNX 模型实测一次
 )
 
-$ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 的坑：$ErrorActionPreference = "Stop" 时，**原生命令**（python、pip、
+# PyInstaller、ISCC…）只要往 stderr 写一个字，就会被包成 NativeCommandError 当成终止错误，
+# 连 2>$null 都拦不住——PyInstaller 的日志恰恰全写 stderr。所以这里用 Continue，
+# 原生命令一律显式查 $LASTEXITCODE（下面每处都查了）；会动文件的 cmdlet 单独加 -ErrorAction Stop。
+$ErrorActionPreference = "Continue"
 $MinDriver = [version] "527.41"     # CUDA 12 在 Windows 上要求的最低驱动版本
 
 # -BootstrapPython 用的便携版 CPython（python-build-standalone，可重定位，自带 pip 和 venv）。
@@ -64,7 +68,7 @@ function Note     { param($m) Write-Host "    $m"   -ForegroundColor DarkGray }
 function Die      { param($m) Write-Host "`n✗ $m`n" -ForegroundColor Red; exit 1 }
 
 # 以脚本所在目录为准，双击或从别的盘执行都不会跑错地方
-Set-Location -LiteralPath $PSScriptRoot
+Set-Location -LiteralPath $PSScriptRoot -ErrorAction Stop
 if (-not (Test-Path "pyproject.toml")) { Die "这个脚本要放在 CVFlow 仓库根目录里执行" }
 
 # --------------------------------------------------------------- 0. 项目自带的 Python
@@ -77,14 +81,14 @@ if ($BootstrapPython) {
         Say "把便携版 CPython 下到 $PyDir\（约 44 MB，机器上不需要预装 Python）"
         $url = "https://github.com/astral-sh/python-build-standalone/releases/download/$PyRelease/$PyAsset"
         $tmp = "$PyDir.tmp"
-        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
-        New-Item -ItemType Directory -Path $tmp | Out-Null
+        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction Stop }
+        New-Item -ItemType Directory -Path $tmp -ErrorAction Stop | Out-Null
         # 压缩包直接下到解压目录里：待会儿用相对文件名调 tar，命令行里就不会出现带盘符的路径
         $tgz = Join-Path $tmp $PyAsset
         try {
             # IWR 默认画进度条，大文件会慢十倍以上
             $old = $ProgressPreference; $ProgressPreference = "SilentlyContinue"
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -ErrorAction Stop
             $ProgressPreference = $old
         } catch { Die "下载失败：$url`n$($_.Exception.Message)" }
         $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz).Hash.ToLower()
@@ -108,7 +112,7 @@ Windows 10 1803 以后自带 System32\tar.exe；如果 PATH 上是 Git for Windo
 它不认带盘符的路径。手工解开也行：把 $tgz 解压后，里面的 python 目录改名成 $PyDir
 "@
         }
-        Move-Item -LiteralPath (Join-Path $tmp "python") -Destination $PyDir
+        Move-Item -LiteralPath (Join-Path $tmp "python") -Destination $PyDir -ErrorAction Stop
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
         Ok "装好了：$((Resolve-Path -LiteralPath $bootstrapPy).Path)"
     }
@@ -124,16 +128,18 @@ Windows 10 1803 以后自带 System32\tar.exe；如果 PATH 上是 Git for Windo
 Say "检查 Python"
 $pyCmd = $Python.Split(" ")[0]
 $pyArgs = @($Python.Split(" ") | Select-Object -Skip 1)
-# conda-meta 目录是 conda 安装/环境的标志，conda 环境本身不是 venv（sys.prefix == sys.base_prefix），认不出来
-$PROBE = "import os,sys,struct;print('%d.%d %d %s' % (sys.version_info[0], sys.version_info[1], " +
-         "struct.calcsize('P')*8, 'conda' if os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')) else 'plain'))"
-try   { $probe = & $pyCmd @pyArgs "-c" $PROBE }
-catch { Die @"
+# 显式判断命令在不在：ErrorActionPreference 是 Continue（原因见文件开头），
+# 命令不存在不会抛异常，try/catch 捕不到
+if (-not (Get-Command $pyCmd -ErrorAction SilentlyContinue)) { Die @"
 找不到 Python（试的是 '$Python'）。三条路：
   · 让项目自带一份（机器上什么都不用装）： .\install.ps1 -BootstrapPython
   · 用已有的某个解释器：                   .\install.ps1 -Python "C:\Python312\python.exe"
   · 自己装 64 位 Python 3.10-3.14：        winget install Python.Python.3.12
 "@ }
+# conda-meta 目录是 conda 安装/环境的标志，conda 环境本身不是 venv（sys.prefix == sys.base_prefix），认不出来
+$PROBE = "import os,sys,struct;print('%d.%d %d %s' % (sys.version_info[0], sys.version_info[1], " +
+         "struct.calcsize('P')*8, 'conda' if os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')) else 'plain'))"
+$probe = & $pyCmd @pyArgs "-c" $PROBE
 # 有些 Python 启动时会多打几行（比如虚拟环境提示），所以合成一串再按空白切
 $parts = (($probe | Out-String).Trim() -split '\s+')
 if ($parts.Count -lt 3) { Die "探测 Python 版本失败，输出是：$probe" }
@@ -197,7 +203,7 @@ if ($Recreate -and (Test-Path $Venv)) {
         Die "虚拟环境 $Venv 正处于激活状态，删不掉。先执行 deactivate，再重跑 .\install.ps1 -Recreate"
     }
     Say "按 -Recreate 删掉旧的虚拟环境 $Venv"
-    Remove-Item -LiteralPath $Venv -Recurse -Force
+    Remove-Item -LiteralPath $Venv -Recurse -Force -ErrorAction Stop
 }
 if (Test-Path $venvPy) {
     Say "复用已有虚拟环境 $Venv"
