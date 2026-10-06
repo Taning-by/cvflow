@@ -386,6 +386,82 @@ def test_onnxruntime_outside_venv_only_flags_paths_outside_the_venv(tmp_path, mo
     assert cli._onnxruntime_outside_venv(outside) is False
 
 
+# =================================================== 不同节点之间的权重共享（严格验证）
+def _holder(node):
+    """取出节点当前用的那份共享权重（预加载后）。"""
+    from cvflow.operators import dl
+    assert node._preloaded_key is not None, "节点还没预加载"
+    return dl._SESSIONS[node._preloaded_key]
+
+
+def test_two_nodes_in_the_same_group_really_share_one_onnxruntime_session(cls_model):
+    """同一个分组的两个深度学习节点，必须拿到**同一个 ORT 会话对象**，不只是数量对得上。
+
+    session_scope 固定成 exclusive，让"归属"只由分组决定——否则在 CPU 上 auto 会让所有节点
+    都共享，测不出分组本身起没起作用。
+    """
+    from cvflow.operators import dl
+    assert dl.active_sessions() == 0
+    a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="exclusive"))
+    b = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="exclusive"))
+    a.preload()
+    b.preload()
+    assert a._preloaded_key == b._preloaded_key                  # 归属算出来是同一个
+    assert dl.active_sessions() == 1                             # 内存/显存里只有一份
+    assert _holder(a).session is _holder(b).session               # 真的是同一个会话对象
+    assert _holder(a).refs == 2                                   # 引用计数记着两个使用者
+    a.unload()
+    assert dl.active_sessions() == 1                              # b 还在用，不能放掉
+    b.unload()
+    assert dl.active_sessions() == 0                              # 都不用了才释放
+    a.teardown()
+    b.teardown()
+
+
+def test_different_groups_load_their_own_weights(cls_model):
+    """分组不同就各加载一份——这是用显存换并行的那条路。"""
+    from cvflow.operators import dl
+    a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="exclusive"))
+    b = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g2", session_scope="exclusive"))
+    a.preload()
+    b.preload()
+    assert a._preloaded_key != b._preloaded_key
+    assert dl.active_sessions() == 2
+    assert _holder(a).session is not _holder(b).session
+    for n in (a, b):
+        n.unload()
+        n.teardown()
+    assert dl.active_sessions() == 0
+
+
+def test_session_scope_shared_overrides_the_group(cls_model):
+    """session_scope=shared 时全软件只有一份权重，分组名不再起作用。"""
+    from cvflow.operators import dl
+    a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="shared"))
+    b = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g2", session_scope="shared"))
+    a.preload()
+    b.preload()
+    assert dl.active_sessions() == 1
+    assert _holder(a).session is _holder(b).session
+    for n in (a, b):
+        n.unload()
+        n.teardown()
+
+
+def test_weights_are_not_shared_across_different_models_or_backends(cls_model, tmp_path):
+    """共享的前提是"同一个模型文件 + 同一个后端 + 同一块卡"，否则必须各自加载。"""
+    from cvflow.operators import dl
+    other = make_channel_mean_classifier(tmp_path / "other.onnx", size=8)
+    a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, session_scope="shared"))
+    b = reg.create("dl.onnx_classifier", values=cls_values(str(other), session_scope="shared"))
+    a.preload()
+    b.preload()
+    assert dl.active_sessions() == 2                              # 模型文件不同
+    for n in (a, b):
+        n.unload()
+        n.teardown()
+
+
 def test_dl_gpu_bench_runs_and_reports_times(cls_model, capsys):
     """--bench 在 CPU 后端上也要能跑完：报出耗时，并说明没有可比的对象。"""
     from cvflow.cli import main
