@@ -150,7 +150,12 @@ $iscc = $null
 foreach ($p in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")) {
     if (Test-Path $p) { $iscc = $p; break }
 }
-if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue)?.Source }
+if (-not $iscc) {
+    # 注意别用 PS7 的 ?. 空条件运算符：Windows PowerShell 5.1 解析不了，
+    # 整个脚本会在解析期就失败（一行都不执行）
+    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $iscc = $cmd.Source }
+}
 if (-not $iscc) {
     Die @"
 找不到 Inno Setup 6（ISCC.exe）。装一个：

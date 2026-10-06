@@ -112,3 +112,35 @@ def test_powershell_scripts_are_utf8_with_bom(name):
     raw = (PKG / name).read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf"), f"{name} 缺少 UTF-8 BOM"
     assert b"\r\n" in raw, f"{name} 应该用 CRLF 换行"
+
+
+#: Windows PowerShell 5.1 解析不了的 PS7 专有语法。这类错误是**解析期**的——
+#: 脚本一行都不会执行，而且 CI 上用 pwsh（7.x）跑完全看不出来。
+PS7_ONLY = [
+    (r"\)\s*\?\.", "?. 空条件运算符"),
+    (r"\?\?", "?? 空合并运算符"),
+    (r"&&|\|\|", "&& / || 管道链运算符"),
+    (r"-Parallel\b", "ForEach-Object -Parallel"),
+    (r"\$PSStyle\b", "$PSStyle"),
+    (r"ConvertFrom-Json\s+[^\n]*-AsHashtable", "ConvertFrom-Json -AsHashtable"),
+    (r"\bJoin-String\b", "Join-String"),
+]
+
+
+@pytest.mark.parametrize("name", ["packaging/build.ps1", "install.ps1"])
+def test_powershell_scripts_parse_on_windows_powershell_51(name):
+    """脚本不能用 PS7 专有语法：产线和开发机上的默认 PowerShell 往往还是 5.1。
+
+    实际踩过：build.ps1 里一个 `(Get-Command ...)?.Source` 让整个脚本在 5.1 上解析失败，
+    而 CI 用 pwsh 7 跑，一点问题都没报出来。
+    """
+    path = Path(__file__).resolve().parent.parent / name
+    text = path.read_text(encoding="utf-8-sig")
+    hits = []
+    for pattern, what in PS7_ONLY:
+        for m in re.finditer(pattern, text):
+            line = text[:m.start()].count("\n") + 1
+            if text.split("\n")[line - 1].strip().startswith("#"):
+                continue                                   # 注释里提到不算
+            hits.append(f"{name}:{line} 用了 {what}")
+    assert not hits, "Windows PowerShell 5.1 解析不了这些写法：\n" + "\n".join(hits)

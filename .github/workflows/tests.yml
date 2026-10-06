@@ -51,18 +51,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0 \
             libdbus-1-3 libfontconfig1 libglib2.0-0 libxcb-cursor0
-      - name: install.ps1 语法检查（Windows）
+      - name: 用 Windows PowerShell 5.1 解析两个脚本（Windows）
         if: runner.os == 'Windows'
-        shell: pwsh
+        # 关键：用 powershell.exe（5.1）而不是 pwsh（7.x）。产线和开发机上的默认
+        # PowerShell 往往还是 5.1，PS7 专有语法在 5.1 上是**解析期**错误——脚本一行都不执行，
+        # 而用 pwsh 跑完全看不出来（build.ps1 里的 ?. 就是这么漏过去的）。
+        shell: powershell
         run: |
-          $errs = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path install.ps1).Path, [ref]$null, [ref]$errs) | Out-Null
-          if ($errs) { $errs | ForEach-Object { Write-Host $_.Message }; exit 1 }
-          Write-Host "install.ps1 语法 OK"
-      - name: 跑一遍 install.ps1 -Cpu（Windows）
+          foreach ($f in @("install.ps1", "packaging\build.ps1")) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { $errs | ForEach-Object { Write-Host "${f}: $($_.Message)" }; exit 1 }
+            Write-Host "$f parsed OK on PowerShell $($PSVersionTable.PSVersion)"
+          }
+      - name: 跑一遍 install.ps1 -Cpu（Windows，用 5.1 执行）
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: .\install.ps1 -Cpu
       - name: 跑一遍 install.sh --cpu（Linux）
         if: runner.os == 'Linux'
@@ -72,7 +77,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
-            pwsh -NoProfile -Command ".\install.ps1 -BootstrapPython -Recreate -Cpu"
+            powershell.exe -NoProfile -Command ".\install.ps1 -BootstrapPython -Recreate -Cpu"
             PY=.venv/Scripts/python.exe
           else
             ./install.sh --bootstrap-python --recreate --cpu
@@ -107,8 +112,8 @@ jobs:
           pip install "pyinstaller>=6.6"
       - name: 装 Inno Setup
         run: choco install innosetup --no-progress -y
-      - name: 打包
-        shell: pwsh
+      - name: 打包（用 Windows PowerShell 5.1 执行，和用户机器一致）
+        shell: powershell
         run: .\packaging\build.ps1 -SkipGpu -Version 0.0.0-ci
       - name: 冻结出来的程序能跑
         shell: pwsh
