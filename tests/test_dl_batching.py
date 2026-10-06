@@ -321,6 +321,50 @@ def test_dl_gpu_selfcheck_survives_windows_na_memory(cls_model, monkeypatch, cap
     assert "Traceback" not in capsys.readouterr().out
 
 
+def test_dl_gpu_selfcheck_require_gpu_reports_failure(cls_model, capsys):
+    """--require-gpu 是给安装脚本和上线检查用的：跑在 CPU 上必须给非零退出码。
+
+    推理回退到 CPU 是静默的（流程照跑、结果照出，只是慢十倍），所以装完必须有一个
+    "不达标就失败"的判据，否则只能等现场节拍不够时才发现。
+    """
+    from cvflow.cli import main
+    assert main(["gpu", cls_model, "--provider", "cpu", "--require-gpu"]) == 2
+    out = capsys.readouterr().out
+    assert "要求用 GPU" in out and "docs/install.md" in out
+
+
+def test_dl_gpu_selfcheck_warns_when_onnxruntime_comes_from_outside_venv(cls_model, monkeypatch, capsys):
+    """环境外的 onnxruntime 盖掉环境里的 GPU 版时，自检要点名说出来（回归）。
+
+    虚拟环境带 --system-site-packages 建出来、系统里又装过 CPU 版 onnxruntime 时会这样，
+    而且 pip 在环境内卸不掉系统那一份，光看"已安装 onnxruntime-gpu"根本看不出问题。
+    """
+    from cvflow import cli
+    monkeypatch.setattr(cli, "_onnxruntime_outside_venv", lambda ort: True)
+    cli.main(["gpu", cls_model, "--provider", "cpu"])
+    out = capsys.readouterr().out
+    assert "不在当前虚拟环境里" in out and "include-system-site-packages" in out
+
+
+def test_onnxruntime_outside_venv_only_flags_paths_outside_the_venv(tmp_path, monkeypatch):
+    """判断"这份 onnxruntime 在不在虚拟环境里"的边界：环境内不报、环境外报、没用虚拟环境不报。"""
+    import sys
+    from types import SimpleNamespace
+    from cvflow import cli
+
+    venv, system = tmp_path / "venv", tmp_path / "usr"
+    inside = SimpleNamespace(**{"__file__": str(venv / "lib/site-packages/onnxruntime/__init__.py")})
+    outside = SimpleNamespace(**{"__file__": str(system / "lib/dist-packages/onnxruntime/__init__.py")})
+
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base"))      # 处在虚拟环境里
+    assert cli._onnxruntime_outside_venv(inside) is False
+    assert cli._onnxruntime_outside_venv(outside) is True
+
+    monkeypatch.setattr(sys, "base_prefix", str(venv))                   # 根本没用虚拟环境
+    assert cli._onnxruntime_outside_venv(outside) is False
+
+
 def test_dl_disabling_a_node_unloads_its_weights(cls_model):
     """禁用节点就把权重放掉，重新启用再加载回来。"""
     from cvflow.operators.dl import active_sessions

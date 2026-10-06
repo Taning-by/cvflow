@@ -1,0 +1,9 @@
+# 源码包（sdist）里要带上的非代码文件
+include LICENSE NOTICE README.md requirements.txt
+include install.sh install.ps1
+recursive-include docs *.md *.png
+recursive-include examples *.py *.json *.md
+recursive-include tests *.py
+recursive-include tools *.py
+recursive-include cvflow/ui/assets *
+global-exclude __pycache__/* *.pyc

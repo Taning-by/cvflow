@@ -1,439 +1,384 @@
-# CVFlow — open, flow-based industrial machine vision
+# CVFlow — 开放的流程式工业视觉平台
 
-[中文说明 / Chinese README](README.zh-CN.md)
-
-CVFlow is a Python industrial vision platform in the spirit of VisionMaster / VisionPro:
-you build an inspection as a **flow of nodes**, tune parameters live on the image, and
-connect the result to a **PLC or robot over TCP / UDP / serial / Modbus**. The difference
-is that every algorithm node is an ordinary Python class, so your own OpenCV code, an
-ONNX / PyTorch model or a reinforcement-learning policy plugs into the same flow editor
-without touching the platform.
+CVFlow 是一个用 Python 全栈实现的工业视觉软件雏形，对标 VisionMaster / VisionPro 这类"拖拽流程 + 算子 + 通信"的平台，但把**算法节点做成了普通 Python 插件**：任何能用 Python 写出来的东西（OpenCV 算子、ONNX/PyTorch 模型、强化学习策略）都可以作为一个节点进入流程，并通过 TCP / UDP / 串口 / Modbus 与 PLC、机器人交互。
 
 ```
-┌───────────────────────────── cvflow.ui (PySide6) ─────────────────────────────┐
-│  node editor   image view (overlays, ROI drawing)   parameters   results      │
-│  communication   variables   log                                              │
-└───────────────────────────────────────────────────────────────────────────────┘
-┌──────────────── cvflow.core ────────────────┐  ┌──────── cvflow.comm ────────┐
-│ types  node  registry  graph  engine        │  │ TCP client/server  UDP      │
-│ runtime (FlowRunner, Solution)  events      │  │ serial  Modbus TCP (both)   │
-│ variables  draw  paths                      │  │ receive rules → triggers    │
-└─────────────────────────────────────────────┘  │ send rules    → results     │
-┌────────────── cvflow.operators ─────────────┐  └─────────────────────────────┘
-│ Source Preprocess Analysis Deep Learning    │  ┌──────── cvflow.camera ──────┐
-│ Script Logic Output + your plugins          │  │ folder (simulator) OpenCV   │
-└─────────────────────────────────────────────┘  │ GenICam (harvesters, opt.)  │
-                                                 └─────────────────────────────┘
+┌──────────────────────────── cvflow.ui (PySide6) ────────────────────────────┐
+│  节点编辑器   图像视图(叠加层/ROI绘制)   参数面板   结果   通信   变量   日志 │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────── cvflow.core ───────────────┐  ┌──────── cvflow.comm ────────┐
+│ types  node  registry  graph  engine      │  │ TCP client/server  UDP      │
+│ runtime(FlowRunner/Solution)  events      │  │ Serial  Modbus TCP (主/从)  │
+│ variables  draw  paths                    │  │ 接收规则→触发  发送规则→结果 │
+└───────────────────────────────────────────┘  └─────────────────────────────┘
+┌──────────── cvflow.operators ─────────────┐  ┌──────── cvflow.camera ──────┐
+│ Source Preprocess Analysis DeepLearning   │  │ folder(模拟)  OpenCV        │
+│ Script Logic Output   + examples/plugins  │  │ GenICam(harvesters, 可选)   │
+└───────────────────────────────────────────┘  └─────────────────────────────┘
 ```
 
-The core (`cvflow.core`) has no Qt dependency and runs headless on a production PC.
+核心层（`cvflow.core`）不依赖 Qt，可以无界面地跑在产线工控机上。
 
-## Install
+## 安装
 
-Requires Python 3.10+ on Linux, Windows or macOS.
+需要 Python 3.10–3.13（64 位），Linux / Windows / macOS 均可。
+
+### 一键装（推荐）
+
+脚本会检查驱动、建好隔离的虚拟环境、装对推理运行时，**并在装完实测 CUDA**，没跑起来就报错退出：
+
+```powershell
+git clone https://github.com/Taning-by/cvflow.git
+cd cvflow
+.\install.ps1                # Windows。有 NVIDIA 显卡就装 GPU 版（约 2 GB），装完验证 CUDA
+.\install.ps1 -Cpu           # 没有 NVIDIA 显卡
+.\install.ps1 -Recreate      # 之前装乱了：删掉虚拟环境从头装（代码不受影响）
+```
+
+```bash
+./install.sh                 # Linux / macOS，参数同上：--cpu / --recreate / --model best.onnx
+```
+
+### 手工装
 
 ```bash
 git clone https://github.com/Taning-by/cvflow.git
 cd cvflow
-python -m venv .venv
+python -m venv .venv               # 别加 --system-site-packages，系统里的 onnxruntime 会盖掉环境里的
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev,cpu]"        # core + GUI + tests + CPU inference
+python -m pip install -U pip       # 老 pip 会悄悄忽略下面的 [cuda,cudnn]
 ```
 
-**Pick exactly one of `cpu` and `gpu`.** `onnxruntime` and `onnxruntime-gpu` ship the same Python
-module and overwrite each other when both are installed — the usual symptom is "installed the GPU
-build but only the CPU backend is there". For a GPU box use instead:
+然后**按机器二选一装推理运行时**，这一步选错了后面要卸干净重来：
 
 ```bash
-pip install -e ".[dev,gpu]"        # onnxruntime-gpu + CUDA 12 / cuDNN 9 from pip (~2 GB)
+pip install -e ".[dev,gpu]"        # 有 NVIDIA 显卡：onnxruntime-gpu + CUDA 12 / cuDNN 9（约 2 GB）
+pip install -e ".[dev,cpu]"        # 没有 NVIDIA 显卡
 ```
 
-The GPU extra pulls the CUDA 12 and cuDNN 9 pip packages with it, so **no system CUDA install and
-no `LD_LIBRARY_PATH` / `PATH` fiddling are needed**: those libraries are not on the loader path, and
-CVFlow preloads them before creating an inference session.
-
-If both ended up installed, clean out first: `pip uninstall -y onnxruntime onnxruntime-gpu`, then
-install the one you need.
-
-Other extras: `.[genicam]` (harvesters for GigE / USB3 Vision cameras), `.[plc]` (python-snap7 for
-Siemens S7), `.[dl]` (PyTorch for the plugin template).
-
-## Run
+装完**立刻自检**，别等跑流程时才发现悄悄回退到了 CPU：
 
 ```bash
-cvflow nodes                                          # list the 40 built-in node types
-cvflow run examples/solutions/demo_holes.json -n 10   # run the demo flow in the terminal
-cvflow gui examples/solutions/demo_holes.json         # open the desktop editor
-cvflow serve examples/solutions/demo_holes.json       # headless production mode
-cvflow gpu                                           # self-check the inference backend / GPUs
-pytest -q                                             # 35 tests, GUI tests run offscreen
+cvflow gpu                      # 装了哪个包、CUDA 后端能不能加载、认不认得显卡
+cvflow gpu 你的模型.onnx         # 实测：实际用哪个后端、显存涨了多少
+cvflow gpu --require-gpu        # 给脚本/上线检查用：CUDA 没跑起来就返回非零退出码
+pytest -q
 ```
 
-`python -m cvflow …` works too, without installing.
+**完整步骤、自检输出怎么看、常见错误对照表见 [docs/install.md](docs/install.md)。**
 
-The demo solution `examples/solutions/demo_holes.json`:
+### 为什么必须二选一
 
-* Flow **main** — folder source → gray → threshold → open → blob count (3 holes) → judge,
-  plus an edge caliper measuring the part width → judge. Results are published, overlays
-  rendered and NG images saved to `captures/NG`.
-* Flow **learning** — the ε-greedy bandit node from `examples/plugins/bandit_threshold.py`
-  tunes the threshold from the previous run's reward: a stateful, RL-style node inside a flow.
-* Communication — a TCP server on port 6000; a frame starting with `TRIG` triggers `main`,
-  the result goes back as `{status},{out.holes},{out.width:.1f}\n`.
+`onnxruntime`（CPU 版）与 `onnxruntime-gpu`（GPU 版）是**同一个 Python 模块**的两个发行包，谁后装谁覆盖。
+典型症状就是"装了 GPU 版却只有 CPU 后端"，日志里长这样：
 
-Simulate the PLC with netcat: run `cvflow serve examples/solutions/demo_holes.json`, then
-`printf 'TRIG\n' | nc -q1 127.0.0.1 6000`.
+```
+请求的推理后端 cuda 不可用（当前安装的 onnxruntime 里没有这个后端），实际使用 CPUExecutionProvider
+```
 
-Paths inside a solution (image folders, models, templates, capture directory, plugin
-directories) are relative to the solution file, so a solution folder can be moved or cloned.
-
-## Launching from an icon
-
-Installing creates a console-free entry point `cvflow-gui` (`.venv\Scripts\cvflow-gui.exe` on
-Windows) that can be double-clicked. To get a desktop shortcut with the application icon:
+所以**用显卡就从一开始只装 `.[gpu]`**，不要先装 `.[cpu]` 再补。已经装错了的话：
 
 ```bash
-cvflow shortcut                                     # desktop shortcut opening the app
-cvflow shortcut examples/solutions/demo_holes.json  # shortcut that opens a given solution
+pip uninstall -y onnxruntime onnxruntime-gpu       # 反复执行到两个都显示未安装
+python -c "import onnxruntime"                     # 应报 ModuleNotFoundError；有残留目录就手动删掉
+pip install -e ".[dev,gpu]"
+cvflow gpu
 ```
 
-Windows gets `CVFlow.lnk`, Linux `CVFlow.desktop` (also added to the application menu), macOS
-`CVFlow.command`. *File → Create desktop shortcut* does the same from the GUI. Started without a
-solution, the app reopens the last one; *File → Recent* lists the last eight.
+同理，GPU 环境下**不要**再执行 `pip install -r requirements.txt`，那个文件是基础依赖清单，不含推理运行时。
 
-## Using the editor
+GPU 版连同 CUDA 12 与 cuDNN 9 的 pip 包一起装好，**系统不需要另外装 CUDA Toolkit / cuDNN，也不用配
+`LD_LIBRARY_PATH` / `PATH`**：这些库不在系统搜索路径里，软件会在建立推理会话前自动预加载它们。
+只需要显卡驱动够新（Windows ≥ 527.41，Linux ≥ 525.60，即 `nvidia-smi` 右上角 `CUDA Version` ≥ 12.0）。
+TensorRT 不用装，`auto` 会跳过它直接用 CUDA。
 
-The workspace has five zones: a top bar grouping project actions (new / open / save, flow picker)
-and execution actions (run once, continuous, run mode); a searchable node palette on the left;
-**image** and **flow** side by side in the centre (drag the splitter to rebalance, maximise either
-one from its header, switch between side-by-side and stacked from the *View* menu — the arrangement
-is remembered); the selected node's parameters and last outputs on the right; results /
-communication / variables / log at the bottom, with frame, run statistics and mode in the status bar.
+`.[gpu]` 走的是 **CUDA 12** 那条线（`onnxruntime-gpu>=1.21,<1.27`），故意没放开到 CUDA 13：1.27 起的
+CUDA 13 版要求驱动 ≥ 580、显卡算力 ≥ 7.5，产线上常见的 GTX 10 系、Quadro P 系（Pascal）直接用不了。
+卡在 CUDA 12 上，驱动 ≥ 527.41、算力 ≥ 5.0 就能跑，新卡也不会慢。新机器想用 CUDA 13 版：`.[dev,gpu-cuda13]`。
 
-* Drag nodes from the palette (or double-click), drag from an output port to an input port
-  to link, `Delete` removes, `F` fits the view (while the flow area has focus), right-button
-  (or middle / Alt+left) drag pans, wheel zooms.
-* Select a node to edit its parameters; for ROI parameters press **Draw** and drag a
-  rectangle on the image.
-* **Auto-run on change** re-runs the flow on every edit; **Run once** (F5); **Continuous**
-  loops at the chosen interval.
-* **Start run mode** (F9) connects all communication devices and starts a worker thread per
-  flow. The flow is locked; triggers come from the PLC, timer or the Run button.
-* The *Communication* tab manages devices, receive rules (what triggers a flow or sets a
-  variable), send rules (what is sent when a flow finishes), a monitor and manual sending.
+其它可选依赖：`.[genicam]`（harvesters，GigE/USB3 Vision 相机）、`.[plc]`（python-snap7，西门子 S7）、
+`.[dl]`（PyTorch，给插件模板用——**ONNX 走 CUDA 不需要它**）。
 
-## Camera acquisition
+## 运行
 
-**Camera → Camera manager** works like VisionMaster's camera management:
+```bash
+cvflow nodes                                          # 列出 40 个内置节点
+cvflow run examples/solutions/demo_holes.json -n 10   # 终端跑示例流程
+cvflow gui examples/solutions/demo_holes.json         # 打开桌面程序
+cvflow serve examples/solutions/demo_holes.json       # 无界面生产模式
+cvflow gpu                                           # 自检推理环境（后端 / 显卡 / 实测加载）
+pytest -q                                             # 35 个测试，界面测试 offscreen 运行
+```
 
-* **Search** broadcasts GigE Vision discovery on every local interface and lists IP, MAC,
-  vendor, model, serial and user name of each camera, flagging cameras on a foreign subnet.
-  Discovery needs no SDK; with the Hikrobot MVS SDK installed the SDK enumeration (incl. USB3)
-  is merged in, and with a GenTL `.cti` set, GenICam enumeration too.
-* **Add by IP** sends a unicast discovery; a silent camera can still be added manually.
-* **Connection test** reads the camera's GigE Vision version register and reports latency;
-  Hikrobot cameras are additionally opened through the SDK.
-* **Force IP** assigns a temporary IP by MAC when the camera is on the wrong subnet.
-* **Add to flow** creates a Camera node using `hik` (MVS SDK) or `genicam` acquisition.
+不安装也可以用 `python -m cvflow …` 直接运行。
 
-Camera node parameters: trigger mode (keep / off / software / hardware), exposure (µs), gain,
-timeout and a JSON of arbitrary GenICam features. Point `MVCAM_SDK_PATH` at the MVS
-`Samples/Python/MvImport` directory for the Hikrobot SDK; GenICam needs `pip install
-harvesters` and a vendor `.cti`.
+方案文件里的路径（图像文件夹、模型、模板、存图目录、插件目录）都相对于方案文件所在目录解析，整个方案目录可以随意移动或从 git 克隆。
 
-## PLC interoperation
+示例方案 `demo_holes.json`：
 
-Every communication device has a **connection test** (TCP connect latency, Modbus/MC/S7 read a
-register and report value and latency, serial open). Devices:
+* 流程 **main**：文件夹取图 → 灰度 → 阈值 → 开运算 → Blob 计数(3 个孔) → 判定；同时用边缘卡尺测量工件宽度 → 判定；结果发布、叠加渲染、NG 时存图。
+* 流程 **learning**：`examples/plugins/bandit_threshold.py` 里的 ε-greedy bandit 节点根据上一轮的奖励调整阈值，演示"带状态的学习型节点"如何接进流程。
+* 通信：TCP 服务端监听 6000 端口，收到以 `TRIG` 开头的报文就触发 main，结束后按模板 `{status},{out.holes},{out.width:.1f}\n` 回发结果。
 
-| Kind | Notes |
+用 `nc` 模拟 PLC：先 `cvflow serve examples/solutions/demo_holes.json`，再 `printf 'TRIG\n' | nc -q1 127.0.0.1 6000`。
+
+## 用图标打开软件
+
+安装后虚拟环境里会生成无控制台窗口的入口 `cvflow-gui`（Windows 下是 `.venv\Scripts\cvflow-gui.exe`），直接双击就能打开。更方便的是让程序在桌面放一个带图标的快捷方式：
+
+```bash
+cvflow shortcut                                   # 桌面快捷方式，打开软件
+cvflow shortcut examples/solutions/demo_holes.json  # 快捷方式直接打开指定方案
+```
+
+Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用菜单），macOS 生成 `CVFlow.command`。界面里"文件 → 创建桌面快捷方式"也能做同样的事。不带方案启动时会自动打开上次使用的方案，"文件 → 最近打开"里有最近 8 个方案。
+
+## 界面操作
+
+界面分五个区：顶部是项目与执行工具栏（新建/打开/保存 · 流程选择 · 运行一次/连续运行/运行模式），
+左侧是可搜索的算法工具箱，中央是**图像**与**流程**两个主工作区（可拖动分隔条调整比例、点右上角按钮
+最大化其中一个、用「视图」菜单或流程区的按钮切换左右／上下排列，比例与排列会被记住），右侧是当前
+选中节点的参数与本次输出，底部是结果／通信／变量／日志，状态栏显示当前帧、执行统计与所处模式。
+
+* 左侧节点库拖到画布，或双击加到视图中心；从输出端口拖到输入端口连线，Delete 删除，F 适配视图（焦点在流程区时），按住右键（或中键、Alt+左键）拖动平移，滚轮缩放。
+* 选中节点后右侧参数面板自动生成；ROI 类参数点 **Draw** 后在图像上拖矩形。
+* "Auto-run on change" 开启时改参数立即重跑；**Run once (F5)** 手动跑一次；"Continuous" 按间隔循环。
+* **Start run mode (F9)**：连接所有通信设备、启动所有流程的工作线程，此时流程被锁定，触发来自 PLC/定时器/手动。
+* 底部 Communication 页：设备（TCP/UDP/串口/Modbus）、接收规则（触发流程或设变量）、发送规则（文本模板或 Modbus 寄存器写入）、报文监视与手动发送。
+
+## 相机采集
+
+菜单 **相机 → 相机管理**（工具栏也有入口），和 VisionMaster 的相机管理一样：
+
+* **搜索相机**：用 GigE Vision 发现协议在本机每个网卡上广播，列出网络上所有 GigE 相机的 IP、MAC、厂商、型号、序列号、用户名，并标出"不在本机网段"的相机。搜索不依赖任何 SDK；装了海康 MVS SDK 时会同时用 SDK 枚举（含 USB3 相机），填了 GenTL 驱动时也会用 GenICam 枚举。
+* **按 IP 添加**：向指定 IP 单播发现请求，没响应也可以先手动加入。
+* **连接测试**：读相机的 GigE Vision 版本寄存器，报告在线与否和耗时；海康相机还会尝试用 SDK 打开。
+* **强制 IP**：相机和网卡不在同一网段时，按 MAC 给相机下发临时 IP。
+* **添加到流程**：生成一个"相机"节点，取图方式自动选择海康 MVS（`hik`）或 GenICam（`genicam`）。
+
+相机节点参数：触发模式（沿用 / 自由采集 / 软触发 / 硬件触发）、曝光（微秒）、增益、超时，以及任意 GenICam 特性的 JSON。海康 MVS SDK 的 Python 模块通过环境变量 `MVCAM_SDK_PATH` 指向 `MVS/Development/Samples/Python/MvImport` 目录；GenICam 方式需要 `pip install harvesters` 和厂商的 `.cti` 驱动。
+
+## PLC 联动
+
+通信面板里每个设备都有 **测试连接**（TCP 探测连接耗时、Modbus/MC/S7 读一个寄存器并报告值与耗时、串口试开）。支持的设备：
+
+| 类型 | 说明 |
 |---|---|
-| TCP client / server, UDP, serial | Text frames; optional heartbeat frame and interval |
-| Modbus TCP master / slave | Master polls PLC registers; the slave is a native implementation the PLC reads/writes |
-| Mitsubishi MC (3E binary) | Q/L/iQ-R/FX5 and compatibles (Inovance, Keyence); word devices D/W/R and bit devices M/X/Y, addresses like `D100`, `M20`; ships `McSimulatorServer` |
-| Siemens S7 | python-snap7, a DB block as exchange area, byte-offset addresses; S7-1200/1500 need PUT/GET enabled and non-optimised DB access |
+| TCP 客户端 / 服务端、UDP、串口 | 文本报文；可配置心跳报文与间隔 |
+| Modbus TCP 主站 / 从站 | 主站轮询 PLC 寄存器；从站自带实现，PLC 直接读写本机寄存器 |
+| 三菱 MC 协议（3E 二进制） | 三菱 Q/L/iQ-R/FX5 及汇川、基恩士等兼容 PLC，支持 D/W/R 字与 M/X/Y 位软元件，地址写 `D100`、`M20`；附带 `McSimulatorServer` 模拟器 |
+| 西门子 S7 | 基于 python-snap7，以 DB 块为交换区，地址为字节偏移；S7-1200/1500 需开启 PUT/GET 并关闭 DB 优化访问 |
 
-Register devices share one handshake:
+寄存器类设备都支持同一套握手：
 
-* **Trigger** — a `register_rising` receive rule watches the trigger word for 0→non-zero.
-* **Busy flag** `busy_address` — written 1 on trigger, 0 after the results are written.
-* **Trigger reset** `trigger_reset` — the vision side clears the trigger word so the next PLC
-  write produces a clean edge.
-* **Heartbeat** `heartbeat_address` + `heartbeat_s` — incremented periodically so the PLC can
-  tell the vision PC is alive; text devices send a heartbeat frame instead.
-* **Results** — register writes in a send rule, kinds int16 / uint16 / int32 / uint32 / float32 / bool.
+* **触发**：接收规则 `register_rising` 监视触发字的 0→非 0 上升沿。
+* **忙标志** `busy_address`：触发后写 1，流程结束并写完结果后写 0，PLC 据此等待结果。
+* **触发自动复位** `trigger_reset`：触发后由视觉把触发字清零，下一次 PLC 写 1 即可再次产生上升沿。
+* **心跳** `heartbeat_address` + `heartbeat_s`：按间隔自增，PLC 看到数值变化就知道视觉在线；文本设备则按间隔发送心跳报文。
+* **结果**：发送规则里的寄存器写入列表，`kind` 支持 int16/uint16/int32/uint32/float32/bool。
 
-* Text in the results panel can be selected and copied: Ctrl+C copies the selected rows, the
-  context menu copies a single cell, a row, or everything. Long content is shortened on screen
-  but the tooltip and the clipboard carry the full text. Node errors appear in the Value column.
+* 结果面板里的文字可以选中复制：Ctrl+C 复制选中行，右键可复制单个单元格、整行或全部结果，内容过长时显示会截断但悬停和复制都是完整的。报错信息就显示在"值"一列。
 
-## Testing without a camera or a PLC
+## 没有相机和 PLC 时怎么测试
 
-Two simulators ship with the repository; every path is "open solution → start run mode → run the simulator":
+仓库自带两个模拟器，每条链路都是"打开方案 → 进入运行模式 → 运行模拟器"三步：
 
-| What to test | Step 1 | Step 2 |
+| 想测什么 | 第一步 | 第二步 |
 |---|---|---|
-| Camera search / connection test / force IP | `python examples/sim_camera.py` | Camera → Camera manager → Search, or *Add by IP* with 127.0.0.1 |
-| Camera grabbing | set the camera node kind to `folder` with source `examples/images` | Run once |
-| TCP trigger and reply | `cvflow gui examples/solutions/demo_holes.json`, start run mode | `python examples/sim_plc.py tcp` |
-| Modbus TCP (PLC as master) | `cvflow gui examples/solutions/demo_modbus.json`, start run mode | `python examples/sim_plc.py modbus` |
-| Mitsubishi MC | `python examples/sim_plc.py mc` | `cvflow gui examples/solutions/demo_mc.json`, start run mode |
-| Siemens S7 | `python examples/sim_plc.py s7` | `cvflow gui examples/solutions/demo_s7.json`, start run mode |
+| 相机搜索 / 连接测试 / 强制 IP | `python examples/sim_camera.py` | 相机 → 相机管理 → 搜索相机，或"按 IP 添加"填 127.0.0.1 |
+| 相机取图 | 相机节点类型选 `folder`，来源填 `examples/images` | 运行一次 |
+| TCP 报文触发与回复 | `cvflow gui examples/solutions/demo_holes.json`，进入运行模式 | `python examples/sim_plc.py tcp` |
+| Modbus TCP（PLC 做主站） | `cvflow gui examples/solutions/demo_modbus.json`，进入运行模式 | `python examples/sim_plc.py modbus` |
+| 三菱 MC 协议 | `python examples/sim_plc.py mc` | `cvflow gui examples/solutions/demo_mc.json`，进入运行模式 |
+| 西门子 S7 | `python examples/sim_plc.py s7` | `cvflow gui examples/solutions/demo_s7.json`，进入运行模式 |
 
-The PLC simulators trigger an inspection periodically and print whether the trigger word was
-reset, whether the busy flag appeared, the result registers and the heartbeat counter. The
-simulated camera implements discovery only, so use the folder camera for grabbing.
+PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复位、忙标志是否出现、结果寄存器的值和心跳计数，对应软件里通信面板的"监视"页和结果页。模拟相机只实现发现协议，不出图，所以取图用文件夹模拟。
 
-## Batched multi-input deep learning nodes
+## 深度学习节点的多输入合批
 
-All three ONNX nodes accept several image inputs. Set the input count to N and the node grows
-`image2` to `imageN` input ports plus a set of outputs per input, such as `count`, `count2`,
-`count3`. In one run the images on all connected inputs are stacked into a single batch, inferred
-once, and the outputs are split back to the port belonging to each input.
+三个 ONNX 节点都支持多个图像输入。把输入个数设为 N，节点会多出 `image2` 到 `imageN` 这些输入端口，以及每一路各自的输出端口，比如 `count`、`count2`、`count3`。一次运行里，所有已连接输入的图像会被拼成一个批次做一次推理，再按来源拆回各自的端口，所以结果能分清来自哪个输入。
 
-| Parameter | Meaning | Default |
+| 参数 | 作用 | 默认 |
 |---|---|---|
-| input_count | Number of image input ports, up to 8 | 1 |
-| max_batch | Largest batch handed to one inference | 8 |
-| wait_ms | How long to wait for same-group nodes before running; **only applied when a batch group is set** | 0 |
-| batch_group | Empty keeps the node independent and un-queued; a shared name lets nodes batch together but serialises them | empty |
-| provider | `auto` picks the first usable of TensorRT → CUDA → CPU, or force one | auto |
-| device_id | Which GPU to use on a multi-GPU box; ignored by the CPU backend | 0 |
-| session_scope (advanced) | How many copies of the weights: `shared` one per process, `exclusive` one per group/node, `auto` shares on CPU and splits on GPU | auto |
-| overlay_input | Which input's results are drawn on the image view | 1 |
+| 输入个数 | 图像输入端口的数量，最多 8 | 1 |
+| 批次上限 | 一个批次最多几张图 | 8 |
+| 合批等待（毫秒） | 等同组其它节点的图像一起合批的时间，**只有填了合批分组才生效** | 0 |
+| 合批分组 | 留空则本节点独立推理、与其它节点互不排队；填相同名字的节点共用批处理器，可跨节点跨流程合批但会排队 | 空 |
+| 推理后端 | `auto` 按 TensorRT → CUDA → CPU 挑第一个能用的，也可以强制指定 | auto |
+| 显卡编号 | 多卡时用哪一块，CPU 后端忽略 | 0 |
+| 推理会话（高级） | 权重加载几份：`shared` 全软件一份；`exclusive` 按分组/节点各一份；`auto` 在 CPU 上共享、GPU 上各一份 | auto |
+| 叠加层来自 | 图像窗口上画哪一路的结果 | 1 |
 
-Selecting a node with several image inputs puts a picker above the image view: it switches
-between each input's image and the node's own output image. Overlays are tagged with the input
-they came from, so only the selected input's boxes and labels are drawn.
+选中多路输入的节点时，图像窗口上方会出现一个选择框，可以切换查看哪一路输入的图像，以及该节点的输出图像。每一路的检测框、文字等叠加层都按来源标记，切到哪一路就只显示那一路的结果。
 
-### Running on the GPU
+### 在 GPU 上跑
 
-Install with `.[dev,gpu]` (see [Install](#install) — `.[gpu]` and `.[cpu]` are mutually exclusive)
-and the default `auto` already prefers the GPU. Check what the wheel actually carries:
+按[安装](#安装)里的 `.[dev,gpu]` 装好（`.[gpu]` 与 `.[cpu]` 二选一，装错了怎么救见 [docs/install.md](docs/install.md)），默认的 `auto` 就会优先用 GPU，不需要改任何参数。先确认包里有哪些后端：
 
 ```bash
-cvflow gpu                 # self-check: backends present, whether they load, GPUs found
-cvflow gpu your-model.onnx # plus a real load: which backend it lands on, VRAM it takes
+cvflow gpu                 # 自检：装了哪些后端、能不能加载、有哪些显卡
+cvflow gpu 你的模型.onnx    # 再加一步实测：这个模型实际跑在哪、加载后占多少显存
 ```
 
-The VRAM line is the direct evidence — it does not move when inference runs on the CPU:
+典型输出（显存那一行是最直接的证据——跑在 CPU 上时它不会变）：
 
 ```
-  CUDAExecutionProvider        available
-  TensorrtExecutionProvider    failed to load: libnvinfer.so.10: cannot open shared object file
-  backend in use: CUDAExecutionProvider (device 0)
-  process VRAM: 0 -> 942 MiB (+942)
+  CUDAExecutionProvider        可用
+  TensorrtExecutionProvider    加载失败：libnvinfer.so.10: cannot open shared object file
+  实际使用的后端：CUDAExecutionProvider（0 号卡）
+  本进程显存：0 → 942 MiB（+942）
 ```
 
-`auto` skips backends whose libraries cannot load: on a GPU box without TensorRT the log shows
-`TensorrtExecutionProvider ... cannot load (libnvinfer.so.10: ...), skipping it` and CUDA is used
-instead. This matters — onnxruntime falls the whole session back to the CPU as soon as one
-requested backend fails to load, discarding a perfectly usable CUDA along with it.
+`auto` 会自动跳过加载不了的后端：装了 GPU 版但没装 TensorRT 时，日志里会看到 `推理后端 TensorrtExecutionProvider 的运行库加载不了（libnvinfer.so.10: ...），本次运行跳过它`，然后继续用 CUDA。这一步很关键——onnxruntime 只要收到一个加载失败的后端就会把整个会话退回 CPU，连本来能用的 CUDA 一起丢掉。
 
-No `CUDAExecutionProvider` in the list means a CPU wheel is installed (or it overwrote the GPU
-one): `pip uninstall -y onnxruntime onnxruntime-gpu`, then reinstall `.[gpu]`. If it is listed but
-inference still falls back to the CPU, a runtime library failed to load and the log names it, e.g.
-`libcublasLt.so.12: cannot open shared object file`.
-`TensorrtExecutionProvider` additionally needs TensorRT itself; `cuda` or `auto` is usually what
-you want. **To see where it actually
-runs, read this log line**:
+列表里没有 `CUDAExecutionProvider`，说明装的是 CPU 版（或者 CPU 版把 GPU 版覆盖了）：`pip uninstall -y onnxruntime onnxruntime-gpu` 之后重新装 `.[gpu]`。列表里有它、运行时却仍然回退到 CPU，就是运行库加载失败，日志会写明缺的是哪个库，比如：
 
 ```
-ONNX Detector (YOLO): model best.onnx using backend CUDAExecutionProvider (device 0)
+推理后端 CUDAExecutionProvider 无法加载（libcublasLt.so.12: cannot open shared object file...）；
+缺 CUDA 运行库，可装 pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12，本次运行不再尝试
+````TensorrtExecutionProvider` 还要另外安装 TensorRT 本体，一般用 `cuda` 或 `auto` 就够。
+
+**想确认实际跑在哪里，看日志里的这一行**：
+
+```
+ONNX 检测 (YOLO)：模型 best.onnx 使用推理后端 CUDAExecutionProvider（0 号卡）
 ```
 
-`CPUExecutionProvider` there means the GPU backend failed to load (usually missing CUDA runtime
-libraries); a warning line explains why. On a multi-GPU box, `device_id` spreads nodes across
-cards — the one form of GPU parallelism that reliably pays off.
+显示 `CPUExecutionProvider` 就说明 GPU 后端没加载起来（最常见的原因是缺 CUDA 运行库），日志里会另有一条警告说明原因。多卡机器用**显卡编号**把不同节点分到不同卡上，这是 GPU 上最确定有效的并行方式。
 
-### Weight sharing and batch sharing are separate
+### 权重共享和合批共享是两件事
 
-| | Keyed by | Sharing means |
+| | 按什么共享 | 共享意味着 |
 |---|---|---|
-| **Inference session** (weights) | model file + mtime + provider + device_id + session owner | one copy of the weights in RAM / VRAM |
-| **Batch executor** (queue) | all of the above + preprocessing + max_batch + wait_ms + batch owner | these nodes batch together and queue behind each other |
+| **推理会话**（权重） | 模型文件 + 修改时间 + 后端 + 显卡编号 + 会话归属 | 内存/显存里只有一份权重 |
+| **批处理器**（队列） | 上面这些 + 预处理参数 + 批次上限 + 合批等待 + 批处理归属 | 这些节点会凑在一起合批，并且互相排队 |
 
-The session owner comes from `session_scope`, `auto` by default:
+会话归属由**推理会话**参数决定，默认 `auto`：
 
-* **Shared on CPU.** A shared session does not block concurrent inference (onnxruntime's `Run` is
-  thread safe — measured 2.01× for two threads on one session), parallelism is limited by cores,
-  so a second copy of the weights would only waste memory.
-* **One copy per batch group / node on GPU.** One session means one CUDA stream, so sharing means
-  queuing; separate copies can at least use separate streams — at the cost of **multiplied VRAM**.
-  If an exclusive copy cannot be allocated, the node falls back to the shared session and says so
-  in the log instead of failing the flow.
-* Set `shared` to save VRAM, or `exclusive` to split on CPU as well.
+* **CPU 上共享一份**。共用会话不会让推理互相阻塞（onnxruntime 的 `Run` 本身线程安全，实测两个线程跑同一个会话能到 2.01× 加速），限制并行度的是核心数而不是会话，所以多加载一份权重只是白占内存。
+* **GPU 上按合批分组/节点各加载一份**。同一个会话在 GPU 上对应一条 CUDA 流，共用就只能排队；各自一份权重才有机会用各自的流并行——代价是**显存成倍**。显存不够时会自动退回共享会话并在日志里说明，不会让流程挂掉。
+* 想省显存就把这个参数改成 `shared`，想在 CPU 上也各加一份就改成 `exclusive`。
 
-Note that separate GPU copies only buy throughput when a single inference does not already
-saturate the GPU. Watch `nvidia-smi dmon -s u` during a single-stream run: above ~95% SM
-utilisation, batch instead.
+要提醒的是：GPU 上"各加载一份"只有在**单次推理占不满 GPU** 时才换得来吞吐。单路推理时用 `nvidia-smi dmon -s u` 看 sm 利用率，稳定在 95% 以上就别指望并行了，老老实实合批。
 
-**The wait window only matters across flows.** A node's inputs are submitted in one call and the
-nodes of one flow run in sequence, so without a batch group no second submitter can ever reach
-the queue — the wait is therefore treated as 0 rather than padding the cycle. Check `batch_size`
-to confirm batching, and change `max_batch` rather than `wait_ms` to compare batched against
-one-by-one.
+**合批等待只对跨流程有意义。** 一个节点的多路输入是一次提交进去的，同一个流程里的节点又是顺序执行的，所以没填合批分组时队列里不可能出现第二个提交者——这种情况下等待窗口直接按 0 处理，不会白白增加节拍。想验证合批是否生效，看 `batch_size` 输出；想对比合批的收益，改的是批次上限而不是等待时间。
 
-### When the images do not arrive together
+### 多路图像不同时到达怎么办
 
-Typical case: several cameras, each triggered by the PLC at its own moment. Use **one flow per
-camera** (receive rule → trigger flow), give the deep-learning node in each flow the **same batch
-group**, and set **wait_ms** to the slack your cycle time allows:
+典型场景：几台相机各自被 PLC 触发，图像不是同一时刻来的。做法是**每路一个流程**（接收规则 → 触发流程），每个流程里的深度学习节点填**相同的合批分组**，再把**合批等待**设成能接受的节拍余量：
 
-* the first image to arrive becomes the leader and waits inside the window for the others;
-* reaching `max_batch` runs immediately, without waiting out the window;
-* when the window expires the batch runs with whatever arrived — stragglers go into the next
-  batch and nothing is ever stuck;
-* each flow gets its own results back, and `batch_size` reports how many images that batch held.
+* 先到的那一路成为"领队"，在窗口内等后到的；
+* 凑够**批次上限**就立刻执行，不必等满窗口；
+* 窗口到期就按当前已有的数量执行，**没赶上的留给下一批，谁都不会被永远卡住**；
+* 每一路各自拿回自己的结果，`batch_size` 显示这一批实际有几张。
 
-Note also that batching speeds up inference only. Measured on 8 inputs of a 640×640 detector,
-inference drops from 17.8 ms to 7.1 ms while end to end goes from 55.8 ms to 41.3 ms, because
-preprocessing and postprocessing do not batch. Compare `infer_ms` with the node's total time to
-see the split.
+等待窗口是延迟与吞吐的交换：设成 0 就是各跑各的，设大了单路延迟变高。一般取"最慢那路相机相对最快那路的到达时间差"再留一点余量。
 
-The inputs of one node arrive together, so they batch immediately and the wait window never
-delays them. The window only matters across threads: when several flows infer at once, the first
-one waits up to `wait_ms` for the others to join, and runs with whatever has arrived when the
-window expires. A single flow should leave it at 0 and pays no extra latency.
+另外要注意，合批加速的是推理本身。实测 8 路 640×640 检测，推理从 17.8 毫秒降到 7.1 毫秒，但端到端只从 55.8 毫秒降到 41.3 毫秒，因为预处理和后处理不受合批影响。节点耗时里推理占多大比例，可以用 `infer_ms` 和节点总耗时相比得出。
 
-**The model loads when you pick the file, not on the first run.** Selecting a model file (or
-changing the provider / device) starts a background load of the weights into RAM or VRAM, logged
-as `model xxx.onnx ready (nnn ms)`; opening a solution preloads every deep-learning node in it. The
-first run then costs no loading time and the UI never blocks. A failed preload only logs — the run
-itself retries and reports the error as usual.
+同一个节点的多路输入本来就同时到达，直接成批，不受等待窗口影响。等待窗口只在跨线程时起作用：多个流程各自推理时，先到的那一路在窗口内等后到的一起合批，窗口到期就按当前已有的数量执行，不会一直等。所以单流程场景把等待时间保持为 0，不会有任何额外延迟。
 
-**Disabling a node unloads its weights.** Clearing the *enabled* checkbox (or disabling the node
-from the canvas context menu) releases its weights from VRAM / RAM, and re-enabling loads them
-again. Weights are shared across nodes, so they are only really freed once no other node holds
-them. Measured with a 384 MiB model: 942 MiB of VRAM while loaded, 420 MiB after disabling — 522
-MiB returned. The remainder is the CUDA context and the cuDNN / cuBLAS handles, which are
-process-level and only come back when the process exits.
+**模型在选好文件时就加载，不是等到运行。** 在参数面板里选中模型文件（或改了推理后端、显卡编号）之后，界面会在后台线程立刻把权重加载进内存/显存，日志里会写 `模型 xxx.onnx 已就绪（加载耗时 nnn ms）`；打开方案时也会把方案里所有深度学习节点的模型预加载一遍。这样第一次运行不必再等几秒的加载时间，界面全程不卡。预加载失败不弹窗，只记日志，真正运行时还会再试一次并照常报错。
 
-Real batching needs a model exported with a dynamic batch dimension. A model with a fixed batch
-of 1 falls back to one image at a time, and the `batch_size` output reports what actually ran.
+**禁用节点会把权重卸载掉。** 取消参数面板里的"启用"勾选（或在画布上右键禁用）之后，该节点占的权重会从显存/内存里放掉；重新启用时再自动加载回来。权重是跨节点共享的，只有没有别的节点还在用时才真正释放。实测一个 384 MiB 的模型：加载后本进程占 942 MiB 显存，禁用后降到 420 MiB，释放了 522 MiB——剩下的那部分是 CUDA 上下文与 cuDNN/cuBLAS 句柄，属于进程级开销，只有退出程序才会归还。
 
-**Input geometry adapts to the model.** When a model fixes its input shape, say it only accepts
-512×512, the node's width, height, tensor layout and colour are corrected to match and the change
-is logged. A fixed shape leaves no room for another value, so the correction is unambiguous; a
-dynamic shape is left entirely to the node parameters. When nothing can be corrected
-automatically, the error reports both the expected and the actual shape and names the parameter
-to change.
+模型的批次维必须是动态的才能真正合批。导出时批次维固定为 1 的模型会自动退回逐张推理，`batch_size` 输出会显示实际的批大小，可以据此确认。
 
-Nodes with identical configuration share one inference session, so the weights are loaded once.
-Note that sharing saves the weights; activation memory still grows with the number of images
-inferred at the same time.
+**输入尺寸会按模型自动适配。** 模型把输入形状写死时，比如只接受 512×512，节点的宽度、高度、张量布局、颜色通道会按模型自动调整，日志里会说明改了什么。形状写死的情况下别的取值本来就会被推理引擎拒绝，所以这个修正不存在歧义；形状是动态的则完全听节点参数。实在无法自动修正时，报错会同时给出模型期望的形状和实际送入的形状，并指明该调哪个参数。
 
-## Writing your own node
+注意共享省下的是权重，激活内存（中间张量）仍然随同时推理的张数增长。
 
-Put a `.py` file in a plugin directory (the solution's `plugin_dirs`, or *Plugins → Load
-plugin folder*). Every `Node` subclass in it is registered automatically:
+## 写自己的算法节点
+
+把一个 `.py` 放进插件目录（方案里的 `plugin_dirs`，或菜单 Plugins → Load plugin folder），定义 `Node` 子类即可，无需改平台代码：
 
 ```python
 from cvflow.core import Node, Port, Param, DataType, Overlay, Rect
 
 class MyDefectNet(Node):
-    type_id = "mycompany.defect_net"      # globally unique
+    type_id = "mycompany.defect_net"      # 全局唯一
     category = "Deep Learning"
     label = "My Defect Net"
     inputs = [Port("image", DataType.IMAGE)]
     outputs = [Port("score", DataType.FLOAT), Port("boxes", DataType.LIST)]
     params = [Param("weights", "", "file"), Param("threshold", 0.5, "float", min=0, max=1)]
 
-    def setup(self, ctx=None):            # once, when the flow starts: load the model
-        import torch
-        self.model = torch.load(self.get("weights"))
+    def setup(self, ctx=None):            # 流程启动时执行一次：加载模型
+        import torch; self.model = torch.load(self.get("weights"))
 
-    def process(self, ctx, inputs):       # per image
-        img = inputs["image"]             # cvflow.core.Image; .data is a numpy BGR/gray array
+    def process(self, ctx, inputs):       # 每张图执行
+        img = inputs["image"]             # cvflow.core.Image，.data 是 numpy BGR/灰度
         score, boxes = self.infer(img.data)
         for x, y, w, h in boxes:
             ctx.add_overlay(Overlay.rect(Rect(x, y, w, h), "#ff0000"))
-        ctx.judge(score < self.get("threshold"), "defect")   # contributes to the run's OK/NG
+        ctx.judge(score < self.get("threshold"), "defect")   # 参与整次运行的 OK/NG
         return {"score": score, "boxes": boxes}
 ```
 
-* `self.state` is persisted with the solution — use it for learning statistics or counters
-  (see the bandit plugin).
-* `ctx.publish(name, value)` exposes a value to communication templates as `{out.name}`.
-* For quick experiments use the built-in **Python Script** node and write
-  `process(ctx, inputs, params, state)` directly in the parameter panel.
-* The built-in **ONNX Inference / Classifier / Detector (YOLO)** nodes run exported models
-  with onnxruntime (CPU, CUDA or TensorRT providers). Installing the GPU build does not by
-  itself mean the GPU is used: without matching CUDA and cuDNN runtime libraries the provider
-  fails to load and falls back to CPU, so the log states which provider is actually in use.
+要点：
 
-## Communication model
+* `self.state` 是会随方案保存的节点状态，适合放学习统计、计数器（见 bandit 插件）。
+* `ctx.publish(name, value)` 发布的值可以在通信模板里用 `{out.name}` 引用。
+* 快速试验可直接用内置的 **Python Script** 节点，在参数面板里写 `process(ctx, inputs, params, state)`。
+* 内置 `ONNX Inference / Classifier / Detector(YOLO)` 节点用 onnxruntime 运行导出的模型，推理后端可选 CPU/CUDA/TensorRT。
+  装了 GPU 版 onnxruntime 不等于 GPU 可用：缺少对应版本的 CUDA 或 cuDNN 运行库时后端会加载失败并回退到 CPU，日志里会写明实际使用的是哪个后端。
 
-| Concept | Details |
+## 通信模型
+
+| 概念 | 说明 |
 |---|---|
-| Devices | `tcp_client` `tcp_server` `udp` `serial` `modbus_tcp_client` (we are the master) `modbus_tcp_server` (we are the slave) |
-| Receive rules | Text devices: `startswith / equals / contains / regex / any`. Modbus: `register_rising` (0→non-zero), `register_change`, `register_equals`. Action: trigger a flow, or store the frame in a global variable |
-| Send rules | Fire when a flow finishes (`always / ok / ng / error`). Text template: `{status} {ok} {ng} {run_id} {duration_ms:.1f} {out.name} {var.name} {node[Node Name].port}`. Modbus: a list of register writes `[{"address": 10, "expr": "{out.count}", "kind": "int16"}]` with kinds int16 / uint16 / int32 / uint32 / float32 / bool |
-| In-flow sending | The **Send Message** and **Modbus Write** nodes send from inside a flow |
+| 设备 | `tcp_client` `tcp_server` `udp` `serial` `modbus_tcp_client`(我们是主站) `modbus_tcp_server`(我们是从站) |
+| 接收规则 | 文本设备：`startswith / equals / contains / regex / any`；Modbus：`register_rising`(0→非0) / `register_change` / `register_equals`。动作：触发某流程，或把报文写入全局变量 |
+| 发送规则 | 流程结束时按条件(always/ok/ng/error)发送。文本模板：`{status} {ok} {ng} {run_id} {duration_ms:.1f} {out.名字} {var.名字} {node[节点名].端口}`；Modbus：寄存器写入列表 `[{"address":10,"expr":"{out.count}","kind":"int16"}]`，kind 支持 int16/uint16/int32/uint32/float32/bool |
+| 节点内发送 | `Send Message`、`Modbus Write` 节点可在流程中间主动发数据 |
 
-The Modbus TCP slave is implemented natively (function codes 1/2/3/4/5/6/15/16) so every
-PLC write is observed immediately. The master uses pymodbus and polls a watched register
-block every `poll_ms`.
+Modbus TCP 从站是自带实现（功能码 1/2/3/4/5/6/15/16），PLC 的每次写入都立即被观察到，不需要轮询；主站基于 pymodbus，按 `poll_ms` 轮询监视寄存器段并检测变化。
 
-## Layout
+## 目录
 
 ```
-cvflow/core        types, node model, registry/plugins, graph, engine, runtime, events, variables, overlays, paths
-cvflow/operators   built-in nodes (source / preprocess / analysis / dl / logic / output)
-cvflow/camera      camera abstraction: folder simulator, OpenCV, GenICam (harvesters)
-cvflow/comm        communication devices and rule manager
-cvflow/ui          PySide6 application
-cvflow/cli.py      gui / run / serve / nodes / validate / new
-examples/          demo image generator, demo solution, example plugins
-tests/             pytest (core, operators, communication, offscreen UI)
+cvflow/core        类型、节点模型、注册表/插件加载、图、执行引擎、运行时、事件、变量、叠加层渲染
+cvflow/operators   内置节点（source/preprocess/analysis/dl/logic/output）
+cvflow/camera      相机抽象：folder 模拟、OpenCV、GenICam(harvesters)
+cvflow/comm        通信设备与规则管理
+cvflow/ui          PySide6 界面
+cvflow/cli.py      命令行：gui / run / serve / nodes / validate / new / gpu / shortcut
+examples/          示例图像生成器、示例方案、示例插件
+tests/             pytest（核心、算子、通信、界面 offscreen）
+tools/             辅助脚本：测试报告生成、虚拟环境清理（venv_clean.py）
+install.ps1        Windows 一键安装（建环境 → 装对推理运行时 → 实测 CUDA）
+install.sh         Linux / macOS 一键安装
+docs/install.md    安装环境详解：步骤、自检、常见错误对照表
 ```
 
-## Node black-box test report
+## 节点黑盒测试报告
 
-`docs/node-test-report.md` is a per-node black-box test report: contract tests cover every
-registered node automatically (metadata, declared outputs present with the declared types, bad
-input isolated), functional tests verify each mode and parameter against synthetic images with
-analytically known ground truth. Regenerate with:
+`docs/node-test-report.md` 是按节点归类的黑盒测试报告：契约测试自动覆盖注册表里的全部节点（元数据、输出端口与声明一致、错误输入被隔离），功能测试用真值可解析计算的合成图像逐个验证各模式与参数。重新生成：
 
 ```bash
 python tools/node_test_report.py
 ```
 
-`docs/ui-test-report.md` is the GUI black-box report: the interface is driven only through
-user-visible actions (menus, toolbar, mouse drags, keyboard, dialogs, table edits) and checked
-through visible results, covering startup layout, file and flow management, palette, node
-editor, parameter panel, run controls, image view, results/variables/log/communication panels,
-camera manager, plugins and help. Regenerate with:
+`docs/ui-test-report.md` 是界面的黑盒测试报告：只通过用户可见的操作（菜单、工具栏、鼠标拖拽、键盘、对话框、表格编辑）驱动界面并检查可见结果，覆盖启动布局、文件与流程管理、节点库、节点编辑器、参数面板、运行控制、图像窗口、结果/变量/日志/通信面板、相机管理、插件与帮助。重新生成：
 
 ```bash
 python tools/ui_test_report.py
 ```
 
-`docs/comm-test-report.md` is the communication black-box report: the peer side is played by
-real sockets, a Linux pseudo-terminal serial port, third-party pymodbus and snap7, and
-hand-assembled protocol frames checked byte by byte; it covers TCP/UDP/serial, Modbus master and
-slave, Mitsubishi MC, Siemens S7, receive/send rules, templates, handshake, heartbeat, events,
-persistence, connection tests and the headless serve mode. Regenerate with:
+`docs/comm-test-report.md` 是通信功能的黑盒测试报告：对端用真实套接字、Linux 伪终端串口、第三方 pymodbus 与 snap7、按协议手册手工拼出的报文做字节级核对，覆盖 TCP/UDP/串口/Modbus 主从站/三菱 MC/西门子 S7、接收与发送规则、模板、握手、心跳、事件、持久化、连接测试和无界面生产模式。重新生成：
 
 ```bash
 python tools/comm_test_report.py
 ```
 
-## Current limits
+## 目前的边界（诚实版）
 
-* Classical operators cover what OpenCV offers directly: blobs, contours, NCC template
-  matching (translation only), sub-pixel edge caliper, circle finding, intensity statistics,
-  QR codes. No rotation/scale-invariant shape matching, OCR or camera calibration yet.
-* A flow executes as a single-threaded DAG (flows run in parallel, nodes within a flow do
-  not). Output-category nodes are scheduled after other ready nodes so saving/rendering sees
-  the final judgement. Sub-20 ms cycle times need heavy nodes in a subprocess or C++ extension.
-* The Hikrobot MVS wrapper and GenICam grabbing are not yet verified on real cameras (none
-  on the development machine); GigE discovery, force-IP and the connection test are covered by
-  automated tests against a simulated camera.
-* Mitsubishi MC and Siemens S7 are verified only against the simulator / snap7 server; Omron
-  FINS and Rockwell EtherNet/IP are not implemented.
-* No user management, result database, solution versioning or installer yet.
+* 传统算子仅覆盖 OpenCV 能直接提供的部分：Blob、轮廓、NCC 模板匹配（仅平移）、亚像素边缘卡尺、圆查找、强度统计、二维码。形状匹配（旋转/缩放）、高精度标定、OCR 还没有。
+* 执行是单线程同步 DAG，Output 类节点总是排在其它就绪节点之后执行（存图/渲染能看到最终判定）；流程间并行，流程内不并行。节拍 < 20 ms 的高速线需要把重算子放到多进程或 C++ 扩展。
+* 海康 MVS SDK 封装和 GenICam 取图都还没有在真机上验证（本机没有相机）；GigE 发现、强制 IP、连接测试用模拟相机做了自动化测试。
+* 三菱 MC 和西门子 S7 只在模拟器/snap7 服务器上验证过，欧姆龙 FINS、罗克韦尔 EtherNet/IP 还没有。
+* 还没有权限管理、运行日志落库、方案版本管理、安装包。
 
-## License
+## 许可证
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0，见 [LICENSE](LICENSE)。

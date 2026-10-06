@@ -1,7 +1,14 @@
-# Runtime dependencies (same as pyproject.toml). Prefer: pip install -e ".[dev]"
+# 运行依赖（与 pyproject.toml 的基础依赖一致）。推荐直接用 extra 安装，别用这个文件：
+#   有 NVIDIA 显卡： pip install -e ".[dev,gpu]"
+#   只用 CPU：       pip install -e ".[dev,cpu]"
+# 安装步骤见 docs/install.md。
 numpy>=1.24
 opencv-python>=4.8
 PySide6-Essentials>=6.5
 pymodbus>=3.6
 pyserial>=3.5
-onnxruntime>=1.16
+
+# 推理运行时故意不写在这里：onnxruntime（CPU 版）与 onnxruntime-gpu 是同一个 Python 模块的
+# 两个发行包，谁后装谁覆盖。如果这里写上 onnxruntime，在 GPU 环境里执行
+# pip install -r requirements.txt 就会把 GPU 版覆盖成 CPU 版，症状是"CUDA 后端忽然不见了"。
+# 二选一，用对应的 extra 装：".[cpu]" 或 ".[gpu]"。

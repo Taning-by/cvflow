@@ -69,8 +69,9 @@ _PROVIDER_NAMES = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider
                    "tensorrt": "TensorrtExecutionProvider"}
 _GPU_PROVIDERS = ("CUDAExecutionProvider", "TensorrtExecutionProvider")
 _PROVIDER_FIX = {
-    "CUDAExecutionProvider": "GPU 后端要装 GPU 版：pip uninstall onnxruntime && pip install onnxruntime-gpu"
-                             "（或 pip install -e \".[gpu]\"），再装对应版本的 CUDA 12 与 cuDNN 9 运行库",
+    "CUDAExecutionProvider": "改装 GPU 版：先 pip uninstall -y onnxruntime onnxruntime-gpu 把两个都卸干净"
+                             "（CPU 版和 GPU 版是同一个模块，共存时互相覆盖），再 pip install -e \".[dev,gpu]\"，"
+                             "CUDA 12 与 cuDNN 9 会一起装上；步骤详见 docs/install.md",
     "TensorrtExecutionProvider": "TensorRT 后端除了 GPU 版 onnxruntime，还要另外安装 TensorRT 本体；"
                                  "只想用显卡的话，推理后端选 cuda 或 auto 即可",
 }

@@ -8,6 +8,7 @@
   cvflow new 方案.json                   新建一个空方案
   cvflow shortcut [方案.json]            在桌面创建快捷方式（点击图标打开软件）
   cvflow gpu [模型.onnx]                 自检推理环境：装了什么后端、能不能加载、实际跑在哪、占多少显存
+                                         加 --require-gpu 时，CUDA 没跑起来就返回非零退出码
 """
 from __future__ import annotations
 
@@ -79,6 +80,27 @@ def _device_vram_mib(index: int) -> int | None:
     return int(rows[0]) if rows and rows[0].isdigit() else None
 
 
+def _onnxruntime_outside_venv(ort) -> bool:
+    """这份 onnxruntime 是不是虚拟环境外面的那一份。
+
+    虚拟环境建的时候带了 --system-site-packages，系统里又装过 CPU 版 onnxruntime 的话，
+    系统那一份会盖掉环境里的 GPU 版——而且 pip 在环境内卸不掉它（"outside environment"），
+    症状是"明明装了 onnxruntime-gpu，后端里却只有 CPU"，极难自己看出来。
+    """
+    import os
+    if sys.prefix == sys.base_prefix:                  # 没在虚拟环境里，谈不上覆盖
+        return False
+    where = os.path.realpath(os.path.dirname(ort.__file__))
+    return not where.startswith(os.path.realpath(sys.prefix) + os.sep)
+
+
+def _require_gpu_failed() -> int:
+    """--require-gpu 下 CUDA 没跑起来：打一句结论并给非零退出码（安装脚本/CI 靠它判断）。"""
+    print("\n✗ 要求用 GPU，但 CUDA 后端没能跑起来。按上面的提示修好再重试，"
+          "完整步骤见 docs/install.md")
+    return 2
+
+
 def cmd_gpu(args) -> int:
     """自检推理环境：装了哪个 onnxruntime、后端能不能加载、模型实际跑在哪、占多少显存。"""
     import os
@@ -89,6 +111,14 @@ def cmd_gpu(args) -> int:
         print("  未安装 onnxruntime。CPU 装 pip install -e \".[cpu]\"，显卡装 pip install -e \".[gpu]\"（二选一）")
         return 1
     print(f"  onnxruntime {ort.__version__}  {os.path.dirname(ort.__file__)}")
+    if _onnxruntime_outside_venv(ort):
+        print("  ⚠ 这份 onnxruntime 不在当前虚拟环境里，而是系统 site-packages 里的那一份——"
+              "虚拟环境是带 --system-site-packages 建的，")
+        print("    系统装过的 CPU 版会盖掉环境里的 GPU 版，而且 pip 在环境内卸不掉它"
+              "（会提示 outside environment）。")
+        print(f"    修法：把 {os.path.join(sys.prefix, 'pyvenv.cfg')} 里的 "
+              "include-system-site-packages 改成 false，")
+        print("    或者直接重跑 install.sh / install.ps1（会自动处理这种情况）")
     wheels: list[str] = []
     try:
         from importlib.metadata import distributions
@@ -107,11 +137,13 @@ def cmd_gpu(args) -> int:
     print(f"  包里编译进来的：{'、'.join(avail)}")
     if any(p in dl._GPU_PROVIDERS for p in avail):
         dl._preload_gpu_runtime(ort)      # 包里没有 GPU 后端时别预加载，否则会打一条误导人的警告
+    cuda_ok = False
     for prov in ("TensorrtExecutionProvider", "CUDAExecutionProvider"):
         if prov not in avail:
             print(f"  {prov:28s} 包里没有")
             continue
         why = dl._why_provider_failed(ort, prov)
+        cuda_ok = cuda_ok or (prov == "CUDAExecutionProvider" and not why)
         print(f"  {prov:28s} {'可用' if not why else '加载失败：' + why}")
         if why and prov == "TensorrtExecutionProvider":
             print("     （没装 TensorRT 本体，属正常情况：auto 会跳过它直接用 CUDA，不影响使用）")
@@ -127,6 +159,7 @@ def cmd_gpu(args) -> int:
         print("       1) pip uninstall -y onnxruntime onnxruntime-gpu   （重复执行到两个都显示未安装）")
         print(f"       2) 确认 {os.path.dirname(ort.__file__)} 已经不存在，残留就手动删掉")
         print("       3) pip install -e \".[dev,gpu]\"")
+        print("     完整步骤和常见错误：docs/install.md")
 
     print("\n== 显卡 ==")
     gpus = _nvidia_smi("gpu=index,name,driver_version,memory.used,memory.total")
@@ -138,7 +171,7 @@ def cmd_gpu(args) -> int:
 
     if not args.model:
         print("\n加上一个模型文件可以实测它跑在哪、占多少显存：cvflow gpu 你的模型.onnx")
-        return 0
+        return 0 if (cuda_ok or not args.require_gpu) else _require_gpu_failed()
 
     print("\n== 实测加载 ==")
     from .core import paths, registry
@@ -178,7 +211,7 @@ def cmd_gpu(args) -> int:
     elif delta is not None and delta < 50:
         print("  ⚠ 跑在显卡上但显存几乎没涨，请确认看的是同一块卡（--device 可以指定）")
     node.unload()
-    return 0
+    return 0 if (on_gpu or not args.require_gpu) else _require_gpu_failed()
 
 
 def cmd_validate(args) -> int:
@@ -330,6 +363,8 @@ def main(argv=None) -> int:
     gp.add_argument("model", nargs="?", help="用来实测的 ONNX 模型文件（可选）")
     gp.add_argument("--provider", default="auto", choices=["auto", "cpu", "cuda", "tensorrt"], help="指定推理后端")
     gp.add_argument("--device", type=int, default=0, help="显卡编号")
+    gp.add_argument("--require-gpu", action="store_true",
+                    help="CUDA 没跑起来就以非零退出码结束，给安装脚本和 CI 用")
     gp.set_defaults(fn=cmd_gpu)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
