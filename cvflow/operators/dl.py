@@ -93,7 +93,7 @@ def nvidia_dll_dirs(roots: list[str] | None = None) -> list[str]:
 
 
 def _open_cudnn_search_path() -> None:
-    """把 pip 装的 CUDA / cuDNN 目录加进 Windows 的 DLL 搜索路径，并补装 ORT 名单外的 cuDNN 子库。
+    r"""把 pip 装的 CUDA / cuDNN 目录加进 Windows 的 DLL 搜索路径，并补装 ORT 名单外的 cuDNN 子库。
 
     onnxruntime 的 preload_dlls() 加载的是一张**写死的** DLL 名单（cudnn_graph64_9.dll 等 7 个）。
     但 cuDNN 9 会在运行时按名字再去 LoadLibrary 自己的引擎子库，名单覆盖不到新增的那些——

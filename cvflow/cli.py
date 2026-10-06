@@ -343,16 +343,21 @@ def format_profile(events: list, runs: int) -> list[str]:
         ops[prov][args.get("op_name", "?")] += ms
     if not count:
         return []
-    lines = ["", "  算子实际落在哪个后端（profiling，按每次推理的耗时摊算）："]
-    hottest = max(spent.values())
+    lines = ["", "  算子实际落在哪个后端（profiling 的绝对值偏大，它会按算子逐个同步，看的是比例）："]
+    cpu = "CPUExecutionProvider"
+    # 只在 CPU 反客为主时才标出来：GPU 占大头是正常的，标了反而像出了问题
+    cpu_dominates = len(spent) > 1 and spent.get(cpu, 0) > sum(v for k, v in spent.items() if k != cpu)
     for prov, ms in spent.most_common():
         n = count[prov] // max(runs, 1) or count[prov]
-        flag = "  ← 时间主要耗在这里" if ms == hottest and len(spent) > 1 else ""
+        flag = "  ← 绝大部分时间耗在 CPU 上，GPU 没干多少活" if cpu_dominates and prov == cpu else ""
         lines.append(f"    {prov:30s} {n:4d} 个算子  {ms:7.1f} ms{flag}")
-    cpu = "CPUExecutionProvider"
+    if list(spent) == [cpu]:
+        lines.append("    → 所有算子都在 CPU 上，显卡完全没参与计算")
     if len(spent) > 1 and cpu in ops:
         top = "、".join(f"{op}({ms:.1f} ms)" for op, ms in ops[cpu].most_common(4))
         lines.append(f"    落在 CPU 上最费时的算子：{top}")
+        if not cpu_dominates:
+            lines.append("    （CPU 这几个多半是算形状的小算子，动态尺寸模型里很常见，占比很小就不用管）")
     return lines
 
 

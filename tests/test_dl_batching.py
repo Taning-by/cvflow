@@ -392,9 +392,29 @@ def test_format_profile_splits_time_by_backend():
     assert "CUDAExecutionProvider" in text and "100 个算子" in text
     assert "CPUExecutionProvider" in text and "2 个算子" in text
     cpu_line = next(l for l in lines if "CPUExecutionProvider" in l and "个算子" in l)
-    assert "时间主要耗在这里" in cpu_line                                      # 40 ms 远超 CUDA 的 2 ms
+    assert "GPU 没干多少活" in cpu_line                                        # 40 ms 远超 CUDA 的 2 ms
     assert "NonMaxSuppression" in text                                        # 点名最费时的 CPU 算子
     assert "40.0 ms" in cpu_line and "2.0 ms" in text                          # 微秒→毫秒、并摊到每次推理
+
+
+def test_format_profile_only_flags_cpu_when_it_dominates():
+    """GPU 占大头是正常的，不该标成问题；CPU 反客为主才要点出来。"""
+    from cvflow.cli import format_profile
+
+    def ev(prov, op, dur, n):
+        return [{"cat": "Node", "dur": dur, "args": {"provider": prov, "op_name": op}} for _ in range(n)]
+
+    healthy = "\n".join(format_profile(ev("CUDAExecutionProvider", "Conv", 1000, 500)
+                                        + ev("CPUExecutionProvider", "Gather", 10, 50), 1))
+    assert "GPU 没干多少活" not in healthy
+    assert "占比很小就不用管" in healthy                      # 少量算形状的小算子，属正常
+
+    sick = "\n".join(format_profile(ev("CUDAExecutionProvider", "Conv", 10, 5)
+                                     + ev("CPUExecutionProvider", "Conv", 5000, 600), 1))
+    assert "GPU 没干多少活" in sick
+
+    all_cpu = "\n".join(format_profile(ev("CPUExecutionProvider", "Conv", 5000, 696), 1))
+    assert "显卡完全没参与计算" in all_cpu                    # 整个会话被降级的情形
 
 
 def test_format_profile_without_node_events_says_nothing():
