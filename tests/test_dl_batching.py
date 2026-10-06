@@ -334,6 +334,26 @@ def test_dl_gpu_selfcheck_require_gpu_reports_failure(cls_model, capsys):
     assert "要求用 GPU" in out and "docs/install.md" in out
 
 
+def test_dl_gpu_selfcheck_warns_when_torch_shares_the_environment(cls_model, monkeypatch, capsys):
+    """环境里有 torch 时自检要提醒：它自带 CUDA/cuDNN，onnxruntime 会让位给它。
+
+    本项目故意不提供 torch 的 extra，就是为了避免这种"谁先加载谁当家"的冲突。
+    """
+    from importlib import metadata
+    from cvflow import cli
+
+    class FakeDist:
+        def __init__(self, name):
+            self.metadata = {"Name": name}
+
+    real = metadata.distributions
+    monkeypatch.setattr(metadata, "distributions",
+                        lambda *a, **k: list(real()) + [FakeDist("torch")])
+    cli.main(["gpu", cls_model, "--provider", "cpu"])
+    out = capsys.readouterr().out
+    assert "还装了 torch" in out and "另一个虚拟环境" in out
+
+
 def test_dl_gpu_selfcheck_warns_when_onnxruntime_comes_from_outside_venv(cls_model, monkeypatch, capsys):
     """环境外的 onnxruntime 盖掉环境里的 GPU 版时，自检要点名说出来（回归）。
 

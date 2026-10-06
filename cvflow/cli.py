@@ -165,6 +165,13 @@ def cmd_gpu(args) -> int:
         if len(wheels) > 1:
             print("  ⚠ 同时装了 CPU 版和 GPU 版，它们会互相覆盖。"
                   "请 pip uninstall -y onnxruntime onnxruntime-gpu 之后只装需要的那一个")
+        if "torch" in names:
+            # torch 自带一整套 CUDA/cuDNN，而 onnxruntime 发现 torch 已导入就会让位给它，
+            # 版本不匹配时推理会悄悄退回 CPU。本项目故意不提供 torch 的 extra。
+            print("  ⚠ 这个环境里还装了 torch。torch 自带一整套 CUDA / cuDNN，"
+                  "onnxruntime 发现它已导入就会让位，")
+            print("    版本不匹配时 GPU 后端会加载失败或在执行算子时降级成 CPU。"
+                  "只跑 ONNX 推理的话建议把 torch 挪到另一个虚拟环境")
     except Exception:                                            # pragma: no cover
         pass
 

@@ -110,8 +110,12 @@ TensorRT 不用装，`auto` 会跳过它直接用 CUDA。
 CUDA 13 版要求驱动 ≥ 580、显卡算力 ≥ 7.5，产线上常见的 GTX 10 系、Quadro P 系（Pascal）直接用不了。
 卡在 CUDA 12 上，驱动 ≥ 527.41、算力 ≥ 5.0 就能跑，新卡也不会慢。新机器想用 CUDA 13 版：`.[dev,gpu-cuda13]`。
 
-其它可选依赖：`.[genicam]`（harvesters，GigE/USB3 Vision 相机）、`.[plc]`（python-snap7，西门子 S7）、
-`.[dl]`（PyTorch，给插件模板用——**ONNX 走 CUDA 不需要它**）。
+其它可选依赖：`.[genicam]`（harvesters，GigE/USB3 Vision 相机）、`.[plc]`（python-snap7，西门子 S7）。
+
+**没有 torch 的 extra，这是故意的。** ONNX 走 CUDA 用不到 torch，而 torch 自带一整套 CUDA / cuDNN，
+装进同一个环境后谁先加载谁当家（onnxruntime 发现 torch 已导入会主动让位），版本不匹配时推理会
+悄悄退回 CPU。要用 PyTorch 插件模板就单独装，最好另开一个虚拟环境：
+`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`。
 
 ## 运行
 

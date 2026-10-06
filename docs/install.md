@@ -485,14 +485,17 @@ cvflow gpu --require-gpu                   # 照样要自检
 | `cpu` | onnxruntime | 没有 NVIDIA 显卡。**与 `gpu` 互斥** |
 | `genicam` | harvesters | GigE / USB3 Vision 相机（还需厂商的 `.cti` 驱动） |
 | `plc` | python-snap7 | 西门子 S7 PLC |
-| `dl` | torch、torchvision | 只给自己写的 PyTorch 插件用 |
 
 两点容易混淆的地方：
 
-* **ONNX 走 CUDA 不需要 torch。** `.[dl]` 和推理后端没有关系，别为了“用 GPU”去装它。
-* Windows 上 PyPI 的 `torch` 是 **CPU 版**。真要 PyTorch 用显卡，单独从官方索引装：
+* **没有 torch 的 extra，这是故意的。** ONNX 走 CUDA 用不到 torch；而 torch 自带一整套
+  CUDA / cuDNN 运行库，和 onnxruntime 装在同一个环境里时**谁先加载谁当家**——onnxruntime 的
+  `preload_dlls()` 一旦发现 `torch` 已导入就会主动让位（它自己会打印 "Skip loading CUDA and
+  cuDNN DLLs since torch is imported."），于是推理用的其实是 torch 那套运行库。版本不匹配时，
+  GPU 后端要么加载失败，要么在执行算子时失败、会话被悄悄降级成 CPU——正是最难查的那种故障。
+* 要用 `examples/plugins/torch_model_template.py` 就单独装 torch，**最好另开一个虚拟环境**：
   `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`。
-  这跟 `onnxruntime-gpu` 互不干扰，可以共存。
+  Windows 上 PyPI 默认的 `torch` 是 **CPU 版**，装了也不会让推理变快，只是白占 2 GB。
 
 ---
 

@@ -54,7 +54,14 @@ gpu = ["onnxruntime-gpu[cuda,cudnn]>=1.21,<1.27"]
 gpu-cuda13 = ["onnxruntime-gpu[cuda,cudnn]>=1.27"]
 genicam = ["harvesters>=1.4"]
 plc = ["python-snap7>=1.3"]
-dl = ["torch", "torchvision"]
+# 故意不提供 torch 的 extra。ONNX 走 CUDA 用不到 torch，而把 torch 装进同一个环境有实际代价：
+# torch 自带一整套 CUDA / cuDNN，谁先加载谁当家——onnxruntime 的 preload_dlls() 发现 torch
+# 已导入就会主动让位，于是推理用的其实是 torch 那套运行库，版本不匹配时 GPU 后端会加载失败
+# 或者在执行算子时失败（会话被悄悄降级成 CPU）。另外 Windows 上 PyPI 的 torch 是 CPU 版，
+# 装了也不会让推理变快，只是白占 2 GB。
+# 自己写 PyTorch 插件（examples/plugins/torch_model_template.py）时单独装：
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# 最好装在另一个虚拟环境里，别和推理环境混。
 
 [project.scripts]
 cvflow = "cvflow.cli:main"
