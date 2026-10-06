@@ -47,7 +47,7 @@ cd cvflow
 
 * 装之前**检查显卡驱动版本**够不够 CUDA 12 用（不够就直接告诉你去更新驱动，不会白下 2 GB）；
 * 把虚拟环境**隔离**掉（`include-system-site-packages = false`），并清掉 onnxruntime 的残留
-  —— 这两样是"装了 GPU 版却只有 CPU 后端"最隐蔽的两个来源，见[第 6 节](#6-常见错误对照表)最后两行；
+  —— 这两样是"装了 GPU 版却只有 CPU 后端"最隐蔽的两个来源，见[第 7 节](#7-常见错误对照表)最后两行；
 * 装完跑 `cvflow gpu --require-gpu`，**CUDA 没真正跑起来就以非零退出码失败**，不会假装装好了。
 
 想知道每一步在干什么、或者脚本在你的机器上卡住了，再往下看手工步骤。
@@ -164,7 +164,7 @@ cvflow gpu
   0 号卡 NVIDIA GeForce RTX 4060　驱动 560.94　已用 1024/8188 MiB   ← 认得出显卡
 ```
 
-三行里任意一行不对，去[第 6 节](#6-常见错误对照表)查。
+三行里任意一行不对，去[第 7 节](#7-常见错误对照表)查。
 
 写脚本或做产线上线检查时，用 `cvflow gpu --require-gpu`：CUDA 没跑起来会返回非零退出码（2），
 可以直接拿它当"环境合格"的判据。
@@ -280,7 +280,46 @@ cvflow gpu
 
 ---
 
-## 6. 常见错误对照表
+## 6. 产线机器上不了网怎么装（离线包）
+
+工控机常常是不通外网的。做法是**在一台联网的机器上按目标机器的平台把轮子全下下来**，
+拷过去离线装。注意下载时要指定**目标机器**的平台和 Python 版本，不是下载机的。
+
+联网的机器上（这里以目标机器是 Windows + Python 3.12 为例）：
+
+```bash
+# 先打出 cvflow 的包（仓库根目录执行，产物在 dist/）
+pip install build && python -m build
+
+# 再把 cvflow 和它的全部依赖（含 CUDA 12 / cuDNN 9）按 Windows 的轮子下下来，约 2 GB
+pip download -d cvflow-offline \
+    --platform win_amd64 --python-version 3.12 --only-binary=:all: \
+    "dist/cvflow-0.1.0-py3-none-any.whl[dev,gpu]"
+```
+
+把 `cvflow-offline` 目录和仓库一起拷到产线机器，然后：
+
+```powershell
+python -m venv .venv                       # 别加 --system-site-packages
+.venv\Scripts\activate
+pip install --no-index --find-links cvflow-offline -e ".[dev,gpu]"
+cvflow gpu --require-gpu                   # 照样要自检
+```
+
+三个容易出错的地方：
+
+* `--platform` / `--python-version` 写的是**目标机器**的；写错了下回来的轮子装不上（会报
+  "not a supported wheel on this platform"）。Linux 目标机器一般用
+  `--platform manylinux_2_28_x86_64`，老系统用 `manylinux2014_x86_64`。
+* 必须带 `--only-binary=:all:`，否则 pip 可能下源码包，到了离线机器上还要编译。
+* `pip download` 和产线机器的 Python **小版本要对上**（3.12 的轮子不能给 3.11 用）。
+
+公司有内网 pip 镜像的话更简单，照正常步骤装就行，只要确认镜像里有
+`onnxruntime-gpu 1.21 ~ 1.26` 和那几个 `nvidia-*-cu12` 包。
+
+---
+
+## 7. 常见错误对照表
 
 | 看到的信息 | 真正的原因 | 怎么修 |
 |---|---|---|
@@ -299,7 +338,7 @@ cvflow gpu
 
 ---
 
-## 7. 可选依赖
+## 8. 可选依赖
 
 | extra | 装什么 | 什么时候要 |
 |---|---|---|
@@ -320,7 +359,7 @@ cvflow gpu
 
 ---
 
-## 8. 为什么是这个顺序
+## 9. 为什么是这个顺序
 
 留个记录，免得以后又绕回去：
 
