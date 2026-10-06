@@ -100,6 +100,7 @@ class NodeItem(QGraphicsItem):
         if node.triggerable:
             self.setAcceptHoverEvents(True)       # 触发图标要有悬停反馈
         self._trig_hover = False
+        self._trig_pressed = False                # 这一次按下是不是落在触发图标上
 
     def boundingRect(self) -> QRectF:
         pad = PORT_R + CORNER
@@ -339,15 +340,30 @@ class NodeItem(QGraphicsItem):
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event) -> None:
-        """点在触发图标上就只触发这一路，并且不要顺手把节点拖走。"""
+        """点在触发图标上就只触发这一路，并且不要顺手把节点拖走、也不要选中它。"""
         rect = self.trigger_rect()
         if rect is not None and event.button() == Qt.LeftButton and rect.contains(event.pos()):
+            self._trig_pressed = True
             if self.node.enabled:
                 self.scene().trigger_requested.emit(self.node.id)
                 self.update()
             event.accept()
             return
+        self._trig_pressed = False
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        """按在触发图标上的那次抬手要一并吃掉。
+
+        光拦 press 不够：accept 之后本节点成了鼠标捕获者，抬手仍会进到
+        QGraphicsItem.mouseReleaseEvent，它发现"鼠标没移动过"就会把节点选中——
+        于是右边的参数面板跟着跳过来，而用户只是想触发一次取图。
+        """
+        if self._trig_pressed:
+            self._trig_pressed = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def hoverMoveEvent(self, event) -> None:
         rect = self.trigger_rect()

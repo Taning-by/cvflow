@@ -1045,21 +1045,28 @@ def test_ui_source_nodes_have_a_trigger_icon_on_the_node(win, app):
     assert rect is not None                                   # 可触发的节点才有这个图标
     before = item.pos()
 
-    ev = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
-    ev.setPos(rect.center())
-    ev.setButton(Qt.LeftButton)
-    ev.setButtons(Qt.LeftButton)
-    item.mousePressEvent(ev); pump(app)
+    def send(kind, pos):
+        ev = QGraphicsSceneMouseEvent(kind)
+        ev.setPos(pos)
+        ev.setScenePos(item.mapToScene(pos))
+        ev.setButton(Qt.LeftButton)
+        ev.setButtons(Qt.LeftButton)
+        ev.setButtonDownScenePos(Qt.LeftButton, item.mapToScene(pos))
+        (item.mousePressEvent if kind == QEvent.GraphicsSceneMousePress else item.mouseReleaseEvent)(ev)
+
+    send(QEvent.GraphicsSceneMousePress, rect.center())
+    send(QEvent.GraphicsSceneMouseRelease, rect.center())      # 抬手也要拦，否则 Qt 会选中节点
+    pump(app)
     assert calls == [folder.id]                               # 点图标＝触发这一路
     assert item.pos() == before                               # 没有被当成拖拽
+    assert item.isSelected() is False                         # 也不该选中它（右边参数面板不会乱跳）
 
-    # 点在标题别处不该触发
-    ev2 = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
-    ev2.setPos(rect.center() + QPointF(-60, 0))
-    ev2.setButton(Qt.LeftButton)
-    ev2.setButtons(Qt.LeftButton)
-    item.mousePressEvent(ev2); pump(app)
+    # 点在标题别处：不触发，但照常选中节点
+    send(QEvent.GraphicsSceneMousePress, rect.center() + QPointF(-60, 0))
+    send(QEvent.GraphicsSceneMouseRelease, rect.center() + QPointF(-60, 0))
+    pump(app)
     assert calls == [folder.id]
+    assert item.isSelected() is True
 
     # 另外两个源节点也可触发；别的节点没有这个图标
     for type_id in ("source.image_file", "source.camera"):
