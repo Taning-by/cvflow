@@ -43,9 +43,12 @@ class BatchExecutor:
     """
 
     def __init__(self, fn: Callable[[list], Sequence[Any]], max_batch: int = 8,
-                 wait_s: float = 0.0, name: str = "") -> None:
+                 wait_s: float = 0.0, name: str = "", chunk: bool = True) -> None:
         self._fn = fn
         self.max_batch = max(1, int(max_batch))
+        # chunk=False 表示 fn 自己负责把超过 max_batch 的提交切块执行。需要"整批只选一个领队"
+        # 之类的全局决定时必须这样，否则 fn 只看到自己那一块，没法做跨块的决定。
+        self.chunk = bool(chunk)
         self.wait_s = max(0.0, float(wait_s))
         self.name = name
         self._cv = threading.Condition()
@@ -165,7 +168,7 @@ class BatchExecutor:
 
     def _run_in_chunks(self, flat: list) -> list:
         """单次提交的条目数可能超过 max_batch，按上限切块执行。"""
-        if len(flat) <= self.max_batch:
+        if not self.chunk or len(flat) <= self.max_batch:
             return list(self._fn(flat))
         out: list[Any] = []
         for i in range(0, len(flat), self.max_batch):

@@ -174,6 +174,7 @@ class Engine:
         self.on_result: Callable[[RunResult], None] | None = None
         self._run_counter = 0
         self._lock = threading.Lock()
+        self._counter_lock = threading.Lock()    # 支路运行不拿 _lock，但 run_id 还得各不相同
 
     # ---- lifecycle ----
     def setup_nodes(self) -> list[str]:
@@ -203,13 +204,24 @@ class Engine:
                 node._is_setup = False
 
     # ---- execution ----
-    def run(self, trigger: Any = None, run_id: int | None = None) -> RunResult:
-        with self._lock:  # one run at a time per flow; nodes keep per-instance state
-            return self._run(trigger, run_id)
+    def run(self, trigger: Any = None, run_id: int | None = None,
+            only: set[str] | None = None) -> RunResult:
+        """执行一次。``only`` 给定时只跑这些节点（事件驱动的支路运行）。
 
-    def _run(self, trigger: Any, run_id: int | None) -> RunResult:
-        self._run_counter += 1
-        rid = run_id if run_id is not None else self._run_counter
+        整条流程的运行互斥（节点带实例状态，两次完整运行同时跑会互相踩）。支路运行**不互斥**：
+        事件驱动的多条支路本来就要并发，否则先到的那条在汇合点等待时，后到的那条根本进不来，
+        等待窗口永远凑不满。各支路的节点集合由 ``Graph.input_branches`` 保证互不相交，
+        共享的只有汇合点本身（它内部用批处理队列同步）和汇合点的下游（只由领队那一条支路执行）。
+        """
+        if only is not None:
+            return self._run(trigger, run_id, only)
+        with self._lock:  # one run at a time per flow; nodes keep per-instance state
+            return self._run(trigger, run_id, None)
+
+    def _run(self, trigger: Any, run_id: int | None, only: set[str] | None = None) -> RunResult:
+        with self._counter_lock:
+            self._run_counter += 1
+            rid = run_id if run_id is not None else self._run_counter
         started = time.time()
         t_run = time.perf_counter()
         result = RunResult(run_id=rid, flow=self.graph.name, trigger=trigger, started=started)
@@ -227,6 +239,9 @@ class Engine:
 
         self.setup_nodes()
 
+        if only is not None:
+            order = [nid for nid in order if nid in only]
+
         for nid in order:
             node = self.graph.nodes[nid]
             nres = NodeResult(node_id=nid, node_name=node.name, status=NodeStatus.SKIPPED)
@@ -234,7 +249,7 @@ class Engine:
             if not node.enabled:
                 nres.error = "已禁用"
             else:
-                inputs, skip_reason = self._gather_inputs(node, ctx)
+                inputs, skip_reason = self._gather_inputs(node, ctx, only)
                 if skip_reason:
                     nres.error = skip_reason
                 else:
@@ -290,11 +305,15 @@ class Engine:
         self._finish(result)
         return result
 
-    def _gather_inputs(self, node: Node, ctx: RunContext) -> tuple[dict[str, Any], str]:
+    def _gather_inputs(self, node: Node, ctx: RunContext,
+                       only: set[str] | None = None) -> tuple[dict[str, Any], str]:
         inputs: dict[str, Any] = {}
         links = self.graph.input_links(node.id)
         for port in node.inputs:
             link = links.get(port.name)
+            if link is not None and only is not None and link.src_node not in only:
+                # 支路运行：别的支路这次没跑，这一路就当没有图像（汇合点的输入都是可选的）
+                link = None
             if link is None:
                 if not port.optional:
                     return {}, f"输入 '{port.name}' 未连接"

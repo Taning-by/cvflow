@@ -108,6 +108,11 @@ class FlowRunner:
         self._timer_thread: threading.Thread | None = None
         self._timer_interval: float | None = None
         self._timer_stop = threading.Event()
+        # 事件驱动：每一路一个队列 + 一个线程（见 trigger_source 的说明）
+        self._branches: dict[str, queue.Queue[_Job]] = {}
+        self._branch_threads: dict[str, threading.Thread] = {}
+        self._branch_lock = threading.Lock()
+        self._branch_stop = threading.Event()
 
     @property
     def name(self) -> str:
@@ -144,8 +149,15 @@ class FlowRunner:
         self._stop_timer()
         if self._thread is not None:
             self._stop.set()
+        if self._branch_threads:
+            self._branch_stop.set()
+        if self._thread is not None:
             self._thread.join(timeout)
             self._thread = None
+        with self._branch_lock:
+            threads, self._branch_threads, self._branches = self._branch_threads, {}, {}
+        for t in threads.values():
+            t.join(timeout)
         # fail any jobs still queued
         while True:
             try:
@@ -174,6 +186,81 @@ class FlowRunner:
             job.done.wait(timeout)
             return job.result
         return None
+
+    # ---- 事件驱动：单路触发 ----
+    def async_gates(self) -> list[str]:
+        """流程里所有"异步汇合"的节点 id（深度学习节点把 arrival 设成 async 时）。"""
+        return [nid for nid, n in self.graph.nodes.items() if getattr(n, "is_async", False)]
+
+    def branch_only(self, node_id: str) -> set[str] | None:
+        """node_id 被单独触发时，这一次应该跑哪些节点。
+
+        跑的是：本路的上游链 + 汇合点 + 汇合点的下游 + 其它与支路无关的节点（变量之类）；
+        不跑的是**别的路**的上游链——那些路这一轮没被触发，不该去抓图。
+        没有汇合点或该节点不属于任何一路时返回 None，表示整条流程照常跑。
+        """
+        for gate in self.async_gates():
+            branches = self.graph.input_branches(gate)
+            mine = next((p for p, nodes in branches.items() if node_id in nodes), None)
+            if mine is None:
+                continue
+            others: set[str] = set()
+            for port, nodes in branches.items():
+                if port != mine:
+                    others |= nodes
+            return set(self.graph.nodes) - others
+        return None
+
+    def trigger_source(self, node_id: str, trigger: Trigger | None = None,
+                       wait: bool = False, timeout: float | None = None) -> RunResult | None:
+        """只触发某一路：从 node_id 这一路跑到汇合点，在那里等别的路凑批。
+
+        每一路有自己的工作线程，原因有两个：
+          * 汇合点会**阻塞**等待其它路，如果所有路挤在一个队列里，先到的那条占着唯一的线程、
+            后到的那条永远进不来，窗口必然空等到期——死锁；
+          * 一路相机的两次触发天然应该排队（不会出现同一路的两帧挤进同一批）。
+        """
+        trig = trigger or Trigger(TriggerSource.MANUAL)
+        only = self.branch_only(node_id)
+        if only is None:
+            # 没有异步汇合点：退回"整条流程跑一次"。运行模式进队列，编辑模式直接同步跑
+            if self.running:
+                return self.trigger(trig, wait=wait, timeout=timeout)
+            return self.run_once(trig)
+        job = _Job(trig)
+        self._branch_queue(node_id).put(job)
+        if wait:
+            job.done.wait(timeout)
+            return job.result
+        return None
+
+    def _branch_queue(self, node_id: str) -> "queue.Queue[_Job]":
+        """取（或建）某一路的工作队列与线程。"""
+        with self._branch_lock:
+            q = self._branches.get(node_id)
+            if q is None:
+                self._branch_stop.clear()      # 之前 stop() 过也能再用（编辑模式下反复点触发）
+                q = self._branches[node_id] = queue.Queue()
+                name = self.graph.nodes[node_id].name if node_id in self.graph.nodes else node_id
+                t = threading.Thread(target=self._branch_worker, args=(node_id, q),
+                                     name=f"branch-{self.name}-{name}", daemon=True)
+                self._branch_threads[node_id] = t
+                t.start()
+            return q
+
+    def _branch_worker(self, node_id: str, q: "queue.Queue[_Job]") -> None:
+        while not self._branch_stop.is_set():
+            try:
+                job = q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                only = self.branch_only(node_id)
+                job.result = self.engine.run(job.trigger, only=only)
+            except Exception:                  # 引擎本身已经隔离了节点异常，这里是兜底
+                log.exception("流程 %s：支路 %s 运行异常", self.name, node_id)
+            finally:
+                job.done.set()
 
     def set_continuous(self, interval_s: float | None) -> None:
         """Fire TIMER triggers every ``interval_s`` seconds while running (None/0 disables)."""

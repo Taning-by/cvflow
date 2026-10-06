@@ -81,6 +81,35 @@ def build(model, images, **values):
     return Engine(g), node
 
 
+def build_async(model, images, **values):
+    """搭一个「每路各自一个源 → 深度学习节点（异步汇合）」的流程。
+
+    和 build() 的区别是**每一路一个独立的源节点**：异步到达要求各路的上游互不相交，
+    否则无法判断是哪一路被触发（Graph.input_branches 会直接报错）。
+    """
+    g = Graph("async")
+    node = reg.create("dl.onnx_classifier",
+                      values=cls_values(model, input_count=len(images), arrival="async", **values))
+    g.add_node(node)
+    feeds = []
+    for k, im in enumerate(images):
+        f = _Feed([im])
+        g.add_node(f)
+        g.add_link(f.id, "i0", node.id, "image" if k == 0 else f"image{k + 1}")
+        feeds.append(f)
+    return Engine(g), node, feeds
+
+
+def branch_only(graph, gate_id: str, port: str) -> set[str]:
+    """一路被触发时该跑哪些节点：除了"别的路的上游"之外全都跑。"""
+    branches = graph.input_branches(gate_id)
+    others = set()
+    for p, nodes in branches.items():
+        if p != port:
+            others |= nodes
+    return set(graph.nodes) - others
+
+
 # =============================================================== 端口
 def test_dl_batch_input_count_builds_ports():
     n = reg.create("dl.onnx_detector", values={"input_count": 1})
@@ -191,8 +220,8 @@ def test_dl_batch_zero_wait_does_not_add_latency(cls_model):
 
 
 def test_dl_batch_wait_window_expires_and_runs_anyway(cls_model):
-    """填了合批分组时窗口会真的等；没人来就到期照常执行，不会卡住。"""
-    eng, node = build(cls_model, [channel_image(1)], wait_ms=150.0, batch_group="线A")
+    """异步到达时窗口会真的等；别的路没来就到期照常执行，不会卡住。"""
+    eng, node = build(cls_model, [channel_image(1)], wait_ms=150.0, arrival="async")
     eng.run()                                                 # 预热，排除建会话的开销
     t0 = time.perf_counter()
     nr = eng.run().node_results[node.id]
@@ -214,56 +243,63 @@ def test_dl_batch_wait_is_ignored_without_a_batch_group(cls_model):
     eng.teardown_nodes()
 
 
-def test_dl_batch_window_merges_two_concurrent_flows(cls_model):
-    """填了相同合批分组的两个流程，在等待窗口内被合成一个批次。"""
-    engines = [build(cls_model, [channel_image(c)], wait_ms=400.0, max_batch=4, batch_group="线A") for c in (0, 2)]
-    for eng, _ in engines:
-        eng.setup_nodes()
-    assert runners() >= 1
+def test_async_arrival_merges_two_branches_into_one_batch(cls_model):
+    """两路相机各自被触发，在同一个深度学习节点上汇合成一个批次（#2 的核心路径）。
+
+    每路一个独立的源，各自跑自己的支路到汇合点；先到的在等待窗口里等后到的，
+    凑够批次就一次推理。**只有先到的那一路**带着整批结果继续往下游跑，
+    后到的那一路在汇合点跳过，下游因此不会被同一批执行两遍。
+    """
+    eng, node, _ = build_async(cls_model, [channel_image(0), channel_image(2)], wait_ms=400.0, max_batch=4)
+    eng.setup_nodes()
+    g = eng.graph
     barrier = threading.Barrier(2)
     out = {}
 
-    def go(k):
-        eng, node = engines[k]
+    def go(k, port):
         barrier.wait(5)
-        out[k] = eng.run().node_results[node.id].outputs
-    threads = [threading.Thread(target=go, args=(k,)) for k in (0, 1)]
+        out[k] = eng.run(only=branch_only(g, node.id, port)).node_results[node.id]
+
+    threads = [threading.Thread(target=go, args=(0, "image")), threading.Thread(target=go, args=(1, "image2"))]
     for t in threads:
         t.start()
     for t in threads:
         t.join(20)
-    assert out[0]["batch_size"] == 2 and out[1]["batch_size"] == 2     # 两路跨线程合成一批
-    assert out[0]["class_id"] == 0 and out[1]["class_id"] == 2         # 各自拿回自己的结果
-    for eng, _ in engines:
-        eng.teardown_nodes()
 
+    carried = [r for r in out.values() if r.status == NodeStatus.OK]
+    skipped = [r for r in out.values() if r.status == NodeStatus.SKIPPED]
+    assert len(carried) == 1 and len(skipped) == 1              # 恰好一路带着结果往下跑
+    assert "已汇入本批" in skipped[0].error
+    res = carried[0].outputs
+    assert res["batch_size"] == 2                               # 两路真的合成了一批
+    assert res["class_id"] == 0 and res["class_id2"] == 2       # 两路的结果都在同一次输出里
+    eng.teardown_nodes()
 
-def test_dl_batch_window_merges_flows_that_arrive_at_different_times(cls_model):
-    """两路图像不同时到达（各自被 PLC/定时器触发）时，合批分组 + 等待窗口仍然把它们凑成一批。
+def test_async_arrival_merges_branches_that_arrive_at_different_times(cls_model):
+    """两路错开到达（各自被 PLC 触发）时，等待窗口仍然把它们凑成一批。
 
-    这是"同一流程里的输入不一定同时到达"的解法：每路一个流程，各自被触发，
-    深度学习节点填相同的合批分组，先到的在窗口里等后到的。
+    这正是产线上的形态：相机由远程 PLC 各自触发，图像不是同一时刻来的。
     """
-    engines = [build(cls_model, [channel_image(c)], wait_ms=400.0, max_batch=4, batch_group="线B") for c in (0, 2)]
-    for eng, _ in engines:
-        eng.setup_nodes()
+    eng, node, _ = build_async(cls_model, [channel_image(0), channel_image(2)], wait_ms=400.0, max_batch=4)
+    eng.setup_nodes()
+    g = eng.graph
     out = {}
 
-    def go(k, delay):
-        time.sleep(delay)                                     # 第二路晚 120 ms 才被触发
-        eng, node = engines[k]
-        out[k] = eng.run().node_results[node.id].outputs
+    def go(k, port, delay):
+        time.sleep(delay)                                       # 第二路晚 120 ms 才被触发
+        out[k] = eng.run(only=branch_only(g, node.id, port)).node_results[node.id]
 
-    threads = [threading.Thread(target=go, args=(0, 0.0)), threading.Thread(target=go, args=(1, 0.12))]
+    threads = [threading.Thread(target=go, args=(0, "image", 0.0)),
+               threading.Thread(target=go, args=(1, "image2", 0.12))]
     for t in threads:
         t.start()
     for t in threads:
         t.join(20)
-    assert out[0]["batch_size"] == 2 and out[1]["batch_size"] == 2     # 错开到达也合成了一批
-    assert out[0]["class_id"] == 0 and out[1]["class_id"] == 2         # 各自拿回自己的结果
-    for eng, _ in engines:
-        eng.teardown_nodes()
-
+    carried = [r for r in out.values() if r.status == NodeStatus.OK]
+    assert len(carried) == 1
+    assert carried[0].outputs["batch_size"] == 2                # 错开到达也合成了一批
+    assert carried[0].outputs["class_id"] == 0 and carried[0].outputs["class_id2"] == 2
+    eng.teardown_nodes()
 
 def _reject_gpu_providers(monkeypatch):
     """把 onnxruntime 换成"收到 GPU 后端就只用 CPU 建会话"，复现缺运行库时的静默回退。
@@ -710,7 +746,7 @@ def test_dl_batch_nodes_share_weights_but_not_the_batch_executor(cls_model):
 
 
 def test_dl_session_scope_exclusive_loads_one_copy_per_owner(cls_model):
-    """独占会话：每个节点各加载一份权重；同一合批分组的节点仍然只有一份（它们本来就要排队合批）。"""
+    """独占会话：每个节点各加载一份权重；填了同一个权重共享组的节点共用一份。"""
     from cvflow.operators.dl import active_sessions
     s0, r0 = active_sessions(), runners()
     engines = [build(cls_model, [channel_image(0)], session_scope="exclusive") for _ in range(3)]
@@ -721,10 +757,10 @@ def test_dl_session_scope_exclusive_loads_one_copy_per_owner(cls_model):
         eng.teardown_nodes()
     assert active_sessions() == s0 and runners() == r0
 
-    grouped = [build(cls_model, [channel_image(0)], session_scope="exclusive", batch_group="线A") for _ in range(3)]
+    grouped = [build(cls_model, [channel_image(0)], session_scope="exclusive", weight_group="线A") for _ in range(3)]
     for eng, _ in grouped:
         eng.setup_nodes()
-    assert active_sessions() == s0 + 1 and runners() == r0 + 1      # 同组：权重一份，批处理器一个
+    assert active_sessions() == s0 + 1 and runners() == r0 + 3      # 同组：权重一份，队列仍然各一个
     for eng, _ in grouped:
         eng.teardown_nodes()
     assert active_sessions() == s0 and runners() == r0
@@ -806,24 +842,26 @@ def test_dl_gpu_default_gives_each_node_its_own_weights(cls_model, monkeypatch):
     assert active_sessions() == s0
 
 
-def test_dl_batch_group_makes_nodes_share_one_executor(cls_model):
-    """填了相同分组名的节点共用一个批处理器，不同分组名的互相独立。"""
+def test_weight_group_shares_weights_but_never_the_queue(cls_model):
+    """填了相同权重共享组的节点共用**一份权重**，但各自一个批处理队列。
+
+    跨节点合批已经去掉了：实测它比各自一个队列慢 6%（吃满 GPU 的模型）到 27%（小模型），
+    而跨节点真正值得共享的是权重，代价只有 0~6%。
+    """
     from cvflow.operators.dl import active_sessions
     s0, r0 = active_sessions(), runners()
-    same = [build(cls_model, [channel_image(0)], batch_group="线A") for _ in range(3)]
-    other = build(cls_model, [channel_image(0)], batch_group="线B")
-    plain = build(cls_model, [channel_image(0)])
-    for eng, _ in same + [other, plain]:
+    same = [build(cls_model, [channel_image(0)], weight_group="线A", session_scope="exclusive") for _ in range(3)]
+    other = build(cls_model, [channel_image(0)], weight_group="线B", session_scope="exclusive")
+    for eng, _ in same + [other]:
         eng.setup_nodes()
-    assert active_sessions() == s0 + 1                        # 仍然只有一份权重
-    assert runners() == r0 + 3                                # 线A 一个、线B 一个、未分组的一个
-    assert same[0][1]._runner is same[1][1]._runner is same[2][1]._runner
-    assert other[1]._runner is not same[0][1]._runner
-    assert plain[1]._runner is not same[0][1]._runner
-    for eng, _ in same + [other, plain]:
+    assert active_sessions() == s0 + 2                         # 线A 一份、线B 一份
+    assert runners() == r0 + 4                                 # 队列始终一个节点一个
+    assert same[0][1]._runner is not same[1][1]._runner        # 同组也不共用队列
+    assert same[0][1]._runner.holder is same[1][1]._runner.holder   # 但共用同一份权重
+    assert other[1]._runner.holder is not same[0][1]._runner.holder
+    for eng, _ in same + [other]:
         eng.teardown_nodes()
     assert active_sessions() == s0 and runners() == r0
-
 
 def test_dl_batch_independent_nodes_infer_in_parallel(cls_model):
     """默认配置下两个节点必须能同时推理；被串行化时屏障会超时。"""
@@ -857,19 +895,19 @@ def test_dl_batch_independent_nodes_infer_in_parallel(cls_model):
         eng.teardown_nodes()
 
 
-def test_dl_batch_group_still_split_by_preprocessing(cls_model):
-    """同一个分组名但预处理不同的节点不能合批，因为张量形状对不上。"""
-    base = runners()
-    a, _ = build(cls_model, [channel_image(0)], batch_group="线A")
-    b, _ = build(cls_model, [channel_image(0)], batch_group="线A")
-    c, _ = build(cls_model, [channel_image(0)], batch_group="线A", scale=1.0)
-    for eng in (a, b, c):
+def test_weight_group_shares_weights_even_when_preprocessing_differs(cls_model):
+    """预处理不同不影响权重共享：权重只认模型文件+后端+卡，预处理只决定各自的队列。"""
+    base_s, base_r = __import__("cvflow.operators.dl", fromlist=["x"]).active_sessions(), runners()
+    a, _ = build(cls_model, [channel_image(0)], weight_group="线A", session_scope="exclusive")
+    b, _ = build(cls_model, [channel_image(0)], weight_group="线A", session_scope="exclusive", scale=1.0)
+    for eng in (a, b):
         eng.setup_nodes()
-    assert runners() == base + 2                              # 预处理不同的被分开
-    for eng in (a, b, c):
+    from cvflow.operators.dl import active_sessions
+    assert active_sessions() == base_s + 1                     # 权重仍然只有一份
+    assert runners() == base_r + 2                             # 队列两个（预处理不同本来也合不了批）
+    for eng in (a, b):
         eng.teardown_nodes()
-    assert runners() == base
-
+    assert runners() == base_r
 
 def test_dl_batch_changing_model_releases_old_session(tmp_path, cls_model):
     base = runners()
@@ -1181,3 +1219,76 @@ def test_dl_explicit_provider_unavailable_warns(cls_model, monkeypatch, caplog, 
     assert eng.run().node_results[node.id].status == NodeStatus.OK
     assert any("请求的推理后端 cuda 不可用" in r.getMessage() for r in caplog.records)
     eng.teardown_nodes()
+
+
+# =========================================== 事件驱动：每路各自触发，在深度学习节点汇合
+def test_flow_runner_triggers_one_branch_at_a_time_and_they_merge(cls_model, tmp_path):
+    """端到端：两路图像源各自被单独触发，在一个深度学习节点上汇合成一批。
+
+    这是产线形态的最小复现：相机由 PLC 各自触发（这里用 trigger_source 代替），
+    每路跑自己的支路到汇合点，凑够批次或等待窗口到期就一次推理，
+    由先到的那一路带着整批结果继续往下游跑。
+
+    每一路必须有自己的工作线程：汇合点会阻塞着等别的路，如果共用一个队列，
+    先到的那条占着唯一的线程、后到的进不来，窗口只会空等到期。
+    """
+    from cvflow.core.runtime import FlowRunner
+    from cvflow.core.runtime import Trigger, TriggerSource
+
+    eng, node, feeds = build_async(cls_model, [channel_image(0), channel_image(2)],
+                                   wait_ms=500.0, max_batch=4)
+    runner = FlowRunner(eng.graph)
+    results: list = []
+    runner.engine.on_result = results.append
+    try:
+        # 两路"同时"被触发：各自进自己的支路线程
+        runner.trigger_source(feeds[0].id, Trigger(TriggerSource.COMM))
+        runner.trigger_source(feeds[1].id, Trigger(TriggerSource.COMM))
+        deadline = time.monotonic() + 20
+        while len(results) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(results) == 2, f"只拿到 {len(results)} 次运行结果"
+    finally:
+        runner.stop(teardown=True)
+
+    gate = [r.node_results[node.id] for r in results]
+    carried = [n for n in gate if n.status == NodeStatus.OK]
+    skipped = [n for n in gate if n.status == NodeStatus.SKIPPED]
+    assert len(carried) == 1 and len(skipped) == 1              # 恰好一路把结果带去下游
+    assert carried[0].outputs["batch_size"] == 2                # 两路合成了一批
+    assert carried[0].outputs["class_id"] == 0 and carried[0].outputs["class_id2"] == 2
+
+
+def test_flow_runner_branch_only_excludes_the_other_branches(cls_model):
+    """支路运行只跑本路的上游：别的路这一轮不该被执行（否则相机会被白取一帧）。"""
+    from cvflow.core.runtime import FlowRunner
+    eng, node, feeds = build_async(cls_model, [channel_image(0), channel_image(2)], wait_ms=0.0)
+    runner = FlowRunner(eng.graph)
+    only = runner.branch_only(feeds[0].id)
+    assert feeds[0].id in only and node.id in only
+    assert feeds[1].id not in only                              # 另一路的源不跑
+    assert runner.branch_only(feeds[1].id) >= {feeds[1].id, node.id}
+    assert feeds[0].id not in runner.branch_only(feeds[1].id)
+
+
+def test_sync_arrival_still_runs_the_whole_flow(cls_model):
+    """没有异步汇合点时，单路触发退回"整条流程跑一次"，旧方案的行为不变。"""
+    from cvflow.core.runtime import FlowRunner
+    eng, node = build(cls_model, [channel_image(1)])             # 默认 sync
+    runner = FlowRunner(eng.graph)
+    assert runner.async_gates() == []
+    assert runner.branch_only(node.id) is None
+    r = runner.trigger_source(node.id)                           # 编辑模式下同步跑完
+    assert r is not None and r.node_results[node.id].outputs["class_id"] == 1
+
+
+def test_legacy_batch_group_in_old_solutions_becomes_weight_group(cls_model):
+    """旧方案文件里存的是 batch_group，读进来要自动变成 weight_group（否则共享会悄悄失效）。"""
+    node = reg.create("dl.onnx_classifier",
+                      values=cls_values(cls_model, batch_group="线A", timeout_s=42.0))
+    assert node.get("weight_group") == "线A"                     # 迁移到了新名字
+    assert node._weight_owner() == "group:线A"
+    assert not any(p.name == "timeout_s" for p in node.params)   # 超时参数已经删掉，读到也不报错
+    node2 = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    node2.set("batch_group", "线B")                              # 直接 set 旧名字也要能翻译
+    assert node2.get("weight_group") == "线B"

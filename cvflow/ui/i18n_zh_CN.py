@@ -112,7 +112,8 @@ NODE_LABELS = {
 
 PARAM_LABELS = {
     "Address": "地址", "Binarize": "二值化方式", "Input Count": "输入个数", "Max Batch": "批次上限",
-    "Wait Ms": "合批等待（毫秒）", "Batch Group": "合批分组",
+    "Wait Ms": "合批等待（毫秒）", "Weight Group": "权重共享组", "Arrival": "输入到达方式",
+    "Trigger Once": "触发一次",
     "Device Id": "显卡编号", "Session Scope": "推理会话", "Timeout S": "超时（秒）", "Alpha": "对比度系数", "Aperture": "Sobel 孔径", "Append": "结尾符",
     "Approx Eps": "多边形逼近精度", "Beta": "亮度偏移", "Block Size": "块大小", "C": "常数 C",
     "Camera features (JSON)": "相机特性 (JSON)", "Channel": "通道", "Clip Limit": "对比度限制",

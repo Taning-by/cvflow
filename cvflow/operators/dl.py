@@ -75,6 +75,9 @@ _PROVIDER_FIX = {
     "TensorrtExecutionProvider": "TensorRT 后端除了 GPU 版 onnxruntime，还要另外安装 TensorRT 本体；"
                                  "只想用显卡的话，推理后端选 cuda 或 auto 即可",
 }
+#: 等批处理结果的兜底超时。原来是个用户参数，但跨节点合批去掉之后已经没有"等别的节点"这回事，
+#: 剩下的等待只有本节点的窗口（最多 1 秒）加上一次推理，所以固定给一个宽松值就够了。
+_SUBMIT_TIMEOUT_S = 300.0
 _WHEEL_CONFLICT_WARNED = False
 _GPU_RUNTIME_PRELOADED = False
 _PROVIDER_LOADABLE: dict[str, bool] = {}   # GPU 后端的动态库能否加载，探测一次就记住
@@ -309,6 +312,31 @@ def _check_silent_cpu_fallback(holder: _SharedSession) -> None:
                 "、".join(now) or "CPU")
 
 
+class _Item:
+    """提交给批处理器的一个条目：一路输入的一帧。"""
+
+    __slots__ = ("buf", "row", "index", "token", "meta", "image")
+
+    def __init__(self, buf, row: int, index: int, token: object, meta: dict, image) -> None:
+        self.buf = buf                             # 预处理后的连续缓冲
+        self.row = row                             # 这一帧在缓冲里的行号
+        self.index = index                         # 第几路输入（0 起）
+        self.token = token                         # 哪一次提交（一条支路运行一个）
+        self.meta = meta                           # 预处理的还原信息，decode 要用
+        self.image = image                         # 原图，画叠加层要用
+
+
+class _BatchOutcome:
+    """一个批次的执行结果，批次里所有条目共用同一份。"""
+
+    __slots__ = ("merged", "size", "carrier")
+
+    def __init__(self, merged: dict, size: int, carrier: object) -> None:
+        self.merged = merged                       # {输入序号: (原始输出, meta, 原图)}
+        self.size = size                           # 这一批实际几张图
+        self.carrier = carrier                     # 由哪一次提交负责带着结果往下游跑
+
+
 # --------------------------------------------------------------------------- 批处理执行器
 class _Runner:
     """一组相同预处理配置共用的批处理执行器，背后是共享的推理会话。"""
@@ -321,7 +349,7 @@ class _Runner:
         holder.refs += 1
         # 模型的批次维是固定的时候只能一张一张推，批上限强制为 1
         self.executor = BatchExecutor(self._run_batch, max_batch=max_batch if self.dynamic_batch else 1,
-                                      wait_s=wait_s, name=name)
+                                      wait_s=wait_s, name=name, chunk=False)
 
     @property
     def spec(self) -> dict:
@@ -334,32 +362,51 @@ class _Runner:
     def _assemble(self, items: list) -> np.ndarray:
         """把提交的条目拼成一个批次输入。
 
-        条目是 ``(缓冲区, 行号)``。同一个节点一次提交的若干路输入共用一块连续缓冲，
-        此时整批可以直接拿去推理，一次拷贝都不用；跨线程合批时才需要汇集到一起。
+        条目是 ``_Item``。同一次提交的若干路输入共用一块连续缓冲，此时整批可以直接拿去推理，
+        一次拷贝都不用；多条支路各自提交时才需要汇集到一起。
         """
-        buf, _ = items[0]
-        if all(b is buf for b, _ in items) and [i for _, i in items] == list(range(len(items))) \
+        buf = items[0].buf
+        if all(it.buf is buf for it in items) and [it.row for it in items] == list(range(len(items))) \
                 and buf.shape[0] == len(items):
             return buf
         shape = (len(items),) + buf.shape[1:]
         out = self._buffer
         if out is None or out.shape != shape or out.dtype != buf.dtype:
             out = self._buffer = np.empty(shape, dtype=buf.dtype)
-        for k, (b, i) in enumerate(items):
-            out[k] = b[i]
+        for k, it in enumerate(items):
+            out[k] = it.buf[it.row]
         return out
 
     def _run_batch(self, items: list):
-        x = self._assemble(items)
-        try:
-            outs = self.holder.session.run(None, {self.spec["name"]: x})
-            _check_silent_cpu_fallback(self.holder)
-        except Exception as e:
-            raise NodeError(f"推理失败：模型期望输入 {describe_shape(self.spec['shape'])}，"
-                            f"实际送入 {describe_shape(list(x.shape))}。"
-                            f"请检查节点的宽度、高度、颜色、张量布局是否与模型一致。原始错误：{e}") from e
-        n = len(items)
-        return [(_slice_outputs(outs, i, n), n) for i in range(n)]
+        """执行一个批次。条目可能来自不同的支路运行（异步到达），也可能超过批次上限。
+
+        切块在这里做而不是交给批处理器：领队要对**整批**负责（谁把结果带去下游是个全局决定），
+        只看到自己那一块就决定不了。
+        """
+        limit = max(1, int(self.executor.max_batch))
+        merged: dict = {}
+        ran = 0
+        for start in range(0, len(items), limit):
+            chunk = items[start:start + limit]
+            x = self._assemble(chunk)
+            try:
+                outs = self.holder.session.run(None, {self.spec["name"]: x})
+                _check_silent_cpu_fallback(self.holder)
+            except Exception as e:
+                raise NodeError(f"推理失败：模型期望输入 {describe_shape(self.spec['shape'])}，"
+                                f"实际送入 {describe_shape(list(x.shape))}。"
+                                f"请检查节点的宽度、高度、颜色、张量布局是否与模型一致。原始错误：{e}") from e
+            n = len(chunk)
+            ran = max(ran, n)
+            # 按"输入序号 → (原始输出, meta, 原图)"汇总：异步到达时这一批里的条目来自不同的
+            # 支路运行，只有把整批收齐的那一个提交者才能产出完整的节点输出。
+            for k, it in enumerate(chunk):
+                if it.index in merged:             # 同一路在一批里出现两次：每路一个工作线程时不该发生
+                    log.warning("%s：一个批次里第 %d 路输入出现了多次，先到的那一帧结果会被覆盖",
+                                self.name, it.index + 1)
+                merged[it.index] = (_slice_outputs(outs, k, n), it.meta, it.image)
+        batch = _BatchOutcome(merged, ran, items[0].token)
+        return [batch] * len(items)
 
     def close(self) -> None:
         self.executor.close()
@@ -448,16 +495,23 @@ class _OnnxBase(Node):
     per_input_outputs: list[tuple[str, DataType]] = []
 
     #: 改了这些参数就该重新预加载（它们决定加载哪个模型、加载到哪里）
-    preload_params = ("model_path", "provider", "device_id", "session_scope")
+    preload_params = ("model_path", "provider", "device_id", "session_scope", "weight_group")
+
+    #: 旧方案文件里的参数名（合批分组曾经同时决定排队和权重归属，现在只管权重）
+    legacy_params = {"batch_group": "weight_group"}
 
     params = [Param("model_path", "", "file", filter="ONNX models (*.onnx)"),
               Param("input_count", 1, "int", min=1, max=MAX_INPUTS,
                     description="图像输入的个数。多个输入会被合并成一个批次，一次推理完成"),
               Param("max_batch", 8, "int", min=1, max=64,
                     description="一个批次最多几张图。模型的批次维必须是动态的才能大于 1"),
+              Param("arrival", "sync", "enum", choices=["sync", "async"],
+                    description="输入到达方式。sync（默认）：整条流程一次触发，所有输入同时到达；"
+                                "async：每路相机各自被触发、各自跑到本节点汇合，凑够批次上限或"
+                                "等待窗口到期就推理，由其中一路继续往后跑"),
               Param("wait_ms", 0.0, "float", min=0, max=1000,
-                    description="等其它流程/节点的图像一起合批的时间。只有填了合批分组才会生效："
-                                "没有分组时队列里不可能出现第二个提交者，等待只会白白增加节拍"),
+                    description="等本节点其它输入到达的时间，只在 async 到达方式下生效。"
+                                "sync 下所有输入同时到达，等待只会白白增加节拍，按 0 处理"),
               Param("width", 224, "int", min=1, max=8192), Param("height", 224, "int", min=1, max=8192),
               Param("letterbox", False, "bool", description="Keep aspect ratio, pad to size"),
               Param("color", "rgb", "enum", choices=["rgb", "bgr", "gray"]),
@@ -471,14 +525,12 @@ class _OnnxBase(Node):
               Param("device_id", 0, "int", min=0, max=15,
                     description="用哪一块显卡（多卡时有意义）。CPU 后端会忽略这个参数"),
               Param("session_scope", "auto", "enum", choices=["auto", "shared", "exclusive"], advanced=True,
-                    description="权重加载几份。shared=全软件共用一份；exclusive=按合批分组/节点各加载一份，"
+                    description="权重加载几份。shared=全软件共用一份；exclusive=按权重共享组/节点各加载一份，"
                                 "GPU 上可以用各自的流并行，代价是显存成倍；"
-                                "auto（默认）在 CPU 上共享、在 GPU 上按合批分组/节点各一份"),
-              Param("batch_group", "", "string", advanced=True,
-                    description="留空（默认）每个节点独立推理，互不排队；填相同的名字则这些节点共用一个"
-                                "批处理器，可跨节点跨流程合批——这是让不同时刻到达的图像凑成一批的唯一途径"),
-              Param("timeout_s", 30.0, "float", min=0.1, max=600, advanced=True,
-                    description="等待批处理结果的超时时间")]
+                                "auto（默认）在 CPU 上共享、在 GPU 上按权重共享组/节点各一份"),
+              Param("weight_group", "", "string", advanced=True,
+                    description="填相同名字的节点共用同一份权重（省显存，实测代价 0~6%）。"
+                                "只影响权重，不影响排队：每个节点的合批始终只在自己的多路输入之间进行")]
 
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
@@ -490,9 +542,15 @@ class _OnnxBase(Node):
 
     # ---- 动态端口 ----
     @classmethod
-    def build_ports(cls, count: int) -> tuple[list[Port], list[Port]]:
+    def build_ports(cls, count: int, every_input_optional: bool = False) -> tuple[list[Port], list[Port]]:
+        """按输入个数生成端口。
+
+        ``every_input_optional``：异步到达方式下每一路都可以单独到达，所以**全部输入都是可选的**
+        （某一路相机被触发时，别的路这一轮根本没跑，第一路也可能是空的）。同步方式下仍然要求
+        第一路必须连接，否则这个节点没有任何图像可处理。
+        """
         count = max(1, min(MAX_INPUTS, int(count)))
-        ins = [Port(_input_port_name(i), DataType.IMAGE, optional=i > 0,
+        ins = [Port(_input_port_name(i), DataType.IMAGE, optional=every_input_optional or i > 0,
                     description="第一个输入" if i == 0 else f"第 {i + 1} 个输入，未连接时该路输出为空")
                for i in range(count)]
         outs = [Port(_output_port_name(base, i), dtype) for i in range(count) for base, dtype in cls.per_input_outputs]
@@ -501,10 +559,11 @@ class _OnnxBase(Node):
         return ins, outs
 
     def _rebuild_ports(self) -> None:
-        self.inputs, self.outputs = self.build_ports(self.get("input_count", 1))
+        self.inputs, self.outputs = self.build_ports(self.get("input_count", 1),
+                                                     every_input_optional=self.is_async)
 
     def on_param_changed(self, name: str, value) -> None:
-        if name == "input_count":
+        if name in ("input_count", "arrival"):
             self._rebuild_ports()
 
     @property
@@ -512,31 +571,37 @@ class _OnnxBase(Node):
         return len(self.inputs)
 
     # ---- 会话与批处理执行器 ----
-    def _batch_owner(self) -> str:
-        """批处理器的归属：默认一个节点一个，填了合批分组的节点共用一个。"""
-        group = str(self.get("batch_group")).strip()
+    def _weight_owner(self) -> str:
+        """权重（推理会话）的归属：填了权重共享组的节点共用一份，否则一个节点一份。"""
+        group = str(self.get("weight_group")).strip()
         return f"group:{group}" if group else f"node:{self.id}"
 
-    def _wait_s(self) -> float:
-        """等待窗口。没填合批分组时固定为 0。
+    @property
+    def is_async(self) -> bool:
+        """输入是不是各自到达（每路相机各自被触发，在本节点汇合）。"""
+        return str(self.get("arrival")) == "async"
 
-        同一个节点的多路输入是一次提交进去的，同一个流程里的节点又是顺序执行的，
-        所以没有分组时队列里不可能出现第二个提交者，等下去只会白白增加节拍。
+    def _wait_s(self) -> float:
+        """等本节点其它输入到达的窗口。只在 async 到达方式下生效。
+
+        sync 下一个节点的多路输入是一次提交进去的，队列里不可能出现第二个提交者，
+        等下去只会白白增加节拍，所以按 0 处理。
         """
-        if not str(self.get("batch_group")).strip():
+        if not self.is_async:
             return 0.0
         return max(0.0, float(self.get("wait_ms"))) / 1000.0
 
     def _preprocess_key(self) -> tuple:
-        """批处理器的归属。
+        """批处理器（队列）的归属：**永远一个节点一个**。
 
-        默认每个节点独占一个批处理器，只有本节点的多路输入会合批，不同节点之间互不排队。
-        填了合批分组名的节点才共用一个批处理器，从而能跨节点、跨流程合批（它们之间的推理会
-        排队），这也是让不同时刻到达的图像凑成一批的唯一途径。
+        合批只在本节点的多路输入之间进行。跨节点合批已经去掉了：它要求几个节点共用一个队列，
+        于是互相排队、还要陪着等待窗口，实测比各自一个队列慢 6%（吃满 GPU 的模型）到
+        27%（吃不满的小模型）；而跨节点真正值得共享的是**权重**，那个由权重共享组单独决定，
+        代价只有 0~6%。
         """
         pre = (int(self.get("width")), int(self.get("height")), bool(self.get("letterbox")), self.get("color"),
                float(self.get("scale")), self.get("mean"), self.get("std"), self.get("layout"))
-        return (pre, int(self.get("max_batch")), round(self._wait_s(), 4), self._batch_owner())
+        return (pre, int(self.get("max_batch")), round(self._wait_s(), 4), f"node:{self.id}")
 
     def _resolve_providers(self) -> tuple[list[str], bool]:
         """定出本次要尝试的推理后端，并告诉调用方是否会落在 GPU 上。
@@ -567,15 +632,15 @@ class _OnnxBase(Node):
 
         CPU 上共享永远更划算：权重只占一份内存，而共用会话并不会让推理互相阻塞
         （onnxruntime 的 Run 本身线程安全），限制并行度的是核心数而不是会话。
-        GPU 上则跟着批处理器走：能合批的节点共用一份权重（它们本来就要排队合批），
-        不能合批的节点各加载一份，才有机会用各自的 CUDA 流并行，代价是显存成倍。
+        GPU 上则跟着权重共享组走：填了同一个组名的节点共用一份权重（省显存，实测代价 0~6%），
+        没填组名的节点各加载一份，才有机会用各自的 CUDA 流并行，代价是显存成倍。
         """
         scope = str(self.get("session_scope"))
         if scope == "shared":
             return ""
         if scope == "exclusive":
-            return self._batch_owner()
-        return self._batch_owner() if on_gpu else ""
+            return self._weight_owner()
+        return self._weight_owner() if on_gpu else ""
 
     def _session_key(self, path: str) -> tuple:
         providers, on_gpu = self._resolve_providers()
@@ -819,16 +884,19 @@ class _OnnxBase(Node):
             raise NodeError("没有任何已连接的输入图像")
         return imgs
 
-    def _infer_batch(self, images: list):
+    def _infer_batch(self, images: list) -> tuple[dict, float, int, bool]:
         """对所有非空图像做一次批量推理。
 
-        返回 ``(每路输出字典, 每路 meta 字典, 耗时毫秒, 实际批大小)``，键是输入序号。
+        返回 ``(整批的结果, 耗时毫秒, 实际批大小, 本次提交是否负责带结果往下游)``。
+        「整批的结果」是 ``{输入序号: (原始输出, meta, 原图)}``——异步到达时这一批里会有别的
+        支路提交的帧，所以条目要自带 meta 和原图，否则领队无法替它们解码。
         """
         runner = self._ensure_runner()
         order = [i for i, im in enumerate(images) if im is not None]
+        token = object()                               # 本次提交的身份，一条支路运行一个
         if len(order) == 1:
             blob, meta = self._preprocess(images[order[0]])
-            buf, metas = blob, {order[0]: meta}
+            items = [_Item(blob, 0, order[0], token, meta, images[order[0]])]
         else:
             # 并行预处理，并直接写进同一块连续缓冲：拷贝也在并行区完成，
             # 之后整批推理不必再汇集一次。
@@ -836,13 +904,12 @@ class _OnnxBase(Node):
             done = list(pool.map(lambda i: self._preprocess(images[i]), order))
             buf = np.empty((len(order),) + done[0][0].shape[1:], dtype=done[0][0].dtype)
             list(pool.map(lambda k: buf.__setitem__(k, done[k][0][0]), range(len(order))))
-            metas = {i: meta for i, (_, meta) in zip(order, done)}
+            items = [_Item(buf, k, i, token, done[k][1], images[i]) for k, i in enumerate(order)]
         t0 = time.perf_counter()
-        results = runner.executor.submit([(buf, k) for k in range(len(order))], timeout=float(self.get("timeout_s")))
+        results = runner.executor.submit(items, timeout=_SUBMIT_TIMEOUT_S)
         ms = (time.perf_counter() - t0) * 1000
-        outs = {i: results[k][0] for k, i in enumerate(order)}
-        batch = max((results[k][1] for k in range(len(order))), default=0)
-        return outs, metas, ms, batch
+        batch = results[0]
+        return batch.merged, ms, batch.size, batch.carrier is token
 
     def _empty_result(self) -> dict:
         """未连接的输入对应的输出，全部为 None，保持端口语义稳定。"""
@@ -850,13 +917,18 @@ class _OnnxBase(Node):
 
     def process(self, ctx, inputs):
         images = self._gather_images(inputs)
-        outs, metas, ms, batch = self._infer_batch(images)
+        merged, ms, batch, carried = self._infer_batch(images)
+        if not carried:
+            # 异步到达：这一帧已经并进别人的批次里推理完了，由那一路继续往下游跑。
+            # 这里跳过，下游就不会被同一批重复执行一遍。
+            return {"__skip__": f"已汇入本批（{batch} 张），由先到的那一路继续"}
         result: dict = {"infer_ms": ms, "batch_size": batch}
         for i in range(self.input_count):
-            if i in outs:
+            if i in merged:
+                raw, meta, img = merged[i]
                 # 每一路的叠加层都画出来并标记来源，图像窗口按当前查看的输入过滤
                 with ctx.overlay_group(_input_port_name(i)):
-                    one = self.decode(ctx, outs[i], metas[i], images[i])
+                    one = self.decode(ctx, raw, meta, img)
             else:
                 one = self._empty_result()
             for base, _ in self.per_input_outputs:

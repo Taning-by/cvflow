@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self.param_panel.node_renamed.connect(self._on_node_renamed)
         self.param_panel.node_enabled_changed.connect(self.scene.set_node_enabled)
         self.param_panel.roi_edit_requested.connect(self._begin_roi_edit)
+        self.param_panel.action_requested.connect(self._on_node_action)
         self.param_panel.roi_show_requested.connect(self._show_roi)
         self.dock_params = self._dock(tr("Parameters"), self.param_panel, Qt.RightDockWidgetArea, "dock_params")
         self.dock_params.setMinimumWidth(260)
@@ -970,6 +971,16 @@ class MainWindow(QMainWindow):
         self.image_view.set_overlays([Overlay.rect(rect, C["roi"], param)] if rect else [])
 
     # ------------------------------------------------------------------ running
+    def _on_node_action(self, node_id: str, action: str) -> None:
+        """参数面板上的按钮被按下。目前只有源节点的"触发一次"。"""
+        if action != "trigger_now":
+            return
+        r = self.runner
+        if r is None:
+            return
+        # 单路触发走支路的工作线程：汇合点要阻塞着等别的路，不能占着界面线程
+        r.trigger_source(node_id, Trigger(TriggerSource.MANUAL))
+
     def run_once(self) -> None:
         r = self.runner
         if r is None:

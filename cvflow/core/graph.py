@@ -138,6 +138,63 @@ class Graph:
             raise GraphError("流程中存在环路")
         return order
 
+    # ---- 事件驱动用：支路切分 ----
+    def ancestors(self, node_id: str) -> set[str]:
+        """node_id 的全部上游节点（不含自己）。"""
+        seen: set[str] = set()
+        stack = [node_id]
+        while stack:
+            cur = stack.pop()
+            for link in self.input_links(cur).values():
+                if link.src_node not in seen:
+                    seen.add(link.src_node)
+                    stack.append(link.src_node)
+        return seen
+
+    def descendants(self, node_id: str) -> set[str]:
+        """node_id 的全部下游节点（不含自己）。"""
+        seen: set[str] = set()
+        stack = [node_id]
+        while stack:
+            cur = stack.pop()
+            for link in self.output_links(cur):
+                if link.dst_node not in seen:
+                    seen.add(link.dst_node)
+                    stack.append(link.dst_node)
+        return seen
+
+    def input_branches(self, gate_id: str) -> dict[str, set[str]]:
+        """汇合点每一路输入"独占"的上游节点集合，按输入端口名分组。
+
+        事件驱动模式下，每一路相机各自被触发、各自跑完自己那条支路，到汇合点（深度学习节点）
+        停下等别的路。要做到互不干扰，各路的上游必须是**互不相交**的：共用一个上游节点时，
+        到底算哪一路触发的就没有定义了，所以这里直接报错，而不是悄悄跑出奇怪的结果。
+
+        返回 ``{输入端口名: 该路上游节点 id 集合}``；没有连接的端口不出现在结果里。
+        """
+        branches: dict[str, set[str]] = {}
+        for port, link in self.input_links(gate_id).items():
+            branches[port] = self.ancestors(link.src_node) | {link.src_node}
+        shared: dict[str, list[str]] = {}
+        for port, nodes in branches.items():
+            for other, others in branches.items():
+                if other <= port:
+                    continue
+                for nid in nodes & others:
+                    shared.setdefault(nid, []).append(f"{port}/{other}")
+        if shared:
+            names = "、".join(f"{self.nodes[nid].name}（{'，'.join(ports)}）" for nid, ports in shared.items())
+            raise GraphError(f"节点 {self.nodes[gate_id].name} 的多路输入共用了上游节点：{names}。"
+                             "事件驱动模式下每一路必须有各自独立的上游链，否则无法判断是哪一路被触发")
+        return branches
+
+    def branch_of(self, gate_id: str, node_id: str) -> str | None:
+        """node_id 属于汇合点的哪一路输入；不属于任何一路时返回 None。"""
+        for port, nodes in self.input_branches(gate_id).items():
+            if node_id in nodes:
+                return port
+        return None
+
     def topological_order(self) -> list[str]:
         return self._topo(self.links)
 
