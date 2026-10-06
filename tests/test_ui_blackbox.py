@@ -1024,3 +1024,43 @@ def test_ui_image_all_overlays_ignores_input_filter(win, app):
     pump(app)
     assert len(win.image_view._overlay_items) > 0                        # 勾选后显示全流程的叠加层
     win.all_overlays.setChecked(False)
+
+
+def test_ui_source_nodes_have_a_manual_trigger_button(win, app):
+    """相机 / 图像文件 / 图像文件夹的参数面板上有「触发一次」按钮，点一下就触发这一路。
+
+    产线上这一步由 PLC 报文触发，这个按钮是现场手工验证用的——所以它必须真的接到
+    FlowRunner.trigger_source 上，而不只是摆着好看。
+    """
+    from cvflow.core.registry import registry
+
+    calls: list = []
+    win.runner.trigger_source = lambda nid, *a, **k: calls.append(nid)
+
+    # 示例方案里就有一个图像文件夹节点
+    folder = next(n for n in win.graph.nodes.values() if n.type_id == "source.image_folder")
+    win.scene.select_node(folder.id); pump(app)
+    btn = button(win.param_panel.widget(), "触发一次")
+    btn.click(); pump(app)
+    assert calls == [folder.id]                           # 按钮确实触发了这一路
+
+    # 另外两个源节点也要有这个按钮
+    for type_id in ("source.image_file", "source.camera"):
+        assert any(p.kind == "button" and p.name == "trigger_now"
+                   for p in registry.get(type_id).params), type_id
+
+
+def test_ui_dl_node_shows_arrival_and_weight_group(win, app, tmp_path):
+    """深度学习节点的参数面板上有「输入到达方式」，高级参数里有「权重共享组」、没有「超时（秒）」。"""
+    from PySide6.QtCore import QPointF
+    node = win.scene.add_node("dl.onnx_classifier", QPointF(50, 50))
+    pump(app)
+    win.scene.select_node(node.id); pump(app)
+    panel = win.param_panel
+    assert param_widget(panel, "输入到达方式").currentText() == "sync"
+    button(panel.widget(), next(b.text() for b in panel.widget().findChildren(QPushButton)
+                                if b.text().startswith("显示高级参数"))).click()
+    pump(app)
+    assert param_widget(panel, "权重共享组") is not None
+    with pytest.raises(LookupError):
+        param_widget(panel, "超时（秒）")

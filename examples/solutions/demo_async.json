@@ -1,0 +1,201 @@
+{
+  "format": 1,
+  "name": "solution",
+  "plugin_dirs": [],
+  "variables": {},
+  "comm": {
+    "devices": [],
+    "receive_rules": [],
+    "send_rules": []
+  },
+  "flows": [
+    {
+      "name": "main",
+      "description": "",
+      "nodes": [
+        {
+          "id": "45c43195",
+          "type": "dl.onnx_classifier",
+          "name": "两路检测",
+          "enabled": true,
+          "position": [
+            520.0,
+            160.0
+          ],
+          "values": {
+            "model_path": "../models/channel_mean.onnx",
+            "input_count": 2,
+            "max_batch": 4,
+            "arrival": "async",
+            "wait_ms": 400.0,
+            "width": 8,
+            "height": 8,
+            "letterbox": false,
+            "color": "rgb",
+            "scale": 0.00392156862745098,
+            "mean": "0,0,0",
+            "std": "1,1,1",
+            "layout": "NCHW",
+            "provider": "auto",
+            "device_id": 0,
+            "session_scope": "auto",
+            "weight_group": "线A",
+            "labels_path": "",
+            "softmax": true
+          }
+        },
+        {
+          "id": "8cdbf923",
+          "type": "source.camera",
+          "name": "相机1",
+          "enabled": true,
+          "position": [
+            60.0,
+            60.0
+          ],
+          "values": {
+            "trigger_now": null,
+            "camera": "cam0",
+            "kind": "folder",
+            "source": "../images",
+            "trigger_mode": "off",
+            "trigger_source": "Line0",
+            "exposure_us": 0.0,
+            "gain": -1.0,
+            "timeout_s": 2.0,
+            "grayscale": false,
+            "cti": "",
+            "features": {}
+          }
+        },
+        {
+          "id": "cd3d6cac",
+          "type": "preprocess.resize",
+          "name": "缩放1",
+          "enabled": true,
+          "position": [
+            290.0,
+            60.0
+          ],
+          "values": {
+            "mode": "scale",
+            "scale": 0.5,
+            "width": 8,
+            "height": 8,
+            "interpolation": "area"
+          }
+        },
+        {
+          "id": "0b8dd6a1",
+          "type": "source.camera",
+          "name": "相机2",
+          "enabled": true,
+          "position": [
+            60.0,
+            260.0
+          ],
+          "values": {
+            "trigger_now": null,
+            "camera": "cam1",
+            "kind": "folder",
+            "source": "../images",
+            "trigger_mode": "off",
+            "trigger_source": "Line0",
+            "exposure_us": 0.0,
+            "gain": -1.0,
+            "timeout_s": 2.0,
+            "grayscale": false,
+            "cti": "",
+            "features": {}
+          }
+        },
+        {
+          "id": "cb5762df",
+          "type": "preprocess.resize",
+          "name": "缩放2",
+          "enabled": true,
+          "position": [
+            290.0,
+            260.0
+          ],
+          "values": {
+            "mode": "scale",
+            "scale": 0.5,
+            "width": 8,
+            "height": 8,
+            "interpolation": "area"
+          }
+        },
+        {
+          "id": "1552f05d",
+          "type": "logic.judge",
+          "name": "判定",
+          "enabled": true,
+          "position": [
+            800.0,
+            160.0
+          ],
+          "values": {
+            "op": "in_range",
+            "low": 0.0,
+            "high": 100.0,
+            "text": "",
+            "name": ""
+          }
+        }
+      ],
+      "links": [
+        {
+          "src": [
+            "8cdbf923",
+            "image"
+          ],
+          "dst": [
+            "cd3d6cac",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "cd3d6cac",
+            "image"
+          ],
+          "dst": [
+            "45c43195",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "0b8dd6a1",
+            "image"
+          ],
+          "dst": [
+            "cb5762df",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "cb5762df",
+            "image"
+          ],
+          "dst": [
+            "45c43195",
+            "image2"
+          ]
+        },
+        {
+          "src": [
+            "45c43195",
+            "class_id"
+          ],
+          "dst": [
+            "1552f05d",
+            "value"
+          ]
+        }
+      ]
+    }
+  ]
+}

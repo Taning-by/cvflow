@@ -1292,3 +1292,37 @@ def test_legacy_batch_group_in_old_solutions_becomes_weight_group(cls_model):
     node2 = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
     node2.set("batch_group", "线B")                              # 直接 set 旧名字也要能翻译
     assert node2.get("weight_group") == "线B"
+
+
+def test_async_demo_solution_gathers_two_branches(tmp_path):
+    """示例方案 demo_async.json 能按"两路各自触发 → 汇合成一批"跑通。
+
+    这个方案是给人手工点按钮验证用的（examples/build_async_demo.py 生成），
+    所以它本身也要有自动化的回归，免得哪天示例坏了没人发现。
+    """
+    from pathlib import Path
+    from cvflow.core.runtime import FlowRunner, Solution, Trigger, TriggerSource
+
+    sol_path = Path(__file__).resolve().parent.parent / "examples" / "solutions" / "demo_async.json"
+    if not sol_path.is_file():
+        pytest.skip("示例方案还没生成：python examples/build_async_demo.py")
+    sol = Solution.load(str(sol_path), reg)
+    flow = next(iter(sol.flows.values()))
+    gate = next(n for n in flow.nodes.values() if getattr(n, "is_async", False))
+    cams = [n for n in flow.nodes.values() if n.type_id == "source.camera"]
+    assert len(cams) == 2
+
+    runner = FlowRunner(flow)
+    results: list = []
+    runner.engine.on_result = results.append
+    try:
+        for cam in cams:
+            runner.trigger_source(cam.id, Trigger(TriggerSource.COMM))
+        deadline = time.monotonic() + 20
+        while len(results) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        runner.stop(teardown=True)
+    assert len(results) == 2
+    carried = [r.node_results[gate.id] for r in results if r.node_results[gate.id].status == NodeStatus.OK]
+    assert len(carried) == 1 and carried[0].outputs["batch_size"] == 2
