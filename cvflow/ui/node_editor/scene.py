@@ -17,11 +17,14 @@ class NodeScene(QGraphicsScene):
     node_selected = Signal(object)        # node id or None
     node_enabled_changed = Signal(str, bool)
     node_double_clicked = Signal(str)
+    trigger_requested = Signal(str)       # 节点上的触发图标被点了（只触发这一路）
     graph_changed = Signal()
     message = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        # 由主窗口指向 FlowRunner.branch_busy：节点上的触发图标据此显示"正在触发"
+        self.branch_busy = None
         self.graph: Graph = Graph()
         self.node_items: dict[str, NodeItem] = {}
         self.link_items: dict[str, LinkItem] = {}

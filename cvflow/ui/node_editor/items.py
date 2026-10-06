@@ -6,6 +6,8 @@
 * 端口统一为圆点，位置与原来一致；必填端口实心，可选端口空心，不靠颜色区分。
 * 底栏左边是参数摘要（扫一眼就知道这个节点在做什么），右边是耗时或错误。
 * 选中＝细品牌色边框 + 浅底 + 四角定位标记，呼应图像上的 ROI。
+* 可单独触发的源节点（相机、图像文件、图像文件夹）在标题栏里多一个圆形触发图标：
+  空闲时是"暂停"两道竖杠，正在触发时是实心三角。点它就只触发这一路。
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ FOOT_H = 22
 RADIUS = 6
 SPINE_W = 4.0
 CORNER = 7.0          # 选中时四角定位标记的长度
+TRIG_D = 16.0         # 触发图标的直径（标题栏里，状态胶囊左边）
 
 # 实心胶囊只留给需要被一眼找到的状态：不合格、执行失败、正在运行。
 # 成功/跳过/待运行用浅底，这样一屏节点里跳出来的永远是要处理的那几个。
@@ -92,7 +95,11 @@ class NodeItem(QGraphicsItem):
             it.setPos(NODE_W, self._body_top + i * ROW_H + ROW_H / 2)
             self.outputs[p.name] = it
         self.setPos(node.position[0], node.position[1])
-        self.setToolTip(f"{tr(node.label)} [{node.type_id}]\n{tr(node.description)}")
+        self._tip = f"{tr(node.label)} [{node.type_id}]\n{tr(node.description)}"
+        self.setToolTip(self._tip)
+        if node.triggerable:
+            self.setAcceptHoverEvents(True)       # 触发图标要有悬停反馈
+        self._trig_hover = False
 
     def boundingRect(self) -> QRectF:
         pad = PORT_R + CORNER
@@ -173,10 +180,14 @@ class NodeItem(QGraphicsItem):
         f = ui_font(13, True)
         painter.setFont(f)
         pill_w = self._pill_width(st)
-        name_rect = QRectF(SPINE_W + 8, 0, NODE_W - SPINE_W - 18 - pill_w, HEADER_H)
+        trig = self.trigger_rect()
+        reserved = 18 + pill_w + (TRIG_D + 6 if trig is not None else 0)
+        name_rect = QRectF(SPINE_W + 8, 0, NODE_W - SPINE_W - reserved, HEADER_H)
         name = QFontMetricsF(f).elidedText(node.name, Qt.ElideMiddle, name_rect.width())
         painter.drawText(name_rect, Qt.AlignVCenter | Qt.AlignLeft, name)
         self._draw_pill(painter, QRectF(NODE_W - 8 - pill_w, (HEADER_H - 15) / 2, pill_w, 15), st, status_col, enabled)
+        if trig is not None:
+            self._draw_trigger(painter, trig, enabled)
 
         # 端口标签
         painter.setFont(ui_font(12))
@@ -232,6 +243,60 @@ class NodeItem(QGraphicsItem):
         if selected:
             self._draw_corners(painter, body)
 
+    # ---- 触发图标：只在可单独触发的源节点上 ----
+    def trigger_rect(self) -> QRectF | None:
+        """触发图标在节点坐标系里的圆形区域；不可触发的节点返回 None。"""
+        if not self.node.triggerable:
+            return None
+        pill_w = self._pill_width(self.node.status)
+        x = NODE_W - 8 - pill_w - 6 - TRIG_D
+        return QRectF(x, (HEADER_H - TRIG_D) / 2, TRIG_D, TRIG_D)
+
+    def is_triggering(self) -> bool:
+        """这一路是不是正有一次触发没跑完（问场景，场景问 FlowRunner）。"""
+        sc = self.scene()
+        probe = getattr(sc, "branch_busy", None)
+        try:
+            return bool(probe(self.node.id)) if probe is not None else False
+        except Exception:                          # pragma: no cover - 界面不该因为探测失败而崩
+            return False
+
+    def _draw_trigger(self, painter, rect: QRectF, enabled: bool) -> None:
+        """画触发图标：空闲＝暂停两道竖杠，正在触发＝实心三角。
+
+        两个状态用**形状**区分而不只是颜色，和节点状态胶囊一样的思路：一屏里扫一眼就知道
+        哪一路正在跑。悬停时底色加深，提示它可以点。
+        """
+        busy = enabled and self.is_triggering()
+        if not enabled:
+            fill, fg = QColor(C["panel2"]), QColor(C["faint"])
+        elif busy:
+            fill, fg = QColor(STATUS_COLORS.get(NodeStatus.RUNNING, C["accent"])), QColor("#FFFFFF")
+        elif self._trig_hover:
+            fill, fg = QColor(C["accent_bg"]), QColor(C["accent"])
+        else:
+            fill, fg = QColor(C["panel2"]), QColor(C["muted"])
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(fill))
+        painter.drawEllipse(rect)
+        if enabled and not busy:
+            painter.setPen(QPen(QColor(C["border2"]), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(fg))
+        c = rect.center()
+        if busy:                                   # ▶ 正在触发
+            tri = QPainterPath()
+            tri.moveTo(c.x() - 2.6, c.y() - 4.0)
+            tri.lineTo(c.x() + 4.0, c.y())
+            tri.lineTo(c.x() - 2.6, c.y() + 4.0)
+            tri.closeSubpath()
+            painter.drawPath(tri)
+        else:                                      # ⏸ 空闲（暂停）
+            painter.drawRoundedRect(QRectF(c.x() - 3.4, c.y() - 4.0, 2.4, 8.0), 1.0, 1.0)
+            painter.drawRoundedRect(QRectF(c.x() + 1.0, c.y() - 4.0, 2.4, 8.0), 1.0, 1.0)
+
     def _pill_width(self, st: NodeStatus) -> float:
         text = f"{STATUS_GLYPH.get(st, '')} {STATUS_TEXT.get(st, st.value)}"
         return QFontMetricsF(ui_font(11, True)).horizontalAdvance(text) + 14
@@ -272,6 +337,36 @@ class NodeItem(QGraphicsItem):
             if sc is not None:
                 sc.update_links_for(self.node.id)
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event) -> None:
+        """点在触发图标上就只触发这一路，并且不要顺手把节点拖走。"""
+        rect = self.trigger_rect()
+        if rect is not None and event.button() == Qt.LeftButton and rect.contains(event.pos()):
+            if self.node.enabled:
+                self.scene().trigger_requested.emit(self.node.id)
+                self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def hoverMoveEvent(self, event) -> None:
+        rect = self.trigger_rect()
+        hover = rect is not None and rect.contains(event.pos())
+        if hover != self._trig_hover:
+            self._trig_hover = hover
+            self.setCursor(Qt.PointingHandCursor if hover else Qt.ArrowCursor)
+            self.setToolTip(tr("Trigger this branch only: grab one frame and run down to the "
+                               "deep-learning node, where it waits for the other branches.") if hover else self._tip)
+            self.update()
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:
+        if self._trig_hover:
+            self._trig_hover = False
+            self.setCursor(Qt.ArrowCursor)
+            self.setToolTip(self._tip)
+            self.update()
+        super().hoverLeaveEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.scene().node_double_clicked.emit(self.node.id)

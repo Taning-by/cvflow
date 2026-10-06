@@ -63,10 +63,7 @@ class Port:
 
 
 PARAM_KINDS = ("int", "float", "bool", "string", "enum", "file", "dir", "rect", "code",
-               "color", "list", "json",
-               # button 不是真正的参数值，而是在参数面板上放一个按钮。按下时界面把
-               # (node_id, 参数名) 发出去由上层处理（例如单独触发这一路取图）。
-               "button")
+               "color", "list", "json")
 
 
 @dataclass
@@ -95,8 +92,6 @@ class Param:
         self.default = self.coerce(self.default)
 
     def coerce(self, value: Any) -> Any:
-        if self.kind == "button":
-            return None                       # 按钮没有值，不进方案文件
         """Convert and clamp ``value`` so stored parameters are always well typed."""
         k = self.kind
         if k == "int":
@@ -155,6 +150,10 @@ class Node:
 
     #: 旧参数名 → 现在的名字。方案文件里可能还存着旧名字，读进来时翻译过去。
     legacy_params: dict[str, str] = {}
+
+    #: 能不能单独触发这一路（取一帧图、沿本路跑到深度学习节点汇合）。
+    #: 置 True 的节点会在画布上带一个可点的触发图标，产线上同一个动作由 PLC 报文触发。
+    triggerable: bool = False
     color: str = "#4a6fa5"      # title colour hint for the editor
     is_judge: bool = False      # if True, a False "ok" output marks the node (and run) NG
 

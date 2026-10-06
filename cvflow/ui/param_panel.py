@@ -122,7 +122,6 @@ class ParamPanel(QScrollArea):
     node_enabled_changed = Signal(str, bool)
     roi_edit_requested = Signal(str, str)         # node_id, param name
     roi_show_requested = Signal(str, str)         # node_id, param name (preview on image)
-    action_requested = Signal(str, str)           # node_id, button param name
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -422,13 +421,6 @@ class ParamPanel(QScrollArea):
             self._finish_number(sb, unit)
             sb.valueChanged.connect(lambda x: self._emit(p, x))
             return sb
-        if k == "button":
-            # 按钮型参数没有值，按下就把 (节点, 参数名) 发出去，由主窗口决定做什么
-            btn = QPushButton(tr(p.label))
-            btn.setFixedHeight(M["ctl_h"])
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda: self.action_requested.emit(self._node.id, p.name))
-            return btn
         if k == "bool":
             cb = QCheckBox()
             cb.setChecked(bool(v))

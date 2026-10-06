@@ -113,6 +113,7 @@ class FlowRunner:
         self._branch_threads: dict[str, threading.Thread] = {}
         self._branch_lock = threading.Lock()
         self._branch_stop = threading.Event()
+        self._branch_busy: dict[str, int] = {}     # 每一路还有几次触发没跑完（界面上的触发图标据此显示）
 
     @property
     def name(self) -> str:
@@ -228,11 +229,19 @@ class FlowRunner:
                 return self.trigger(trig, wait=wait, timeout=timeout)
             return self.run_once(trig)
         job = _Job(trig)
-        self._branch_queue(node_id).put(job)
+        q = self._branch_queue(node_id)
+        with self._branch_lock:
+            self._branch_busy[node_id] = self._branch_busy.get(node_id, 0) + 1
+        q.put(job)
         if wait:
             job.done.wait(timeout)
             return job.result
         return None
+
+    def branch_busy(self, node_id: str) -> bool:
+        """这一路是不是正有一次触发没跑完。界面上的触发图标用它决定画"正在触发"。"""
+        with self._branch_lock:
+            return self._branch_busy.get(node_id, 0) > 0
 
     def _branch_queue(self, node_id: str) -> "queue.Queue[_Job]":
         """取（或建）某一路的工作队列与线程。"""
@@ -260,6 +269,8 @@ class FlowRunner:
             except Exception:                  # 引擎本身已经隔离了节点异常，这里是兜底
                 log.exception("流程 %s：支路 %s 运行异常", self.name, node_id)
             finally:
+                with self._branch_lock:
+                    self._branch_busy[node_id] = max(0, self._branch_busy.get(node_id, 1) - 1)
                 job.done.set()
 
     def set_continuous(self, interval_s: float | None) -> None:

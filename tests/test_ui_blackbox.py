@@ -1026,29 +1026,57 @@ def test_ui_image_all_overlays_ignores_input_filter(win, app):
     win.all_overlays.setChecked(False)
 
 
-def test_ui_source_nodes_have_a_manual_trigger_button(win, app):
-    """相机 / 图像文件 / 图像文件夹的参数面板上有「触发一次」按钮，点一下就触发这一路。
+def test_ui_source_nodes_have_a_trigger_icon_on_the_node(win, app):
+    """相机 / 图像文件 / 图像文件夹在画布上的卡片里带一个触发图标，点它只触发这一路。
 
-    产线上这一步由 PLC 报文触发，这个按钮是现场手工验证用的——所以它必须真的接到
-    FlowRunner.trigger_source 上，而不只是摆着好看。
+    产线上这一步由 PLC 报文触发，这个图标是现场手工验证用的——所以它必须真的接到
+    FlowRunner.trigger_source 上，而且不能顺手把节点拖走。
     """
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QGraphicsSceneMouseEvent
     from cvflow.core.registry import registry
 
     calls: list = []
     win.runner.trigger_source = lambda nid, *a, **k: calls.append(nid)
 
-    # 示例方案里就有一个图像文件夹节点
     folder = next(n for n in win.graph.nodes.values() if n.type_id == "source.image_folder")
-    win.scene.select_node(folder.id); pump(app)
-    btn = button(win.param_panel.widget(), "触发一次")
-    btn.click(); pump(app)
-    assert calls == [folder.id]                           # 按钮确实触发了这一路
+    item = win.scene.node_items[folder.id]
+    rect = item.trigger_rect()
+    assert rect is not None                                   # 可触发的节点才有这个图标
+    before = item.pos()
 
-    # 另外两个源节点也要有这个按钮
+    ev = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
+    ev.setPos(rect.center())
+    ev.setButton(Qt.LeftButton)
+    ev.setButtons(Qt.LeftButton)
+    item.mousePressEvent(ev); pump(app)
+    assert calls == [folder.id]                               # 点图标＝触发这一路
+    assert item.pos() == before                               # 没有被当成拖拽
+
+    # 点在标题别处不该触发
+    ev2 = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
+    ev2.setPos(rect.center() + QPointF(-60, 0))
+    ev2.setButton(Qt.LeftButton)
+    ev2.setButtons(Qt.LeftButton)
+    item.mousePressEvent(ev2); pump(app)
+    assert calls == [folder.id]
+
+    # 另外两个源节点也可触发；别的节点没有这个图标
     for type_id in ("source.image_file", "source.camera"):
-        assert any(p.kind == "button" and p.name == "trigger_now"
-                   for p in registry.get(type_id).params), type_id
+        assert registry.get(type_id).triggerable is True, type_id
+    thresh = next(n for n in win.graph.nodes.values() if n.type_id == "preprocess.threshold")
+    assert win.scene.node_items[thresh.id].trigger_rect() is None
 
+
+def test_ui_trigger_icon_shows_running_state(win, app):
+    """图标有两个状态：空闲画"暂停"两道竖杠，正在触发画实心三角。"""
+    folder = next(n for n in win.graph.nodes.values() if n.type_id == "source.image_folder")
+    item = win.scene.node_items[folder.id]
+    assert item.is_triggering() is False                      # 没触发时是空闲
+    win.scene.branch_busy = lambda nid: nid == folder.id       # 装成这一路正在跑
+    assert item.is_triggering() is True
+    win.scene.branch_busy = lambda nid: (_ for _ in ()).throw(RuntimeError("探测失败"))
+    assert item.is_triggering() is False                      # 探测出错也不能让界面崩
 
 def test_ui_dl_node_shows_arrival_and_weight_group(win, app, tmp_path):
     """深度学习节点的参数面板上有「输入到达方式」，高级参数里有「权重共享组」、没有「超时（秒）」。"""

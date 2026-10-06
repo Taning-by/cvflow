@@ -22,12 +22,11 @@ class ImageFile(Node):
     type_id = "source.image_file"
     category = "Source"
     label = "Image File"
+    triggerable = True        # 画布上带触发图标：可以只触发这一路
     description = "Load a single image from disk (cached until the file changes)."
     color = "#2e7d32"
     outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING)]
-    params = [Param("trigger_now", None, "button", label="Trigger Once",
-                    description="单独触发这一路：取一帧图，沿着本路一直跑到深度学习节点，在那里等别的路凑批（深度学习节点的「输入到达方式」要设成 async）。产线上这一步由 PLC 发来的报文触发，这个按钮是用来手工验证的"),
-              Param("path", "", "file", label="Path", filter=_IMG_FILTER),
+    params = [Param("path", "", "file", label="Path", filter=_IMG_FILTER),
               Param("grayscale", False, "bool")]
 
     def __init__(self, *a, **k):
@@ -58,12 +57,11 @@ class ImageFolder(Node):
     type_id = "source.image_folder"
     category = "Source"
     label = "Image Folder"
+    triggerable = True        # 画布上带触发图标：可以只触发这一路
     description = "Iterate over the images of a folder, one per run (simulated production)."
     color = "#2e7d32"
     outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING), Port("index", DataType.INT)]
-    params = [Param("trigger_now", None, "button", label="Trigger Once",
-                    description="单独触发这一路：取一帧图，沿着本路一直跑到深度学习节点，在那里等别的路凑批（深度学习节点的「输入到达方式」要设成 async）。产线上这一步由 PLC 发来的报文触发，这个按钮是用来手工验证的"),
-              Param("directory", "", "dir"),
+    params = [Param("directory", "", "dir"),
               Param("mode", "next", "enum", choices=["next", "fixed", "random"]),
               Param("index", 0, "int", min=0, description="Image index for 'fixed' mode"),
               Param("loop", True, "bool"),
@@ -114,12 +112,11 @@ class CameraSource(Node):
     type_id = "source.camera"
     category = "Source"
     label = "Camera"
+    triggerable = True        # 画布上带触发图标：可以只触发这一路
     description = "Grab a frame from a named camera (folder simulator, OpenCV device/stream, GenICam)."
     color = "#2e7d32"
     outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT)]
-    params = [Param("trigger_now", None, "button", label="Trigger Once",
-                    description="单独触发这一路：取一帧图，沿着本路一直跑到深度学习节点，在那里等别的路凑批（深度学习节点的「输入到达方式」要设成 async）。产线上这一步由 PLC 发来的报文触发，这个按钮是用来手工验证的"),
-              Param("camera", "cam0", "string", description="Shared camera name"),
+    params = [Param("camera", "cam0", "string", description="Shared camera name"),
               Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS),
                     description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS genicam=GenTL 驱动"),
               Param("source", "", "string", description="folder path | device index/URL | GenICam index/serial"),
