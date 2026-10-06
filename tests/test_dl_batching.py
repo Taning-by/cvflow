@@ -1326,3 +1326,51 @@ def test_async_demo_solution_gathers_two_branches(tmp_path):
     assert len(results) == 2
     carried = [r.node_results[gate.id] for r in results if r.node_results[gate.id].status == NodeStatus.OK]
     assert len(carried) == 1 and carried[0].outputs["batch_size"] == 2
+
+
+# ============================================================ 打包版（安装包）相关
+def test_nvidia_dll_dirs_finds_the_frozen_app_directory(tmp_path, monkeypatch):
+    """打包成 exe 之后没有 site-packages，CUDA / cuDNN 的 DLL 在程序目录里。
+
+    找不到这个目录的话，装了「GPU 推理支持」组件也用不上——正是源码环境里踩过的那个坑
+    （cuDNN 按名字加载自己的子库，目录不在搜索路径上就失败）。
+    """
+    import sys
+    from cvflow.operators import dl
+
+    internal = tmp_path / "_internal"
+    (internal / "nvidia" / "cudnn" / "bin").mkdir(parents=True)
+    (internal / "nvidia" / "cublas" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(internal), raising=False)
+    found = dl.nvidia_dll_dirs()
+    assert str(internal / "nvidia" / "cudnn" / "bin") in found
+    assert str(internal / "nvidia" / "cublas" / "bin") in found
+    assert dl.frozen() is True
+
+
+def test_gpu_component_detection_and_messages(cls_model, tmp_path, monkeypatch, capsys):
+    """打包版的自检要说"装没装 GPU 组件"，而不是叫用户去跑 pip。"""
+    import sys
+    from cvflow import cli
+    from cvflow.operators import dl
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    cli.main(["gpu", cls_model, "--provider", "cpu"])
+    out = capsys.readouterr().out
+    assert "打包版" in out
+    assert "pip install" not in out                   # 打包版里 pip 的建议没有意义
+    assert dl.frozen() is True
+
+
+def test_gpu_component_detection_reads_the_provider_dll(tmp_path):
+    """装没装 GPU 组件，看 CUDA provider 那个大文件在不在（Windows 上 325 MB）。"""
+    from types import SimpleNamespace
+    from cvflow.cli import _gpu_component_installed
+
+    capi = tmp_path / "onnxruntime" / "capi"
+    capi.mkdir(parents=True)
+    ort = SimpleNamespace(**{"__file__": str(tmp_path / "onnxruntime" / "__init__.py")})
+    assert _gpu_component_installed(ort) is False
+    (capi / "onnxruntime_providers_cuda.dll").write_bytes(b"x")
+    assert _gpu_component_installed(ort) is True

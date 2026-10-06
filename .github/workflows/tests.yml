@@ -89,3 +89,41 @@ jobs:
           PY=.venv/bin/python; [ -x "$PY" ] || PY=.venv/Scripts/python.exe
           "$PY" -m cvflow gpu
           "$PY" -m pytest -q
+
+  # 安装包的构建链路也要有人盯着：本机没有 Windows，CI 是唯一能持续验证它的地方。
+  # 走 -SkipGpu（不收 1.6 GB 的 CUDA/cuDNN），验证的是 PyInstaller 配置 + Inno Setup 脚本
+  # 这条链路本身；GPU 组件的切分靠 build.ps1 打印的组件体积来核对。
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 装环境（CPU 版就够，GPU 组件这一轮不收）
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev,cpu]"
+          pip install "pyinstaller>=6.6"
+      - name: 装 Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: 打包
+        shell: pwsh
+        run: .\packaging\build.ps1 -SkipGpu -Version 0.0.0-ci
+      - name: 冻结出来的程序能跑
+        shell: pwsh
+        run: |
+          .\dist\CVFlow\cvflow.exe nodes | Select-Object -First 3
+          .\dist\CVFlow\cvflow.exe gpu
+          if (-not (Test-Path .\dist\CVFlow\CVFlow.exe)) { throw "没产出界面程序" }
+      - name: 产出了安装程序
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem .\dist\CVFlow-Setup-*.exe
+          if (-not $setup) { throw "没产出安装程序" }
+          Write-Host "安装程序 $($setup.Name) $([math]::Round($setup.Length/1MB)) MB"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CVFlow-Setup-cpu-only
+          path: dist/CVFlow-Setup-*.exe
+          retention-days: 14

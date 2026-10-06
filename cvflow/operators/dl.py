@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -68,6 +69,11 @@ _FAILED_PROVIDERS: set[str] = set()       # 本进程内加载失败过的推理
 _PROVIDER_NAMES = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider",
                    "tensorrt": "TensorrtExecutionProvider"}
 _GPU_PROVIDERS = ("CUDAExecutionProvider", "TensorrtExecutionProvider")
+def frozen() -> bool:
+    """是不是打包成 exe 的版本（装的是安装包，不是源码环境）。"""
+    return bool(getattr(sys, "frozen", False))
+
+
 _PROVIDER_FIX = {
     "CUDAExecutionProvider": "改装 GPU 版：先 pip uninstall -y onnxruntime onnxruntime-gpu 把两个都卸干净"
                              "（CPU 版和 GPU 版是同一个模块，共存时互相覆盖），再 pip install -e \".[dev,gpu]\"，"
@@ -84,11 +90,18 @@ _PROVIDER_LOADABLE: dict[str, bool] = {}   # GPU 后端的动态库能否加载�
 
 
 def nvidia_dll_dirs(roots: list[str] | None = None) -> list[str]:
-    """pip 装的 nvidia-* 包放 DLL 的目录：site-packages/nvidia/<包>/bin（Windows）。"""
+    """nvidia-* 包放 DLL 的目录：``<根>/nvidia/<包>/bin``（Windows）。
+
+    源码运行时根是 site-packages；打包成 exe 之后没有 site-packages，CUDA / cuDNN 的 DLL
+    被收进了程序目录（PyInstaller 的 ``_internal``），所以要先找冻结环境的那个根。
+    """
     import glob
     import sysconfig
     if roots is None:
-        roots = sorted({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
+        roots = []
+        if getattr(sys, "frozen", False):          # 打包后的程序：DLL 在 _internal 里
+            roots.append(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable))))
+        roots += sorted({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
     found: list[str] = []
     for root in roots:
         found += sorted(d for d in glob.glob(os.path.join(root, "nvidia", "*", "bin")) if os.path.isdir(d))
@@ -739,6 +752,8 @@ class _OnnxBase(Node):
                 # Windows 的加载错误里不一定带库名，所以提示按后端给，不靠关键字猜
                 if p == "TensorrtExecutionProvider":
                     hint = "；缺 TensorRT 本体，只想用显卡的话把推理后端改成 cuda 或 auto"
+                elif frozen():
+                    hint = "；安装时没勾「GPU 推理支持」组件，重新运行安装程序勾上即可"
                 elif "cudnn" in why:
                     hint = "；缺 cuDNN，可装 pip install nvidia-cudnn-cu12"
                 else:

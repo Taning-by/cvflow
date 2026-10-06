@@ -23,7 +23,24 @@ CVFlow 是一个用 Python 全栈实现的工业视觉软件雏形，对标 Visi
 
 需要 Python 3.10–3.13（64 位），Linux / Windows / macOS 均可。
 
-### 一键装（推荐）
+### 装成 Windows 软件（安装包）
+
+给产线机器用的是安装程序，不需要装 Python：
+
+```powershell
+CVFlow-Setup-0.1.0-x64.exe          # 双击，下一步到底
+```
+
+一个安装包，**GPU 推理支持是可勾选的组件**：主程序约 530 MB（装完就能用，推理跑 CPU），
+勾上 GPU 组件再加约 1.9 GB（onnxruntime 的 CUDA provider + CUDA 12 / cuDNN 9 运行库）。
+没有 NVIDIA 显卡的机器不勾即可，软件照常用。装完可选立即跑一次自检，当场知道 CUDA 行不行。
+
+程序装在 `C:\Program Files\CVFlow`，方案/日志/存图在 `%ProgramData%\CVFlow`（可写）。
+静默安装：`CVFlow-Setup-0.1.0-x64.exe /SILENT /DIR="C:\CVFlow"`。
+
+自己打包：见 [packaging/README.md](packaging/README.md)（PyInstaller + Inno Setup，一条命令）。
+
+### 一键装（推荐，开发用）
 
 脚本会检查驱动、建好隔离的虚拟环境、装对推理运行时，**并在装完实测 CUDA**，没跑起来就报错退出：
 
@@ -398,7 +415,8 @@ cvflow/ui          PySide6 界面
 cvflow/cli.py      命令行：gui / run / serve / nodes / validate / new / gpu / shortcut
 examples/          示例图像生成器、示例方案、示例插件
 tests/             pytest（核心、算子、通信、界面 offscreen）
-tools/             辅助脚本：测试报告生成、虚拟环境清理（venv_clean.py）
+tools/             辅助脚本：测试报告生成、虚拟环境清理、权重共享实测（bench_sharing.py）
+packaging/         Windows 安装包：PyInstaller 配置 + Inno Setup 脚本 + 一键构建
 install.ps1        Windows 一键安装（建环境 → 装对推理运行时 → 实测 CUDA）
 install.sh         Linux / macOS 一键安装
 docs/install.md    安装环境详解：步骤、自检、常见错误对照表

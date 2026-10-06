@@ -80,6 +80,18 @@ def _device_vram_mib(index: int) -> int | None:
     return int(rows[0]) if rows and rows[0].isdigit() else None
 
 
+def _gpu_component_installed(ort) -> bool:
+    """打包版里「GPU 推理支持」组件装没装：看 CUDA provider 那个大 DLL 在不在。
+
+    安装程序把它和 CUDA / cuDNN 运行库划成可选组件（约 1.9 GB），不勾就不装，
+    软件照常启动、推理跑 CPU。
+    """
+    import glob
+    import os
+    base = os.path.join(os.path.dirname(os.path.abspath(ort.__file__)), "capi")
+    return bool(glob.glob(os.path.join(base, "*providers_cuda*")))
+
+
 def _onnxruntime_outside_venv(ort) -> bool:
     """这份 onnxruntime 是不是虚拟环境外面的那一份。
 
@@ -142,10 +154,13 @@ def cmd_gpu(args) -> int:
     """自检推理环境：装了哪个 onnxruntime、后端能不能加载、模型实际跑在哪、占多少显存。"""
     import os
     print("== 推理运行时 ==")
+    from .operators import dl
     try:
         import onnxruntime as ort
     except ImportError:
-        print("  未安装 onnxruntime。CPU 装 pip install -e \".[cpu]\"，显卡装 pip install -e \".[gpu]\"（二选一）")
+        print("  未安装 onnxruntime。" + (
+            "这个打包版缺了推理运行时，请重新安装" if dl.frozen() else
+            "CPU 装 pip install -e \".[cpu]\"，显卡装 pip install -e \".[gpu]\"（二选一）"))
         return 1
     print(f"  onnxruntime {ort.__version__}  {os.path.dirname(ort.__file__)}")
     if _onnxruntime_outside_venv(ort):
@@ -157,11 +172,15 @@ def cmd_gpu(args) -> int:
               "include-system-site-packages 改成 false，")
         print("    或者直接重跑 install.sh / install.ps1（会自动处理这种情况）")
     wheels: list[str] = []
+    if dl.frozen():
+        # 打包版里没有 pip 的安装记录，改看 GPU 组件的那个大 DLL 在不在
+        print(f"  打包版（{'装了' if _gpu_component_installed(ort) else '没装'}「GPU 推理支持」组件）")
     try:
         from importlib.metadata import distributions
         names = {d.metadata["Name"].lower() for d in distributions() if d.metadata["Name"]}
         wheels = sorted(n for n in names if n in ("onnxruntime", "onnxruntime-gpu"))
-        print(f"  已安装的包：{'、'.join(wheels) or '未知'}")
+        if not dl.frozen():
+            print(f"  已安装的包：{'、'.join(wheels) or '未知'}")
         if len(wheels) > 1:
             print("  ⚠ 同时装了 CPU 版和 GPU 版，它们会互相覆盖。"
                   "请 pip uninstall -y onnxruntime onnxruntime-gpu 之后只装需要的那一个")
@@ -176,7 +195,6 @@ def cmd_gpu(args) -> int:
         pass
 
     print("\n== 后端 ==")
-    from .operators import dl
     avail = list(ort.get_available_providers())
     print(f"  包里编译进来的：{'、'.join(avail)}")
     if any(p in dl._GPU_PROVIDERS for p in avail):
@@ -192,18 +210,23 @@ def cmd_gpu(args) -> int:
         if why and prov == "TensorrtExecutionProvider":
             print("     （没装 TensorRT 本体，属正常情况：auto 会跳过它直接用 CUDA，不影响使用）")
         elif why:
-            print("     （缺 CUDA / cuDNN 运行库，pip install -e \".[gpu]\" 会把它们一起装上）")
+            print("     " + ("（安装时没勾「GPU 推理支持」组件；重新运行一次安装程序勾上即可）"
+                             if dl.frozen() else
+                             "（缺 CUDA / cuDNN 运行库，pip install -e \".[gpu]\" 会把它们一起装上）"))
     if "CUDAExecutionProvider" not in avail:
         both = len(wheels) > 1
         print("  → 当前这份 onnxruntime 里没有 GPU 后端，推理只能在 CPU 上跑。")
-        if both:
+        if dl.frozen():
+            print("     这个打包版不带 GPU 后端，请重新安装并勾选「GPU 推理支持」组件")
+        elif both:
             print("     原因是 CPU 版把 GPU 版覆盖了（两个包装的是同一个模块）。按下面三步修：")
-        else:
-            print("     装 GPU 版：")
-        print("       1) pip uninstall -y onnxruntime onnxruntime-gpu   （重复执行到两个都显示未安装）")
-        print(f"       2) 确认 {os.path.dirname(ort.__file__)} 已经不存在，残留就手动删掉")
-        print("       3) pip install -e \".[dev,gpu]\"")
-        print("     完整步骤和常见错误：docs/install.md")
+        if not dl.frozen():
+            if not both:
+                print("     装 GPU 版：")
+            print("       1) pip uninstall -y onnxruntime onnxruntime-gpu   （重复执行到两个都显示未安装）")
+            print(f"       2) 确认 {os.path.dirname(ort.__file__)} 已经不存在，残留就手动删掉")
+            print("       3) pip install -e \".[dev,gpu]\"")
+            print("     完整步骤和常见错误：docs/install.md")
 
     print("\n== 显卡 ==")
     gpus = _nvidia_smi("gpu=index,name,driver_version,memory.used,memory.total")
