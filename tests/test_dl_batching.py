@@ -401,19 +401,19 @@ def test_two_nodes_in_the_same_group_really_share_one_onnxruntime_session(cls_mo
     都共享，测不出分组本身起没起作用。
     """
     from cvflow.operators import dl
-    assert dl.active_sessions() == 0
+    s0 = dl.active_sessions()                                     # 同一轮里别的用例可能还留着会话，按基线比
     a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="exclusive"))
     b = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="exclusive"))
     a.preload()
     b.preload()
     assert a._preloaded_key == b._preloaded_key                  # 归属算出来是同一个
-    assert dl.active_sessions() == 1                             # 内存/显存里只有一份
+    assert dl.active_sessions() == s0 + 1                         # 两个节点只多出一份权重
     assert _holder(a).session is _holder(b).session               # 真的是同一个会话对象
     assert _holder(a).refs == 2                                   # 引用计数记着两个使用者
     a.unload()
-    assert dl.active_sessions() == 1                              # b 还在用，不能放掉
+    assert dl.active_sessions() == s0 + 1                         # b 还在用，不能放掉
     b.unload()
-    assert dl.active_sessions() == 0                              # 都不用了才释放
+    assert dl.active_sessions() == s0                             # 都不用了才释放
     a.teardown()
     b.teardown()
 
@@ -421,27 +421,29 @@ def test_two_nodes_in_the_same_group_really_share_one_onnxruntime_session(cls_mo
 def test_different_groups_load_their_own_weights(cls_model):
     """分组不同就各加载一份——这是用显存换并行的那条路。"""
     from cvflow.operators import dl
+    s0 = dl.active_sessions()
     a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="exclusive"))
     b = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g2", session_scope="exclusive"))
     a.preload()
     b.preload()
     assert a._preloaded_key != b._preloaded_key
-    assert dl.active_sessions() == 2
+    assert dl.active_sessions() == s0 + 2                         # 各自一份
     assert _holder(a).session is not _holder(b).session
     for n in (a, b):
         n.unload()
         n.teardown()
-    assert dl.active_sessions() == 0
+    assert dl.active_sessions() == s0
 
 
 def test_session_scope_shared_overrides_the_group(cls_model):
     """session_scope=shared 时全软件只有一份权重，分组名不再起作用。"""
     from cvflow.operators import dl
+    s0 = dl.active_sessions()
     a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g1", session_scope="shared"))
     b = reg.create("dl.onnx_classifier", values=cls_values(cls_model, batch_group="g2", session_scope="shared"))
     a.preload()
     b.preload()
-    assert dl.active_sessions() == 1
+    assert dl.active_sessions() == s0 + 1                         # 分组名不再起作用
     assert _holder(a).session is _holder(b).session
     for n in (a, b):
         n.unload()
@@ -451,12 +453,13 @@ def test_session_scope_shared_overrides_the_group(cls_model):
 def test_weights_are_not_shared_across_different_models_or_backends(cls_model, tmp_path):
     """共享的前提是"同一个模型文件 + 同一个后端 + 同一块卡"，否则必须各自加载。"""
     from cvflow.operators import dl
+    s0 = dl.active_sessions()
     other = make_channel_mean_classifier(tmp_path / "other.onnx", size=8)
     a = reg.create("dl.onnx_classifier", values=cls_values(cls_model, session_scope="shared"))
     b = reg.create("dl.onnx_classifier", values=cls_values(str(other), session_scope="shared"))
     a.preload()
     b.preload()
-    assert dl.active_sessions() == 2                              # 模型文件不同
+    assert dl.active_sessions() == s0 + 2                         # 模型文件不同，必须各自加载
     for n in (a, b):
         n.unload()
         n.teardown()
