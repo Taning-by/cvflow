@@ -69,6 +69,10 @@ fi
 # ------------------------------------------------------------------ 3. 虚拟环境
 VENV_PY="$VENV/bin/python"
 if [ "$RECREATE" = 1 ] && [ -d "$VENV" ]; then
+  # 环境正被当前 shell 激活时，删掉会留下一堆失效的 PATH 指向，先让用户 deactivate
+  if [ -n "${VIRTUAL_ENV:-}" ] && [ "$(cd "$VIRTUAL_ENV" 2>/dev/null && pwd)" = "$(cd "$VENV" && pwd)" ]; then
+    die "虚拟环境 $VENV 正处于激活状态。先执行 deactivate，再重跑 ./install.sh --recreate"
+  fi
   say "按 --recreate 删掉旧的虚拟环境 $VENV"
   rm -rf "$VENV"
 fi

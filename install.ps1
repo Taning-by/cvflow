@@ -53,8 +53,11 @@ Say "检查 Python"
 $pyCmd = $Python.Split(" ")[0]
 $pyArgs = @($Python.Split(" ") | Select-Object -Skip 1)
 try   { $probe = & $pyCmd @pyArgs "-c" "import sys,struct;print('%d.%d %d' % (sys.version_info[0], sys.version_info[1], struct.calcsize('P')*8))" }
-catch { Die "找不到 Python（试的是 '$Python'）。装 64 位 Python 3.10-3.13，或用 -Python 指定，例如 .\install.ps1 -Python 'py -3.12'" }
-$ver, $bits = $probe.Trim().Split(" ")
+catch { Die "找不到 Python（试的是 '$Python'）。装 64 位 Python 3.10-3.14，或用 -Python 指定，例如 .\install.ps1 -Python 'py -3.12'" }
+# 有些 Python 启动时会多打几行（比如虚拟环境提示），所以合成一串再按空白切
+$parts = (($probe | Out-String).Trim() -split '\s+')
+if ($parts.Count -lt 2) { Die "探测 Python 版本失败，输出是：$probe" }
+$ver, $bits = $parts[-2], $parts[-1]
 $v = [version] $ver
 if ($bits -ne "64")                                { Die "Python 是 $bits 位的，onnxruntime 只有 64 位轮子。请装 64 位 Python" }
 if ($v -lt [version]"3.10" -or $v -ge [version]"3.15") { Die "Python $ver 不行：onnxruntime-gpu 只有 3.10-3.14 的轮子。用 -Python 指定一个合适的版本" }
@@ -91,6 +94,10 @@ if ($useGpu) {
 # --------------------------------------------------------------------- 3. 虚拟环境
 $venvPy = Join-Path $Venv "Scripts\python.exe"
 if ($Recreate -and (Test-Path $Venv)) {
+    # 环境正被当前会话激活时 python.exe 被占用，删不掉，先让用户 deactivate
+    if ($env:VIRTUAL_ENV -and (Resolve-Path -LiteralPath $env:VIRTUAL_ENV).Path -eq (Resolve-Path -LiteralPath $Venv).Path) {
+        Die "虚拟环境 $Venv 正处于激活状态，删不掉。先执行 deactivate，再重跑 .\install.ps1 -Recreate"
+    }
     Say "按 -Recreate 删掉旧的虚拟环境 $Venv"
     Remove-Item -LiteralPath $Venv -Recurse -Force
 }
