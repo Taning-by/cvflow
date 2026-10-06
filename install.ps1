@@ -30,12 +30,18 @@
 .EXAMPLE
     .\install.ps1 -Python "C:\Python312\python.exe"
     机器上装的都是 conda 时，明确用一个普通 CPython 建 venv（推荐这么做）
+
+.EXAMPLE
+    .\install.ps1 -BootstrapPython
+    机器上没有 Python、或者只有 conda：把便携版 CPython 下到项目里的 .python\，
+    再用它建 .venv。装完整个项目自带 Python，和系统里的 Python / conda 完全无关
 #>
 [CmdletBinding()]
 param(
     [switch] $Cpu,                  # 强制装 CPU 版（没有 NVIDIA 显卡时用）
     [switch] $Recreate,             # 删掉旧的虚拟环境从头装（装乱了用这个，代码不受影响）
     [switch] $AllowConda,           # 允许用 conda 环境里的解释器建 venv（默认拒绝，见下）
+    [switch] $BootstrapPython,      # 把一份便携版 CPython 下到 .python\，整个项目自带 Python
     [string] $Python = "python",    # 用哪个 Python 建虚拟环境，可写 py -3.12 或绝对路径
     [string] $Venv   = ".venv",     # 虚拟环境目录
     [string] $Model  = ""           # 可选：装完用这个 ONNX 模型实测一次
@@ -43,6 +49,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $MinDriver = [version] "527.41"     # CUDA 12 在 Windows 上要求的最低驱动版本
+
+# -BootstrapPython 用的便携版 CPython（python-build-standalone，可重定位，自带 pip 和 venv）。
+# 版本和哈希都写死：装环境这一步必须可复现，也必须能校验下载内容。
+# 换版本时去 https://github.com/astral-sh/python-build-standalone/releases 取对应的 SHA256SUMS。
+$PyRelease = "20261003"
+$PyAsset   = "cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz"
+$PySha256  = "4b6f0beebbb695a0f3ea237b8c3eaa5bd424f47a7bc25b2fbe3a43390c770f08"
+$PyDir     = ".python"
 
 function Say      { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok       { param($m) Write-Host "    $m"   -ForegroundColor Green }
@@ -53,6 +67,49 @@ function Die      { param($m) Write-Host "`n✗ $m`n" -ForegroundColor Red; exit
 Set-Location -LiteralPath $PSScriptRoot
 if (-not (Test-Path "pyproject.toml")) { Die "这个脚本要放在 CVFlow 仓库根目录里执行" }
 
+# --------------------------------------------------------------- 0. 项目自带的 Python
+$bootstrapPy = Join-Path $PyDir "python.exe"
+if ($BootstrapPython) {
+    if (Test-Path $bootstrapPy) {
+        Say "复用项目里已有的便携版 Python"
+        Ok (Resolve-Path -LiteralPath $bootstrapPy).Path
+    } else {
+        Say "把便携版 CPython 下到 $PyDir\（约 44 MB，机器上不需要预装 Python）"
+        $url = "https://github.com/astral-sh/python-build-standalone/releases/download/$PyRelease/$PyAsset"
+        $tgz = Join-Path $env:TEMP $PyAsset
+        $tmp = "$PyDir.tmp"
+        try {
+            # IWR 默认画进度条，大文件会慢十倍以上
+            $old = $ProgressPreference; $ProgressPreference = "SilentlyContinue"
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing
+            $ProgressPreference = $old
+        } catch { Die "下载失败：$url`n$($_.Exception.Message)" }
+        $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz).Hash.ToLower()
+        if ($got -ne $PySha256) {
+            Remove-Item -LiteralPath $tgz -Force -ErrorAction SilentlyContinue
+            Die "下载内容校验不过：期望 $PySha256，实到 $got。网络被劫持或文件损坏，别用它"
+        }
+        Note "SHA256 校验通过"
+        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        # Windows 10 1803 以后自带 tar.exe
+        & tar -xzf $tgz -C $tmp
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $tmp "python\python.exe"))) {
+            Die "解压失败。确认有 tar.exe（Windows 10 1803 以后自带），或手工解压 $tgz 后把里面的 python 目录改名成 $PyDir"
+        }
+        Move-Item -LiteralPath (Join-Path $tmp "python") -Destination $PyDir
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tgz -Force -ErrorAction SilentlyContinue
+        Ok "装好了：$((Resolve-Path -LiteralPath $bootstrapPy).Path)"
+    }
+    $Python = (Resolve-Path -LiteralPath $bootstrapPy).Path
+} elseif ((Test-Path $bootstrapPy) -and $Python -eq "python") {
+    # 项目里已经有便携版了，默认就用它，不去碰系统的 Python / conda
+    Say "项目里有便携版 Python，直接用它（不想用就加 -Python 指定别的）"
+    $Python = (Resolve-Path -LiteralPath $bootstrapPy).Path
+    Ok $Python
+}
+
 # --------------------------------------------------------------------- 1. Python
 Say "检查 Python"
 $pyCmd = $Python.Split(" ")[0]
@@ -61,7 +118,12 @@ $pyArgs = @($Python.Split(" ") | Select-Object -Skip 1)
 $PROBE = "import os,sys,struct;print('%d.%d %d %s' % (sys.version_info[0], sys.version_info[1], " +
          "struct.calcsize('P')*8, 'conda' if os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')) else 'plain'))"
 try   { $probe = & $pyCmd @pyArgs "-c" $PROBE }
-catch { Die "找不到 Python（试的是 '$Python'）。装 64 位 Python 3.10-3.14，或用 -Python 指定，例如 .\install.ps1 -Python 'py -3.12'" }
+catch { Die @"
+找不到 Python（试的是 '$Python'）。三条路：
+  · 让项目自带一份（机器上什么都不用装）： .\install.ps1 -BootstrapPython
+  · 用已有的某个解释器：                   .\install.ps1 -Python "C:\Python312\python.exe"
+  · 自己装 64 位 Python 3.10-3.14：        winget install Python.Python.3.12
+"@ }
 # 有些 Python 启动时会多打几行（比如虚拟环境提示），所以合成一串再按空白切
 $parts = (($probe | Out-String).Trim() -split '\s+')
 if ($parts.Count -lt 3) { Die "探测 Python 版本失败，输出是：$probe" }

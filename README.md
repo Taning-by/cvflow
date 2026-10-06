@@ -43,6 +43,15 @@ cd cvflow
 `conda deactivate` 之后用 `-Python` 明确指定它，理由和步骤见
 [docs/install.md 第 1.5 节](docs/install.md#15-机器上只有-conda-怎么办)。
 
+不想碰系统 Python / conda，或者机器上根本没有 Python，就让**项目自带一份**：
+
+```powershell
+.\install.ps1 -BootstrapPython     # 下载便携版 CPython 3.12 到 .python\（校验 SHA256）再用它建 .venv
+```
+
+装完 `.venv` 只认项目目录里的 `.python\`，和系统里的任何 Python / conda 无关
+（细节见 [docs/install.md 第 1.6 节](docs/install.md#16-让项目自带-python推荐给不想碰系统-python--conda的情形)）。
+
 ### 手工装
 
 ```bash

@@ -7,6 +7,7 @@
 #   ./install.sh --recreate             删掉旧的虚拟环境从头来（装乱了用这个，代码不受影响）
 #   ./install.sh --python /usr/bin/python3.12   指定解释器（机器上只有 conda 时要这样）
 #   ./install.sh --allow-conda          允许用 conda 的解释器建 venv（默认拒绝）
+#   ./install.sh --bootstrap-python     把便携版 CPython 下到项目里的 .python/，整个项目自带 Python
 #   ./install.sh --python python3.12 --venv .venv
 #
 # 做的事和 docs/install.md 里的手工步骤一样，只是不会漏步、不会装错顺序。
@@ -18,12 +19,20 @@ MODEL=""
 USE_GPU=1
 RECREATE=0
 ALLOW_CONDA=0
+BOOTSTRAP=0
+PY_DIR=.python
+# 便携版 CPython（python-build-standalone，可重定位，自带 pip 和 venv）。版本和哈希写死：
+# 装环境必须可复现、下载必须能校验。换版本时去
+# https://github.com/astral-sh/python-build-standalone/releases 取对应的 SHA256SUMS。
+PY_RELEASE=20261003
+PY_VER=3.12.15
 MIN_DRIVER=525.60          # CUDA 12 在 Linux 上要求的最低驱动版本
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cpu)    USE_GPU=0; shift ;;
     --allow-conda) ALLOW_CONDA=1; shift ;;
+    --bootstrap-python) BOOTSTRAP=1; shift ;;
     --recreate) RECREATE=1; shift ;;
     --python) PYTHON="$2"; shift 2 ;;
     --venv)   VENV="$2"; shift 2 ;;
@@ -41,9 +50,53 @@ die()  { printf '\n\033[31m✗ %s\033[0m\n\n' "$1" >&2; exit 1; }
 cd "$(dirname "$(readlink -f "$0")")"
 [ -f pyproject.toml ] || die "这个脚本要放在 CVFlow 仓库根目录里执行"
 
+# ------------------------------------------------------ 0. 项目自带的 Python（--bootstrap-python）
+portable_asset() {
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64)         echo "x86_64-unknown-linux-gnu  f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5" ;;
+    Linux-aarch64)        echo "aarch64-unknown-linux-gnu 95c01982c9fcb9d95b0acfdb5eb8a6e0099dd11edf062314a474228d93f2b765" ;;
+    Darwin-arm64)         echo "aarch64-apple-darwin      316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213" ;;
+    Darwin-x86_64)        echo "x86_64-apple-darwin       a8fd7a91852f19b6d959793ef41fad048631ccb2a334a9ecdf573255298f7978" ;;
+    *) return 1 ;;
+  esac
+}
+
+bootstrap_python() {
+  if [ -x "$PY_DIR/bin/python3" ]; then
+    say "复用项目里已有的便携版 Python"; ok "$(cd "$PY_DIR" && pwd)/bin/python3"; return 0
+  fi
+  read -r triple sha <<<"$(portable_asset)" || die "没有 $(uname -s)-$(uname -m) 的便携版 Python，请自己装一个再用 --python 指定"
+  asset="cpython-$PY_VER+$PY_RELEASE-$triple-install_only.tar.gz"
+  url="https://github.com/astral-sh/python-build-standalone/releases/download/$PY_RELEASE/$asset"
+  say "把便携版 CPython 下到 $PY_DIR/（机器上不需要预装 Python）"
+  tgz="$(mktemp -d)/$asset"
+  curl -fL --progress-bar "$url" -o "$tgz" || die "下载失败：$url"
+  got=$( { sha256sum "$tgz" 2>/dev/null || shasum -a 256 "$tgz"; } | cut -d' ' -f1)
+  [ "$got" = "$sha" ] || die "下载内容校验不过：期望 $sha，实到 $got。网络被劫持或文件损坏，别用它"
+  note "SHA256 校验通过"
+  rm -rf "$PY_DIR.tmp"; mkdir -p "$PY_DIR.tmp"
+  tar -xzf "$tgz" -C "$PY_DIR.tmp" || die "解压失败：$tgz"
+  [ -x "$PY_DIR.tmp/python/bin/python3" ] || die "解压出来的内容不对，没找到 python/bin/python3"
+  mv "$PY_DIR.tmp/python" "$PY_DIR"; rm -rf "$PY_DIR.tmp" "$(dirname "$tgz")"
+  ok "装好了：$(cd "$PY_DIR" && pwd)/bin/python3"
+}
+
+if [ "$BOOTSTRAP" = 1 ]; then
+  bootstrap_python
+  PYTHON="$(cd "$PY_DIR" && pwd)/bin/python3"
+elif [ -x "$PY_DIR/bin/python3" ] && [ "$PYTHON" = python3 ]; then
+  # 项目里已经有便携版了，默认就用它，不去碰系统的 Python / conda
+  say "项目里有便携版 Python，直接用它（不想用就加 --python 指定别的）"
+  PYTHON="$(cd "$PY_DIR" && pwd)/bin/python3"
+  ok "$PYTHON"
+fi
+
 # ------------------------------------------------------------------ 1. Python
 say "检查 Python"
-command -v "$PYTHON" >/dev/null 2>&1 || die "找不到 $PYTHON。装 Python 3.10-3.13，或用 --python 指定"
+command -v "$PYTHON" >/dev/null 2>&1 || die "找不到 $PYTHON。三条路：
+  · 让项目自带一份（机器上什么都不用装）：./install.sh --bootstrap-python
+  · 用已有的解释器：                      ./install.sh --python /usr/bin/python3.12
+  · 自己装 Python 3.10-3.14"
 # conda-meta 目录是 conda 安装/环境的标志；conda 环境本身不是 venv，靠 sys.prefix 认不出来
 read -r PYVER PYBITS PYKIND <<<"$("$PYTHON" -c 'import os,sys,struct;print("%d.%d %d %s" % (sys.version_info[0], sys.version_info[1], struct.calcsize("P")*8, "conda" if os.path.isdir(os.path.join(sys.base_prefix, "conda-meta")) else "plain"))')"
 [ "$PYBITS" = "64" ] || die "Python 是 $PYBITS 位的，onnxruntime 只有 64 位轮子"

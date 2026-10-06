@@ -67,6 +67,20 @@ jobs:
       - name: 跑一遍 install.sh --cpu（Linux）
         if: runner.os == 'Linux'
         run: bash -n install.sh && ./install.sh --cpu
+      # 项目自带 Python 这条路也要测：下载 + 校验 SHA256 + 用它重建环境
+      - name: 便携版 Python（-BootstrapPython / --bootstrap-python）
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            pwsh -NoProfile -Command ".\install.ps1 -BootstrapPython -Recreate -Cpu"
+            PY=.venv/Scripts/python.exe
+          else
+            ./install.sh --bootstrap-python --recreate --cpu
+            PY=.venv/bin/python
+          fi
+          # venv 必须绑在项目里的 .python 上，不能是 runner 自带的那个 Python
+          "$PY" -c "import sys,os;b=os.path.realpath(sys.base_prefix);p=os.path.realpath('.python');print(b);assert b==p, f'{b} != {p}'"
+          "$PY" -c "import sys;assert sys.version_info[:2]==(3,12), sys.version"
       - name: 脚本建出来的环境能跑测试
         env:
           QT_QPA_PLATFORM: offscreen

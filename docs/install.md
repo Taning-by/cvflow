@@ -126,6 +126,71 @@ conda config --set auto_activate_base false     # 以后新开的窗口不再自
 
 ---
 
+## 1.6 让项目自带 Python（推荐给"不想碰系统 Python / conda"的情形）
+
+这是最彻底的隔离：**把一份便携版 CPython 放进项目目录**，软件只用它，机器上装了什么 Python、
+有没有 conda，都跟它无关。甚至机器上**一个 Python 都没有**也能装。
+
+```powershell
+git clone https://github.com/Taning-by/cvflow.git
+cd cvflow
+.\install.ps1 -BootstrapPython
+```
+
+```bash
+./install.sh --bootstrap-python          # Linux / macOS
+```
+
+它会：下载 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+的便携版 CPython **3.12.15**（Windows 约 44 MB）→ **校验 SHA256**（哈希写死在脚本里，
+对不上就拒绝使用）→ 解压成 `.python\` → 用它建 `.venv` → 照常装 `.[dev,gpu]` → 实测 CUDA。
+
+装完目录长这样：
+
+```
+cvflow\
+  .python\        便携版 CPython 3.12（解压后约 70 MB，自带 pip 和 venv）
+  .venv\          真正的运行环境：cvflow + onnxruntime-gpu + CUDA 12 / cuDNN 9
+  cvflow\ ...     源码
+```
+
+**以后怎么用**（和普通装法完全一样）：
+
+```powershell
+.venv\Scripts\activate     # 之后直接敲 cvflow / cvflow gui
+.venv\Scripts\cvflow-gui.exe   # 或者不激活，直接双击这个
+cvflow shortcut             # 或者在桌面放个带图标的快捷方式
+```
+
+确认它真的只用项目里的 Python：
+
+```powershell
+.venv\Scripts\python -c "import sys;print(sys.base_prefix)"
+```
+
+打出来应该是**你项目目录下的 `.python`**。实测（Linux、系统 Python 是 3.10）：
+
+```
+它的 base_prefix  /home/txj/cvsoftware/.python
+Python 版本       3.12.15          ← 用的是项目自带的，不是系统那个 3.10
+后端              TensorrtExecutionProvider、CUDAExecutionProvider、CPUExecutionProvider
+实际使用的后端    CUDAExecutionProvider（0 号卡）
+```
+
+几点要知道：
+
+* `.python\` 和 `.venv\` 都在 `.gitignore` 里，不会进仓库。
+* 之后再跑 `.\install.ps1`（不带参数）会**自动认出** `.python\` 并继续用它，不会退回系统 Python。
+  想换回系统的就显式写 `-Python "C:\Python312\python.exe"`。
+* **venv 不能跟着目录搬家。** `.venv` 里记的是绝对路径，整个项目文件夹改名或拷到别的机器后
+  `.venv` 就失效了 —— 重跑一次 `.\install.ps1 -Recreate` 即可（pip 有缓存，第二次快很多）。
+  真要"拷过去就能跑"，走[第 6 节](#6-产线机器上不了网怎么装离线包)的离线包，或者让我单独打 exe 安装包。
+* Python 版本和哈希写死在脚本里（`$PyRelease` / `$PyAsset` / `$PySha256`），要换版本就改这三行，
+  哈希去上游 release 的 `SHA256SUMS` 里取。写死是故意的：装环境这一步必须可复现，下载必须可校验。
+* 删掉 `.python\` 和 `.venv\` 就等于没装过，不留任何系统痕迹。
+
+---
+
 ## 2. 正确的安装顺序（Windows + NVIDIA 显卡）
 
 下面六步照顺序执行，不要跳、不要换序。命令在 PowerShell 或 CMD 里都一样。

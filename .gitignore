@@ -18,3 +18,7 @@ captures/
 .DS_Store
 # 测试过程里的临时文件
 examples/solutions/_bb_*
+
+# 项目自带的便携版 Python（install.sh --bootstrap-python / install.ps1 -BootstrapPython）
+.python/
+.python.tmp/
