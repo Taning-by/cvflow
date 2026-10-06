@@ -646,25 +646,46 @@ def test_comm_testconn_all_kinds(system):
 
 
 # =============================================================== 命令行无界面模式
-def test_comm_cli_serve_modbus_end_to_end():
+def _unlink_eventually(path: Path, timeout: float = 10.0) -> None:
+    """删临时文件，Windows 上允许慢一点。
+
+    刚被 TerminateProcess 干掉的子进程，它继承的文件句柄不一定立刻放掉，
+    这时 unlink 会抛 PermissionError（WinError 32）。清理失败不该让用例判失败，
+    所以重试一段时间，仍然删不掉就留着。
+    """
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if time.monotonic() >= end:
+                return
+            time.sleep(0.2)
+
+
+def test_comm_cli_serve_modbus_end_to_end(tmp_path):
     from pymodbus.client import ModbusTcpClient
     src = ROOT / "examples" / "solutions" / "demo_modbus.json"
     data = json.loads(src.read_text(encoding="utf-8"))
     data["comm"]["devices"][0]["config"]["port"] = 0      # 让子进程自己挑端口，避免与其它用例抢占
+    # 方案文件必须和原方案同目录（方案里的相对路径按方案所在目录解析），日志放 tmp_path：
+    # 子进程的 stdout 句柄在 Windows 上不一定立刻释放，放在 pytest 的临时目录里就不用自己删
     tmp = src.parent / "_bb_modbus.json"; tmp.write_text(json.dumps(data), encoding="utf-8")
-    log = open(tmp.with_suffix(".log"), "w", encoding="utf-8")
+    log_path = tmp_path / "serve.log"
+    log = open(log_path, "w", encoding="utf-8")
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen([sys.executable, "-m", "cvflow", "serve", str(tmp), "--stats-every", "100"], cwd=ROOT,
                             stdout=log, stderr=subprocess.STDOUT, env=env)
     try:
         def bound_port():
             log.flush()
-            m = re.search(r"监听 [^:\s]+:(\d+)", tmp.with_suffix(".log").read_text(encoding="utf-8", errors="replace"))
+            m = re.search(r"监听 [^:\s]+:(\d+)", log_path.read_text(encoding="utf-8", errors="replace"))
             return int(m.group(1)) if m else None
         ok = _wait(lambda: proc.poll() is not None or bound_port(), 60)     # 从子进程输出里读回真实端口
         port = bound_port()
         if proc.poll() is not None or not port:
-            raise AssertionError(f"serve 子进程退出码 {proc.poll()}，输出：\n{tmp.with_suffix('.log').read_text(encoding='utf-8', errors='replace')[-2000:]}")
+            raise AssertionError(f"serve 子进程退出码 {proc.poll()}，输出：\n{log_path.read_text(encoding='utf-8', errors='replace')[-2000:]}")
         c = ModbusTcpClient("127.0.0.1", port=port, timeout=2)
         assert _wait(lambda: c.connect(), 30)
         c.write_register(0, 1, device_id=1)
@@ -674,4 +695,10 @@ def test_comm_cli_serve_modbus_end_to_end():
         assert _wait(lambda: c.read_holding_registers(20, count=1, device_id=1).registers[0] >= 1, 5)   # 心跳
         c.close()
     finally:
-        proc.terminate(); proc.wait(10); log.close(); tmp.unlink(missing_ok=True); tmp.with_suffix(".log").unlink(missing_ok=True)
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:                 # terminate 不奏效就硬杀，别把句柄留着
+            proc.kill(); proc.wait(10)
+        log.close()
+        _unlink_eventually(tmp)

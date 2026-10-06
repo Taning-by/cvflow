@@ -16,3 +16,5 @@ captures/
 .idea/
 .vscode/
 .DS_Store
+# 测试过程里的临时文件
+examples/solutions/_bb_*
