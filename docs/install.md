@@ -464,6 +464,8 @@ cvflow gpu --require-gpu                   # 照样要自检
 | `cvflow gpu` 说“没找到 nvidia-smi” | 没有 NVIDIA 显卡，或驱动没装好 | 装/更新驱动；确实没有独显就走[第 4 节](#4-没有-nvidia-显卡只用-cpu) |
 | `缺 CUDA 运行库…libcublasLt / cublasLt64_12.dll` | cuDNN 没装上（cuBLAS 由它带入） | `pip install nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12`，或按[第 3 节](#3-已经装成-cpu-版了怎么切过去)重装 |
 | 后端是 CUDA，但显存一点没涨 | 看的不是同一块卡 | `cvflow gpu 模型.onnx --device 1` 指定卡号 |
+| `Could not locate cudnn_*.dll` + `CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED`，然后 `Falling back to ['CPUExecutionProvider']` | cuDNN 9 运行时按名字加载自己的引擎子库，而 onnxruntime 的 `preload_dlls()` 只加载**写死的 7 个** DLL，新版 cuDNN 多出来的（9.27 的 `cudnn_engines_tensor_ir64_9.dll`、`cudnn_cnn64_9.dll`、`cudnn_ext64_9.dll`）不在名单里，目录又不在 DLL 搜索路径上 → Conv 失败 → onnxruntime 把会话**悄悄重建成 CPU-only** | 升级到 2026-10-06 之后的版本即可：CVFlow 会把 `site-packages\nvidia\*\bin` 加进 DLL 搜索路径和 PATH，并把该目录下所有 `cudnn*.dll` 都预加载一遍。临时验证：`$env:PATH = "<venv>\Lib\site-packages\nvidia\cudnn\bin;" + $env:PATH` |
+| 日志写着用了 CUDA、显存也涨了，速度却和 CPU 一样 | 多半就是上一行：后端注册成功，执行算子时才失败并降级 | `cvflow gpu 模型.onnx --bench` 看算子分布；现在降级会有一条明确的 warning |
 | `DLL load failed` / `No module named '_ssl'`（venv 里） | 这个 venv 是用 conda 的解释器建的，conda 环境没激活时缺 `Library\bin` 里的 DLL | 用普通 CPython 重建：`.\install.ps1 -Recreate -Python "C:\Python312\python.exe"`，见[第 1.5 节](#15-机器上只有-conda-怎么办) |
 | 装完还是找不到 `cvflow` 命令 | 虚拟环境没激活 | 重新 `.venv\Scripts\activate`；或用 `python -m cvflow gpu` |
 | `pip` 装的是 `onnxruntime-gpu 1.19/1.20`，CUDA 库一个没装 | 这两个版本**没有** `cuda`/`cudnn` extra | 本项目已要求 `>=1.21`；用公司内网镜像时确认镜像里有 1.21+ |

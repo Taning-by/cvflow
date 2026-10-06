@@ -1,6 +1,7 @@
 """深度学习节点多输入合批的黑盒测试：只通过端口、参数与输出观察。"""
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -401,6 +402,75 @@ def test_format_profile_without_node_events_says_nothing():
     from cvflow.cli import format_profile
     assert format_profile([], 3) == []
     assert format_profile([{"cat": "Session", "dur": 10, "args": {}}], 3) == []
+
+
+def test_nvidia_dll_dirs_finds_the_pip_installed_runtime_dirs(tmp_path):
+    """pip 装的 nvidia-* 包在 Windows 上把 DLL 放在 site-packages/nvidia/<包>/bin。
+
+    这些目录不在 DLL 搜索路径上，而 cuDNN 会在运行时按名字加载自己的引擎子库，
+    所以必须先把它们找出来（见 _open_cudnn_search_path 的说明）。
+    """
+    from cvflow.operators import dl
+    for sub in ("cudnn", "cublas"):
+        (tmp_path / "nvidia" / sub / "bin").mkdir(parents=True)
+    (tmp_path / "nvidia" / "README.txt").write_text("")          # 不是目录，不该被算进来
+    (tmp_path / "numpy").mkdir()                                 # 不相关的包也不该
+    found = dl.nvidia_dll_dirs([str(tmp_path)])
+    assert [os.path.basename(os.path.dirname(d)) for d in found] == ["cublas", "cudnn"]
+    assert dl.nvidia_dll_dirs([str(tmp_path / "空")]) == []
+
+
+def test_silent_cpu_fallback_is_detected_and_logged(caplog):
+    """onnxruntime 把会话悄悄重建成 CPU-only 之后，必须有一条明确的日志（回归）。
+
+    GPU 后端注册成功、但执行算子时失败（典型：cuDNN 找不到引擎子库）时，
+    onnxruntime 的 Python 封装会捕获 EP_FAIL、把会话换成 CPU-only 再重试，只往 stderr 打几行。
+    建会话时记下的后端此刻已经不作数——不主动回头问一次，就会出现
+    "日志写着 CUDA、显存也涨了、速度却和 CPU 一样"。
+    """
+    import logging
+    from cvflow.operators import dl
+
+    class FakeSession:
+        def __init__(self, providers):
+            self._p = providers
+
+        def get_providers(self):
+            return list(self._p)
+
+    holder = dl._SharedSession(FakeSession(["CPUExecutionProvider"]), {},
+                               ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    with caplog.at_level(logging.WARNING, logger="cvflow.dl"):
+        dl._check_silent_cpu_fallback(holder)
+    assert holder.fell_back is True
+    assert holder.providers == ["CPUExecutionProvider"]          # 记录改成实际在用的
+    assert "降级" in caplog.text and "cudnn" in caplog.text.lower()
+
+    caplog.clear()                                               # 第二次不再重复刷屏
+    with caplog.at_level(logging.WARNING, logger="cvflow.dl"):
+        dl._check_silent_cpu_fallback(holder)
+    assert caplog.text == ""
+
+
+def test_no_fallback_warning_when_backend_still_on_gpu_or_never_was(caplog):
+    """后端没变、或本来就是 CPU 的，都不该报降级。"""
+    import logging
+    from cvflow.operators import dl
+
+    class FakeSession:
+        def __init__(self, providers):
+            self._p = providers
+
+        def get_providers(self):
+            return list(self._p)
+
+    still_gpu = dl._SharedSession(FakeSession(["CUDAExecutionProvider"]), {}, ["CUDAExecutionProvider"])
+    always_cpu = dl._SharedSession(FakeSession(["CPUExecutionProvider"]), {}, ["CPUExecutionProvider"])
+    with caplog.at_level(logging.WARNING, logger="cvflow.dl"):
+        dl._check_silent_cpu_fallback(still_gpu)
+        dl._check_silent_cpu_fallback(always_cpu)
+    assert caplog.text == ""
+    assert still_gpu.fell_back is False and always_cpu.fell_back is False
 
 
 def test_dl_disabling_a_node_unloads_its_weights(cls_model):

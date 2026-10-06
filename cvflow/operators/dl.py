@@ -80,6 +80,60 @@ _GPU_RUNTIME_PRELOADED = False
 _PROVIDER_LOADABLE: dict[str, bool] = {}   # GPU 后端的动态库能否加载，探测一次就记住
 
 
+def nvidia_dll_dirs(roots: list[str] | None = None) -> list[str]:
+    """pip 装的 nvidia-* 包放 DLL 的目录：site-packages/nvidia/<包>/bin（Windows）。"""
+    import glob
+    import sysconfig
+    if roots is None:
+        roots = sorted({sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]})
+    found: list[str] = []
+    for root in roots:
+        found += sorted(d for d in glob.glob(os.path.join(root, "nvidia", "*", "bin")) if os.path.isdir(d))
+    return found
+
+
+def _open_cudnn_search_path() -> None:
+    """把 pip 装的 CUDA / cuDNN 目录加进 Windows 的 DLL 搜索路径，并补装 ORT 名单外的 cuDNN 子库。
+
+    onnxruntime 的 preload_dlls() 加载的是一张**写死的** DLL 名单（cudnn_graph64_9.dll 等 7 个）。
+    但 cuDNN 9 会在运行时按名字再去 LoadLibrary 自己的引擎子库，名单覆盖不到新增的那些——
+    比如 cuDNN 9.27 新加的 cudnn_engines_tensor_ir64_9.dll。而 site-packages\nvidia\cudnn\bin
+    并不在 DLL 搜索路径上，于是：
+
+        Could not locate cudnn_engines_tensor_ir64_9.dll
+        CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED → Conv 节点失败
+        → onnxruntime 捕获 EP_FAIL，把整个会话**悄悄重建成 CPU-only**
+
+    现象极具迷惑性：日志里后端还写着 CUDA、显存也涨了（上下文建起来了），但算子全在 CPU 上跑。
+    这里把那几个目录同时加进 DLL 搜索目录和 PATH（前者管带标志位的 LoadLibraryEx，
+    后者管朴素的 LoadLibraryA），再把 cuDNN 目录下 ORT 没加载的 DLL 补上一遍。
+    """
+    if os.name != "nt":
+        return                                    # Linux 上子库靠 RPATH=$ORIGIN 找得到
+    import ctypes
+    import glob
+    dirs = nvidia_dll_dirs()
+    if not dirs:
+        return
+    path = os.environ.get("PATH", "")
+    for d in dirs:
+        try:
+            os.add_dll_directory(d)               # LoadLibraryEx(LOAD_LIBRARY_SEARCH_*) 用得上
+        except (AttributeError, OSError):         # pragma: no cover - 取决于系统
+            pass
+        if d.lower() not in path.lower():
+            path = d + os.pathsep + path
+    os.environ["PATH"] = path                     # 朴素的 LoadLibraryA 只认 PATH
+    for d in dirs:
+        if os.path.basename(os.path.dirname(d)).lower() != "cudnn":
+            continue
+        for dll in sorted(glob.glob(os.path.join(d, "cudnn*.dll"))):
+            try:
+                ctypes.CDLL(dll)                  # 按名字再加载时，已在进程里的模块直接命中
+            except OSError:                       # pragma: no cover - 取决于本机安装
+                log.debug("预加载 %s 失败", dll)
+
+
 def _preload_gpu_runtime(ort) -> None:
     """把 pip 装的 CUDA / cuDNN 运行库预加载进来，让 GPU 后端能被 dlopen 到。
 
@@ -89,9 +143,12 @@ def _preload_gpu_runtime(ort) -> None:
     Windows 与 Linux 都适用；没有这个接口的老版本就跳过，行为和以前一样。
     """
     global _GPU_RUNTIME_PRELOADED
-    if _GPU_RUNTIME_PRELOADED or not hasattr(ort, "preload_dlls"):
+    if _GPU_RUNTIME_PRELOADED:
         return
     _GPU_RUNTIME_PRELOADED = True
+    _open_cudnn_search_path()                      # 先把搜索路径打开，preload_dlls 之后 cuDNN 还会自己找子库
+    if not hasattr(ort, "preload_dlls"):
+        return
     try:
         ort.preload_dlls()
     except Exception as e:                             # pragma: no cover - 取决于本机安装
@@ -170,7 +227,8 @@ class _SharedSession:
     def __init__(self, session, spec: dict, providers: list[str] | None = None) -> None:
         self.session = session
         self.spec = spec
-        self.providers = providers or []       # 实际生效的推理后端，第一个是主用的
+        self.providers = providers or []       # 建会话时生效的推理后端，第一个是主用的
+        self.fell_back = False                 # 第一次推理后 onnxruntime 是否把会话降级成了 CPU
         self.refs = 0
 
 
@@ -226,6 +284,31 @@ def active_sessions() -> int:
         return len(_SESSIONS)
 
 
+def _check_silent_cpu_fallback(holder: _SharedSession) -> None:
+    """推理之后确认后端没被 onnxruntime 悄悄换成 CPU。
+
+    GPU 后端注册成功、但第一次执行某个算子时失败（最典型的是 cuDNN 找不到自己的引擎子库），
+    onnxruntime 的 Python 封装会捕获 EP_FAIL，**把整个会话重建成 CPU-only 再重试一次**，
+    只往 stderr 打几行，不抛异常。结果是"日志写着 CUDA、显存也涨了，速度却和 CPU 一样"。
+    建会话时记下的后端此时已经不作数了，所以推理后再问一次会话本人。
+    """
+    if holder.fell_back or not any(p in _GPU_PROVIDERS for p in holder.providers):
+        return
+    try:
+        now = list(holder.session.get_providers())
+    except Exception:                                  # pragma: no cover - 取决于本机安装
+        return
+    if any(p in _GPU_PROVIDERS for p in now):
+        return
+    holder.fell_back = True
+    holder.providers = now
+    log.warning("推理后端已被 onnxruntime 降级为 %s：GPU 后端注册成功，但真正执行算子时失败了，"
+                "于是会话被重建成 CPU-only（stderr 上通常有 cuDNN/CUDA 的报错）。"
+                "后面这个模型都会跑在 CPU 上。常见原因是 cuDNN 的引擎子库没找到"
+                "（Could not locate cudnn_*.dll）——用 cvflow gpu 模型.onnx --bench 可以定位",
+                "、".join(now) or "CPU")
+
+
 # --------------------------------------------------------------------------- 批处理执行器
 class _Runner:
     """一组相同预处理配置共用的批处理执行器，背后是共享的推理会话。"""
@@ -270,6 +353,7 @@ class _Runner:
         x = self._assemble(items)
         try:
             outs = self.holder.session.run(None, {self.spec["name"]: x})
+            _check_silent_cpu_fallback(self.holder)
         except Exception as e:
             raise NodeError(f"推理失败：模型期望输入 {describe_shape(self.spec['shape'])}，"
                             f"实际送入 {describe_shape(list(x.shape))}。"

@@ -243,6 +243,23 @@ def cmd_gpu(args) -> int:
     else:
         delta = None
         print("  显存：这台机器查不到（没有 nvidia-smi 或驱动不支持），请手动对比 nvidia-smi 的输出")
+    # 真跑一次：GPU 后端可能注册成功、执行算子时才失败，onnxruntime 会把会话悄悄重建成 CPU-only
+    if on_gpu:
+        try:
+            feed, _ = _bench_feed(holder.session, args.size)
+            holder.session.run(None, feed)
+        except Exception as e:
+            print(f"  试跑一次推理失败：{str(e).splitlines()[0][:160]}")
+        after_run = list(holder.session.get_providers())
+        if not any(p in dl._GPU_PROVIDERS for p in after_run):
+            on_gpu = False
+            where = after_run[0] if after_run else "?"
+            print(f"  ⚠ 真跑一次之后，后端变成了 {'、'.join(after_run)}")
+            print("     GPU 后端注册成功，但执行算子时失败了，onnxruntime 把会话重建成了 CPU-only——"
+                  "上面 stderr 里的报错就是原因")
+            print("     最常见：Could not locate cudnn_*.dll（cuDNN 的引擎子库没找到），"
+                  "装的 cuDNN 版本比 onnxruntime 预加载名单新时就会这样")
+
     if not on_gpu:
         print("  → 跑在 CPU 上，所以显存不会变。按上面的提示修好后端即可")
     elif delta is not None and delta < 50:
