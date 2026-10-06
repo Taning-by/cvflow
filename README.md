@@ -75,6 +75,7 @@ pip install -e ".[dev,cpu]"        # 没有 NVIDIA 显卡
 cvflow gpu                      # 装了哪个包、CUDA 后端能不能加载、认不认得显卡
 cvflow gpu 你的模型.onnx         # 实测：实际用哪个后端、显存涨了多少
 cvflow gpu --require-gpu        # 给脚本/上线检查用：CUDA 没跑起来就返回非零退出码
+cvflow gpu 你的模型.onnx --bench # 实测 GPU 比 CPU 快几倍，并列出每个算子落在哪个后端
 pytest -q
 ```
 

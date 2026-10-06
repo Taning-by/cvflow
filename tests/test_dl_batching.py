@@ -365,6 +365,44 @@ def test_onnxruntime_outside_venv_only_flags_paths_outside_the_venv(tmp_path, mo
     assert cli._onnxruntime_outside_venv(outside) is False
 
 
+def test_dl_gpu_bench_runs_and_reports_times(cls_model, capsys):
+    """--bench 在 CPU 后端上也要能跑完：报出耗时，并说明没有可比的对象。"""
+    from cvflow.cli import main
+    assert main(["gpu", cls_model, "--provider", "cpu", "--bench", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "实测推理" in out and "各跑 3 次" in out
+    assert "CPUExecutionProvider" in out and "中位" in out
+    assert "当前就跑在 CPU 上" in out                 # CPU 上没有可比对象，不去建第二个会话
+
+
+def test_format_profile_splits_time_by_backend():
+    """profiling 汇总：分后端报算子数和耗时，并指出时间耗在哪一边（这正是"注册了 CUDA
+    却和 CPU 一样快"的判据——后端名字对，但算子落在 CPU 上）。"""
+    from cvflow.cli import format_profile
+    runs = 2
+    events = [{"cat": "Session", "dur": 999999, "args": {}}]                  # 非算子事件要被忽略
+    for _ in range(100 * runs):                                               # CUDA 上 100 个算子，整体很快
+        events.append({"cat": "Node", "dur": 20, "args": {"provider": "CUDAExecutionProvider", "op_name": "Conv"}})
+    for _ in range(2 * runs):                                                 # CPU 上 2 个算子，却吃掉大部分时间
+        events.append({"cat": "Node", "dur": 20000, "args": {"provider": "CPUExecutionProvider",
+                                                             "op_name": "NonMaxSuppression"}})
+    lines = format_profile(events, runs)
+    text = "\n".join(lines)
+    assert "CUDAExecutionProvider" in text and "100 个算子" in text
+    assert "CPUExecutionProvider" in text and "2 个算子" in text
+    cpu_line = next(l for l in lines if "CPUExecutionProvider" in l and "个算子" in l)
+    assert "时间主要耗在这里" in cpu_line                                      # 40 ms 远超 CUDA 的 2 ms
+    assert "NonMaxSuppression" in text                                        # 点名最费时的 CPU 算子
+    assert "40.0 ms" in cpu_line and "2.0 ms" in text                          # 微秒→毫秒、并摊到每次推理
+
+
+def test_format_profile_without_node_events_says_nothing():
+    """没有算子事件（profiling 没开或格式变了）时不要硬凑输出。"""
+    from cvflow.cli import format_profile
+    assert format_profile([], 3) == []
+    assert format_profile([{"cat": "Session", "dur": 10, "args": {}}], 3) == []
+
+
 def test_dl_disabling_a_node_unloads_its_weights(cls_model):
     """禁用节点就把权重放掉，重新启用再加载回来。"""
     from cvflow.operators.dl import active_sessions

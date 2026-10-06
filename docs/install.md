@@ -296,7 +296,27 @@ cvflow gpu D:\models\best.onnx
   本进程显存：0 → 942 MiB（+942）        ← 显存涨了，这是跑在显卡上最硬的证据
 ```
 
-**显存涨了才算真的用上了 CUDA。** 后端写着 CUDA 但显存没变，说明看的不是同一块卡（用 `--device` 指定）。
+**显存涨了才算真的用上了 CUDA。** 后端写着 CUDA 但显存没变，有两种可能：看的不是同一块卡
+（用 `--device` 指定），或者后端注册上了、算子却跑在 CPU 上。后一种用 `--bench` 查：
+
+```powershell
+cvflow gpu D:\models\best.onnx --bench
+```
+
+```
+== 实测推理（各跑 20 次，取中位数）==
+  输入形状：1×3×640×640
+  CUDAExecutionProvider          中位    31.4 ms（30.7 ~ 33.2）
+  CPUExecutionProvider           中位    91.2 ms（90.8 ~ 92.9）
+  → GPU 比 CPU 快 2.9 倍
+
+  算子实际落在哪个后端（profiling，按每次推理的耗时摊算）：
+    CUDAExecutionProvider            20 个算子     40.6 ms
+```
+
+`get_providers()` 报的是**注册成功**的后端，而 onnxruntime 会把 CUDA 后端吃不下的算子
+**静默切回 CPU**——于是日志写着 CUDA、速度却和 CPU 一样。上面这张算子分布表是唯一能分辨的东西：
+CPU 那一行算子少但耗时占大头，就说明卡在那几个算子上（量化模型、NMS、某些 Resize/TopK 最常见）。
 
 装完跑一遍测试确认环境完整：
 

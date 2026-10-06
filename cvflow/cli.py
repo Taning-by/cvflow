@@ -94,6 +94,43 @@ def _onnxruntime_outside_venv(ort) -> bool:
     return not where.startswith(os.path.realpath(sys.prefix) + os.sep)
 
 
+def _bench_session(session, feed, rounds: int) -> tuple[float, float, float]:
+    """跑 rounds 次推理，返回（中位、最快、最慢）毫秒。
+
+    前几次不计数：cuDNN 第一次要挑卷积算法，CPU 那边也要把权重读进缓存，
+    算进去会让 GPU 看起来比实际慢得多。
+    """
+    for _ in range(3):
+        session.run(None, feed)
+    ts = []
+    for _ in range(rounds):
+        t0 = time.perf_counter()
+        session.run(None, feed)
+        ts.append((time.perf_counter() - t0) * 1000)
+    ts.sort()
+    return ts[len(ts) // 2], ts[0], ts[-1]
+
+
+def _bench_feed(session, size: int):
+    """按模型第一个输入的形状造一份随机输入；动态维度用 batch=1 和给定的边长补上。"""
+    import numpy as np
+    from .operators import dl
+    inp = session.get_inputs()[0]
+    spec = dl.read_input_spec(session)
+    shape = []
+    for i, d in enumerate(inp.shape or [1, 3, size, size]):
+        if isinstance(d, int) and d > 0:
+            shape.append(d)
+        elif i == 0:
+            shape.append(1)                                   # 动态 batch
+        elif spec["layout"] == "NHWC" and i == 3 or spec["layout"] == "NCHW" and i == 1:
+            shape.append(3)                                   # 动态通道，按彩色算
+        else:
+            shape.append(size)                                # 动态高宽
+    dtype = np.float16 if "float16" in inp.type else np.float32
+    return {inp.name: np.random.rand(*shape).astype(dtype)}, shape
+
+
 def _require_gpu_failed() -> int:
     """--require-gpu 下 CUDA 没跑起来：打一句结论并给非零退出码（安装脚本/CI 靠它判断）。"""
     print("\n✗ 要求用 GPU，但 CUDA 后端没能跑起来。按上面的提示修好再重试，"
@@ -209,9 +246,130 @@ def cmd_gpu(args) -> int:
     if not on_gpu:
         print("  → 跑在 CPU 上，所以显存不会变。按上面的提示修好后端即可")
     elif delta is not None and delta < 50:
-        print("  ⚠ 跑在显卡上但显存几乎没涨，请确认看的是同一块卡（--device 可以指定）")
+        print("  ⚠ 跑在显卡上但显存几乎没涨。两种可能：看的不是同一块卡（--device 指定），"
+              "或者后端注册上了但算子实际跑在 CPU 上——用 --bench 测一下就知道")
+
+    if args.bench:
+        _bench(str(Path(args.model).resolve()), holder, where, on_gpu, args)
+
     node.unload()
     return 0 if (on_gpu or not args.require_gpu) else _require_gpu_failed()
+
+
+def _bench(model_path: str, holder, where: str, on_gpu: bool, args) -> None:
+    """把当前后端和纯 CPU 各跑一遍，再看每个算子实际落在哪个后端上。
+
+    「日志说用了 CUDA，但和 CPU 一样快」几乎都在这里露馅：get_providers() 报的是
+    *注册成功* 的后端，而 onnxruntime 会把 CUDA 后端吃不下的算子静默切回 CPU，
+    于是后端名字写着 CUDA、算力其实在 CPU 上。只有计时和 profiling 能分辨。
+    """
+    import onnxruntime as ort
+    from .operators import dl
+    print(f"\n== 实测推理（各跑 {args.bench} 次，取中位数）==")
+    try:
+        feed, shape = _bench_feed(holder.session, args.size)
+    except Exception as e:
+        print(f"  造不出随机输入，跳过实测：{e}")
+        return
+    dynamic = dl.read_input_spec(holder.session)["width"] is None
+    print(f"  输入形状：{'×'.join(str(d) for d in shape)}"
+          + ("（模型是动态尺寸，高宽按 --size 取，默认 640）" if dynamic else ""))
+    med, lo, hi = _bench_session(holder.session, feed, args.bench)
+    print(f"  {where:30s} 中位 {med:7.1f} ms（{lo:.1f} ~ {hi:.1f}）")
+    if not on_gpu:
+        print("  → 当前就跑在 CPU 上，没有可比的对象")
+        return
+
+    so = ort.SessionOptions()
+    so.log_severity_level = 3
+    try:
+        cpu = ort.InferenceSession(model_path, so, providers=["CPUExecutionProvider"])
+        cmed, clo, chi = _bench_session(cpu, feed, args.bench)
+    except Exception as e:
+        # 纯 CPU 跑不起来不影响前面的结论，别让整条命令挂掉
+        print(f"  （纯 CPU 的对比跑不了，跳过：{str(e).splitlines()[0][:120]}）")
+        _profile_providers(model_path, holder.providers, feed, args.device)
+        return
+    print(f"  {'CPUExecutionProvider':30s} 中位 {cmed:7.1f} ms（{clo:.1f} ~ {chi:.1f}）")
+    speedup = cmed / med if med else 0
+    print(f"  → GPU 比 CPU 快 {speedup:.1f} 倍")
+
+    _profile_providers(model_path, holder.providers, feed, args.device)
+
+    if speedup < 1.5:
+        print("\n  ⚠ 几乎没快，说明算力多半还在 CPU 上。对照上面的算子分布看：")
+        print("     · CPU 那一行算子多、耗时占大头 → 模型里有 CUDA 后端吃不下的算子")
+        print("       （量化过的 INT8/QDQ 模型最常见，整段会切回 CPU；NMS、某些 Resize/TopK 也会）")
+        print("     · 两边都很快、差距不大 → 模型本身计算量太小，瓶颈在数据搬运不在算力")
+        print("     · 想确认不是显卡选错：cvflow gpu 模型.onnx --bench --device 1")
+
+
+def format_profile(events: list, runs: int) -> list[str]:
+    """把 onnxruntime 的 profiling 事件汇总成「每个后端跑了几个算子、各花多少时间」。
+
+    事件里的 dur 是微秒、而且是 runs 次的累计，这里换算成「每次推理的毫秒数」。
+    """
+    import collections
+    count: collections.Counter = collections.Counter()
+    spent: collections.Counter = collections.Counter()
+    ops: dict = collections.defaultdict(collections.Counter)
+    for e in events:
+        if e.get("cat") != "Node":
+            continue
+        args = e.get("args") or {}
+        prov = args.get("provider")
+        if not prov:
+            continue
+        ms = e.get("dur", 0) / max(runs, 1) / 1000.0
+        count[prov] += 1
+        spent[prov] += ms
+        ops[prov][args.get("op_name", "?")] += ms
+    if not count:
+        return []
+    lines = ["", "  算子实际落在哪个后端（profiling，按每次推理的耗时摊算）："]
+    hottest = max(spent.values())
+    for prov, ms in spent.most_common():
+        n = count[prov] // max(runs, 1) or count[prov]
+        flag = "  ← 时间主要耗在这里" if ms == hottest and len(spent) > 1 else ""
+        lines.append(f"    {prov:30s} {n:4d} 个算子  {ms:7.1f} ms{flag}")
+    cpu = "CPUExecutionProvider"
+    if len(spent) > 1 and cpu in ops:
+        top = "、".join(f"{op}({ms:.1f} ms)" for op, ms in ops[cpu].most_common(4))
+        lines.append(f"    落在 CPU 上最费时的算子：{top}")
+    return lines
+
+
+def _profile_providers(model_path: str, providers: list[str], feed: dict, device: int) -> None:
+    """用 onnxruntime 的 profiling 统计每个算子实际落在哪个后端，按耗时排序。"""
+    import collections
+    import json
+    import os
+    import onnxruntime as ort
+    from .operators import dl
+    so = ort.SessionOptions()
+    so.log_severity_level = 3
+    so.enable_profiling = True
+    request = [(p, {"device_id": device}) if p in dl._GPU_PROVIDERS else p for p in providers]
+    runs = 3
+    prof = ""
+    try:
+        sess = ort.InferenceSession(model_path, so, providers=request)
+        for _ in range(runs):
+            sess.run(None, feed)
+        prof = sess.end_profiling()
+        with open(prof, encoding="utf-8") as f:
+            events = json.load(f)
+    except Exception as e:                                     # pragma: no cover - 取决于本机安装
+        print(f"  （算子分布测不了：{e}）")
+        return
+    finally:
+        try:
+            os.remove(prof)
+        except Exception:
+            pass
+
+    for line in format_profile(events, runs):
+        print(line)
 
 
 def cmd_validate(args) -> int:
@@ -365,6 +523,11 @@ def main(argv=None) -> int:
     gp.add_argument("--device", type=int, default=0, help="显卡编号")
     gp.add_argument("--require-gpu", action="store_true",
                     help="CUDA 没跑起来就以非零退出码结束，给安装脚本和 CI 用")
+    gp.add_argument("--bench", nargs="?", type=int, const=20, default=0, metavar="次数",
+                    help="实测推理耗时，并和纯 CPU 对比（默认 20 次）。"
+                         "「日志说用了 CUDA 却和 CPU 一样快」就用它查")
+    gp.add_argument("--size", type=int, default=640, metavar="边长",
+                    help="动态尺寸模型做实测时用的高宽，默认 640")
     gp.set_defaults(fn=cmd_gpu)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
