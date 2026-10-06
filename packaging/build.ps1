@@ -128,6 +128,15 @@ if ($gpuSize -eq 0 -and -not $SkipGpu) {
     Die "GPU 组件一个文件都没收到。环境里多半是 CPU 版 onnxruntime，或者 CUDA/cuDNN 的包没装上"
 }
 
+# 节点数量要和源码环境一致：少了说明 spec 里的 hidden imports 漏了某个模块，
+# 这种错 PyInstaller 只打一行 ERROR 就继续，不盯着的话会打出一个悄悄少节点的程序
+Say "核对节点数量"
+$expect = (& $Python -m cvflow nodes --json | ConvertFrom-Json).Count
+$got = (& "$app\cvflow.exe" nodes --json | ConvertFrom-Json).Count
+Note "源码环境 $expect 个，打包后 $got 个"
+if ($got -lt $expect) { Die "打包后少了 $($expect - $got) 个节点，检查 packaging\cvflow.spec 里的 hidden imports" }
+Ok "一致"
+
 # 冻结出来的程序先自检一次：连 onnxruntime 都加载不了的话，封成安装包也没意义
 Say "自检冻结后的程序"
 & "$app\cvflow.exe" gpu

@@ -60,13 +60,22 @@ def onnxruntime_binaries():
 datas = collect_data_files("cvflow", includes=["ui/assets/*"])
 binaries = onnxruntime_binaries() + nvidia_binaries()
 
+# 这些模块由注册表按名字动态加载，静态分析看不出来，必须显式列出。
+# 名字写错了 PyInstaller 只打一行 ERROR 就继续（serial_dev 就是这么混过去的），
+# 打出来的程序会悄悄少掉节点——所以这里先验一遍，错了直接让构建失败。
 hidden = [
     "cvflow.operators.source", "cvflow.operators.preprocess", "cvflow.operators.analysis",
     "cvflow.operators.dl", "cvflow.operators.logic", "cvflow.operators.output",
-    "cvflow.camera.folder", "cvflow.camera.opencv_cam",
-    "cvflow.comm.tcp", "cvflow.comm.serial_dev", "cvflow.comm.modbus",
+    "cvflow.camera.folder", "cvflow.camera.opencv_cam", "cvflow.camera.manager",
+    "cvflow.comm.tcp", "cvflow.comm.serial_port", "cvflow.comm.modbus",
+    "cvflow.comm.mc", "cvflow.comm.s7", "cvflow.comm.manager",
     "onnxruntime", "onnxruntime.capi._pybind_state",
 ]
+
+import importlib.util as _ilu
+_missing = [m for m in hidden if _ilu.find_spec(m) is None]
+if _missing:
+    raise SystemExit("spec: hidden imports not importable: " + ", ".join(_missing))
 
 excludes = ["tkinter", "matplotlib", "pytest", "IPython", "notebook", "torch", "torchvision",
             "PySide6.QtWebEngineCore", "PySide6.Qt3DCore", "PySide6.QtCharts", "PySide6.QtDataVisualization"]

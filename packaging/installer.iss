@@ -66,20 +66,16 @@ Name: "examples"; Description: "示例方案与示例图像"; Types: full cpu
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"
 Name: "assoc";       Description: "用 CVFlow 打开 .cvflow 方案文件"; GroupDescription: "文件关联:"
-
-; GPU 组件的文件有两处落脚点，两处都要排除/收取：
-;   _internal\nvidia\<包>\bin\      我们在 spec 里按原布局收的 CUDA / cuDNN 运行库
-;   _internal\ 根目录                PyInstaller 解析 provider 依赖时顺手拖进来的那几个
-; 所以下面用文件名模式而不是固定路径——散落在哪都能兜住。
-#define GpuExcludes "_internal
-vidia\*,_internal\onnxruntime\capi\onnxruntime_providers_cuda.dll,_internal\onnxruntime\capi\onnxruntime_providers_tensorrt.dll,_internal\cudnn*.dll,_internal\cublas*.dll,_internal\cublasLt*.dll,_internal\cudart64*.dll,_internal\cufft*.dll,_internal\curand*.dll,_internal
-vrtc*.dll,_internal
-vJitLink*.dll"
-
 [Files]
+; GPU 组件的文件有两处落脚点，两处都要排除/收取：
+;   _internal\nvidia\<包>\bin\   spec 里按原布局收的 CUDA / cuDNN 运行库
+;   _internal\ 根目录            PyInstaller 解析 provider 依赖时顺手拖进来的那几个
+; 所以用文件名模式而不是固定路径——散落在哪都兜得住。
+; 这串**不要**抽成 #define：ISPP 的字符串字面量会处理反斜杠转义，写起来容易出错；
+; [Files] 行里的路径是普通文本，照抄即可。
 ; ---- 主程序：除了 GPU 那几样，其余全收 ----
 Source: "{#SrcDir}\*"; DestDir: "{app}"; Components: main; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "{#GpuExcludes}"
+    Excludes: "_internal\nvidia\*,_internal\onnxruntime\capi\onnxruntime_providers_cuda.dll,_internal\onnxruntime\capi\onnxruntime_providers_tensorrt.dll,_internal\cudnn*.dll,_internal\cublas*.dll,_internal\cublasLt*.dll,_internal\cudart64*.dll,_internal\cufft*.dll,_internal\curand*.dll,_internal\nvrtc*.dll,_internal\nvJitLink*.dll"
 ; ---- GPU 组件：CUDA provider + CUDA/cuDNN 运行库 ----
 Source: "{#SrcDir}\_internal\onnxruntime\capi\onnxruntime_providers_cuda.dll"; DestDir: "{app}\_internal\onnxruntime\capi"; \
     Components: gpu; Flags: ignoreversion skipifsourcedoesntexist
