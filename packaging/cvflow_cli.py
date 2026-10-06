@@ -13,6 +13,8 @@ import sys
 
 def main() -> int:
     multiprocessing.freeze_support()
+    from cvflow.cli import force_utf8_output
+    force_utf8_output()          # 输出被重定向时别因为中文崩掉（英文 Windows 的 cp1252）
     from cvflow.cli import main as cli_main
     return cli_main(sys.argv[1:])
 

@@ -544,7 +544,26 @@ def cmd_gui(args) -> int:
     return ui_main([sys.argv[0]] + ([args.solution] if args.solution else []))
 
 
+def force_utf8_output() -> None:
+    """把标准输出/错误切成 UTF-8，让中文在任何 Windows 代码页下都不会崩。
+
+    输出接到控制台时 Python 用 WriteConsoleW，中文没问题；但一旦被**重定向**
+    （管道、`> log.txt`、CI 抓日志），用的就是本地编码——英文 Windows 是 cp1252，
+    写中文直接抛 UnicodeEncodeError，整个进程挂掉。产线上 `cvflow serve > 日志.txt`
+    就会踩到。errors="replace" 再兜一层：真遇到编不出来的字符也只是显示成 ?，不中断。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "").replace("_", "")
+        if enc.startswith("utf8") or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                          # pragma: no cover - 取决于流的类型
+            pass
+
+
 def main(argv=None) -> int:
+    force_utf8_output()
     # 输出重定向到管道或文件时：编码不支持中文会直接崩溃，改用替代符；
     # 同时改成行缓冲，否则 serve 的日志会攒在缓冲区里，运维 tail 日志看不到东西。
     for stream in (sys.stdout, sys.stderr):

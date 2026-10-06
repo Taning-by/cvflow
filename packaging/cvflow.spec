@@ -32,7 +32,9 @@ def nvidia_binaries():
     """
     import sysconfig
     if os.environ.get("CVFLOW_SKIP_NVIDIA"):
-        print("spec: CVFLOW_SKIP_NVIDIA=1，跳过 CUDA / cuDNN 运行库")
+        # 只打 ASCII：spec 跑在 PyInstaller 的进程里，输出被重定向时用的是本地编码，
+        # 英文 Windows 是 cp1252，打中文会直接抛 UnicodeEncodeError
+        print("spec: CVFLOW_SKIP_NVIDIA=1, skipping CUDA / cuDNN runtime libraries")
         return []
     out = []
     for root in {sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]}:

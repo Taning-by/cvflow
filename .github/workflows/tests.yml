@@ -112,6 +112,8 @@ jobs:
         run: .\packaging\build.ps1 -SkipGpu -Version 0.0.0-ci
       - name: 冻结出来的程序能跑
         shell: pwsh
+        env:
+          PYTHONUTF8: "1"
         run: |
           .\dist\CVFlow\cvflow.exe nodes | Select-Object -First 3
           .\dist\CVFlow\cvflow.exe gpu

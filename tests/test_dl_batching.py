@@ -1374,3 +1374,45 @@ def test_gpu_component_detection_reads_the_provider_dll(tmp_path):
     assert _gpu_component_installed(ort) is False
     (capi / "onnxruntime_providers_cuda.dll").write_bytes(b"x")
     assert _gpu_component_installed(ort) is True
+
+
+def test_chinese_output_survives_a_non_utf8_console(capsys):
+    """输出被重定向到非 UTF-8 的流时，中文不能把进程写崩（回归）。
+
+    Windows 上输出接控制台走的是 WriteConsoleW，中文没问题；一旦被重定向
+    （管道、`cvflow serve > 日志.txt`、CI 抓日志）用的就是本地编码，
+    英文 Windows 是 cp1252，写中文直接抛 UnicodeEncodeError 整个进程挂掉。
+    CI 打包时就是这么挂的。
+    """
+    import io
+    import sys
+    from cvflow.cli import force_utf8_output
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    old = sys.stdout
+    sys.stdout = stream
+    try:
+        with pytest.raises(UnicodeEncodeError):          # 不处理的话确实会崩
+            print("推理后端 CUDAExecutionProvider")
+        force_utf8_output()
+        print("推理后端 CUDAExecutionProvider")          # 处理之后正常
+        stream.flush()
+    finally:
+        sys.stdout = old
+    assert "CUDAExecutionProvider" in stream.buffer.getvalue().decode("utf-8")
+
+
+def test_force_utf8_output_leaves_utf8_streams_alone():
+    """已经是 UTF-8 的流不要去动它（别把 pytest 的捕获流重新包一层）。"""
+    import io
+    import sys
+    from cvflow.cli import force_utf8_output
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    old = sys.stdout
+    sys.stdout = stream
+    try:
+        force_utf8_output()
+        assert sys.stdout is stream and stream.encoding.lower().replace("-", "") == "utf8"
+    finally:
+        sys.stdout = old

@@ -42,6 +42,12 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 
+# 构建过程里的输出会被重定向（CI 抓日志、管道），而本地编码在英文 Windows 上是 cp1252，
+# 打中文会抛 UnicodeEncodeError 把构建弄挂。把子进程的 I/O 编码定死成 UTF-8。
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 function Say  { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok   { param($m) Write-Host "    $m"   -ForegroundColor Green }
 function Note { param($m) Write-Host "    $m"   -ForegroundColor DarkGray }
