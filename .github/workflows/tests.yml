@@ -31,3 +31,47 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest -q
+
+  # 一键安装脚本本身也要测：装环境是用户的第一道门，脚本坏了后面全都无从开始。
+  # 这里跑 CPU 路径（CI 没有显卡），脚本里除了驱动检查和 .[gpu] 那一行，其余步骤与 GPU 路径完全相同。
+  install-script:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0 \
+            libdbus-1-3 libfontconfig1 libglib2.0-0 libxcb-cursor0
+      - name: install.ps1 语法检查（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path install.ps1).Path, [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | ForEach-Object { Write-Host $_.Message }; exit 1 }
+          Write-Host "install.ps1 语法 OK"
+      - name: 跑一遍 install.ps1 -Cpu（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\install.ps1 -Cpu
+      - name: 跑一遍 install.sh --cpu（Linux）
+        if: runner.os == 'Linux'
+        run: bash -n install.sh && ./install.sh --cpu
+      - name: 脚本建出来的环境能跑测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: bash
+        run: |
+          PY=.venv/bin/python; [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" -m cvflow gpu
+          "$PY" -m pytest -q
