@@ -23,12 +23,15 @@ onnxruntime 的 CUDA 后端是**单独一个 DLL**，运行时才去加载。不
 * 64 位 Python 3.10–3.13，并且**已经按 GPU 方式装好环境**（`.\install.ps1`）——
   安装包里的 CUDA/cuDNN 就是从这个环境里收走的
 * [Inno Setup 6](https://jrsoftware.org/isdl.php)：`winget install JRSoftware.InnoSetup`
+  （没装也能先跑，冻结那一步照常完成，到封装时才会提示；装完用 `-InstallerOnly`
+  接着封装即可，**不必重新冻结**——那一步要十几分钟）
 
 ```powershell
 .\packaging\build.ps1                    # 完整构建，产出 dist\CVFlow-Setup-0.1.0-x64.exe
 .\packaging\build.ps1 -SkipGpu           # 只打基础部分（约 530 MB），CI 用这个验证链路
 .\packaging\build.ps1 -TrimCudnn         # GPU 组件去掉 cudnn_adv64_9.dll（258 MB，RNN/注意力才用）
 .\packaging\build.ps1 -FreezeOnly        # 只做 PyInstaller，不封安装包（调试打包问题）
+.\packaging\build.ps1 -InstallerOnly     # 反过来：跳过冻结，把已有的 dist\CVFlow 直接封成安装包
 .\packaging\build.ps1 -Clean             # 先清 build\ 和 dist\
 ```
 

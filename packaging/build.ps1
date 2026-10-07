@@ -28,12 +28,18 @@
 .EXAMPLE
     .\packaging\build.ps1 -FreezeOnly
     只做 PyInstaller 那一步，产出 dist\CVFlow\，不封安装包（调试打包问题时用）
+
+.EXAMPLE
+    .\packaging\build.ps1 -InstallerOnly
+    反过来：跳过冻结，直接把已有的 dist\CVFlow 封成安装包。
+    冻结要十几分钟（光 CUDA/cuDNN 就 1.9 GB），补装完 Inno Setup 之后用这个，不必重来
 #>
 [CmdletBinding()]
 param(
     [switch] $SkipGpu,                      # 不收 CUDA/cuDNN 运行库
     [switch] $TrimCudnn,                    # GPU 组件里去掉 cudnn_adv（省 258 MB）
     [switch] $FreezeOnly,                   # 只冻结，不封安装包
+    [switch] $InstallerOnly,                # 跳过冻结，直接把已有的 dist\CVFlow 封成安装包
     [switch] $Clean,                        # 先清掉 build/ 和 dist/
     [string] $Python = "",                  # 用哪个 Python，默认优先用项目里的 .venv
     [string] $Version = "0.1.0"
@@ -60,7 +66,20 @@ function Die  { param($m) Write-Host "`n✗ $m`n" -ForegroundColor Red; exit 1 }
 
 Set-Location -LiteralPath $Root -ErrorAction Stop
 
+$app = "$Root\dist\CVFlow"
+
+if ($InstallerOnly) {
+    # 冻结那一步很贵（要搬 1.9 GB 的 CUDA/cuDNN），补装完 Inno Setup 之后没必要重做一遍
+    Say "按 -InstallerOnly 跳过冻结，直接用已有的 $app"
+    if (-not (Test-Path "$app\CVFlow.exe")) {
+        Die "没有 $app\CVFlow.exe。先跑一次完整构建（或 -FreezeOnly）把程序冻结出来"
+    }
+    $built = (Get-Item "$app\CVFlow.exe").LastWriteTime
+    Ok "沿用 $built 冻结的那一份"
+}
+
 # --------------------------------------------------------------------- 1. Python
+if (-not $InstallerOnly) {
 if (-not $Python) {
     foreach ($cand in @("$Root\.venv\Scripts\python.exe", "$Root\.python\python.exe")) {
         if (Test-Path $cand) { $Python = $cand; break }
@@ -108,12 +127,12 @@ Say "PyInstaller 冻结程序（第一次比较久）"
 $env:CVFLOW_SKIP_NVIDIA = if ($SkipGpu) { "1" } else { "" }
 & $Python -m PyInstaller --noconfirm --clean --distpath "$Root\dist" --workpath "$Root\build" "$Root\packaging\cvflow.spec"
 if ($LASTEXITCODE -ne 0) { Die "PyInstaller 失败，上面的输出是第一手线索" }
-$app = "$Root\dist\CVFlow"
 foreach ($exe in @("$app\CVFlow.exe", "$app\cvflow.exe")) {
     if (-not (Test-Path $exe)) { Die "没产出 $exe，打包配置可能有问题" }
 }
 $size = [math]::Round(((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum / 1GB), 2)
 Ok "冻结完成：$app（$size GB）"
+}   # -InstallerOnly 到此为止，下面的组件切分和封装两种模式都要做
 
 if ($TrimCudnn) {
     $adv = Get-ChildItem "$app\_internal\nvidia\cudnn\bin\cudnn_adv64_*.dll" -ErrorAction SilentlyContinue
@@ -141,11 +160,13 @@ if ($gpuSize -eq 0 -and -not $SkipGpu) {
 # 节点数量要和源码环境一致：少了说明 spec 里的 hidden imports 漏了某个模块，
 # 这种错 PyInstaller 只打一行 ERROR 就继续，不盯着的话会打出一个悄悄少节点的程序
 Say "核对节点数量"
+if ($InstallerOnly) { Note "跳过（-InstallerOnly 没有参照的源码环境）" } else {
 $expect = (& $Python -m cvflow nodes --json | ConvertFrom-Json).Count
 $got = (& "$app\cvflow.exe" nodes --json | ConvertFrom-Json).Count
 Note "源码环境 $expect 个，打包后 $got 个"
 if ($got -lt $expect) { Die "打包后少了 $($expect - $got) 个节点，检查 packaging\cvflow.spec 里的 hidden imports" }
 Ok "一致"
+}
 
 # 冻结出来的程序先自检一次：连 onnxruntime 都加载不了的话，封成安装包也没意义
 Say "自检冻结后的程序"
@@ -171,7 +192,12 @@ if (-not $iscc) {
 找不到 Inno Setup 6（ISCC.exe）。装一个：
     winget install JRSoftware.InnoSetup
     或 choco install innosetup
-只想要冻结好的程序目录（不封安装包）：.\packaging\build.ps1 -FreezeOnly
+    或从 https://jrsoftware.org/isdl.php 下载安装
+
+**装完不用重新冻结**（那一步要十几分钟），直接接着封装即可：
+    .\packaging\build.ps1 -InstallerOnly
+
+只想要冻结好的程序目录、不封安装包：.\packaging\build.ps1 -FreezeOnly
 "@
 }
 Note $iscc
