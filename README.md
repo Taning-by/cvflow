@@ -206,11 +206,23 @@ Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用
 **迈德威视和海康这类相机走的是厂商自己的协议**，不是 USB3 Vision 标准，所以 `opencv` 和
 `genicam` 两条路都接不上，必须用对应的 SDK 后端。接法见下面「接一台迈德威视相机」。
 
+### 不确定相机能不能接？先问一句
+
+```bash
+cvflow cameras            # 每条取图路线分别试一遍，告诉你谁认得这台相机
+cvflow cameras --gige     # 再加上网络相机的广播搜索（几秒）
+```
+
+输出会分段列出 OpenCV（各后端能打开哪些设备号）、迈德威视、海康、GigE 的情况，
+并直接告诉你相机节点该怎么填。
+
 ### 接一台迈德威视相机
 
-1. 装厂商的**相机驱动 + SDK**（装完 `MVCAMSDK_X64.dll` 会进系统目录），用它自带的演示软件
-   先确认相机能出图——这一步不通的话，任何软件都接不上。
-2. 找到 SDK 里的 **`mvsdk.py`**（Python 封装，一般在 `Demo\Python` 之类的目录）。
+1. 装厂商的**相机驱动 + SDK**，用它自带的演示软件先确认相机能出图——这一步不通的话，
+   任何软件都接不上。
+2. 找到 **`mvsdk.py`**（Python 封装）。**注意它在厂商的「Python Demo / SDK 开发包」里**，
+   只有 DLL 的那个运行时目录（`MVCAMSDK.dll`、`MVImageProcess.dll`、`MindVision.ax` 之类）
+   是不带它的。
 3. 在 CVFlow 里加一个**相机节点**，参数这样填：
    * 取图方式 `mindvision`
    * 相机来源：留空取第一台；多台时填**序列号**、**友好名**或**索引**（`0`、`1`…）
@@ -220,6 +232,12 @@ Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用
 4. 点节点上的**触发图标**取一帧，确认出图。
 
 **用演示软件占着相机的话 CVFlow 打不开它** —— 这类 SDK 一般是独占的，先把厂商软件关掉。
+
+**拿不到 `mvsdk.py` 时还有一条路**：迈德威视的驱动会注册一个 DirectShow 滤镜
+（SDK 目录里的 `MindVision.ax`）。这种情况下用 `opencv` 取图方式也可能直接能用——
+把**采集后端**设成 `dshow`（Windows 默认的 MSMF 只认 UVC 设备，看不见厂商滤镜），
+相机来源填设备号（`cvflow cameras` 会告诉你哪些号能打开）。
+这条路拿不到曝光/增益/硬触发的精细控制，但先把图取进来调流程够用了。
 
 ## PLC 联动
 

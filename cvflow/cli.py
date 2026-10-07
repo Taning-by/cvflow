@@ -7,6 +7,7 @@
   cvflow validate 方案.json              检查方案是否有问题
   cvflow new 方案.json                   新建一个空方案
   cvflow shortcut [方案.json]            在桌面创建快捷方式（点击图标打开软件）
+  cvflow cameras                         看看各条取图路线分别认不认得本机的相机
   cvflow gpu [模型.onnx]                 自检推理环境：装了什么后端、能不能加载、实际跑在哪、占多少显存
                                          加 --require-gpu 时，CUDA 没跑起来就返回非零退出码
 """
@@ -424,6 +425,70 @@ def _profile_providers(model_path: str, providers: list[str], feed: dict, device
         print(line)
 
 
+def cmd_cameras(args) -> int:
+    """挨个报告每条取图路线认不认得本机的相机。
+
+    现场最常见的问题是"相机插着但软件看不见"，而原因分散在好几层：驱动没装、
+    被厂商软件独占、设备是 DirectShow 而不是 UVC、SDK 的 Python 封装没装……
+    这里把每条路分别试一遍，省得逐个猜。
+    """
+    import platform
+    print("== OpenCV（UVC / DirectShow / 视频流）==")
+    from .camera.opencv_cam import probe_indices
+    backends = ["auto", "dshow", "msmf"] if platform.system() == "Windows" else ["auto", "v4l2"]
+    any_cv = False
+    for b in backends:
+        try:
+            idx = probe_indices(b, args.probe)
+        except Exception as e:                                   # pragma: no cover - 取决于本机
+            print(f"  {b:8s} 探测失败：{e}")
+            continue
+        any_cv = any_cv or bool(idx)
+        print(f"  {b:8s} {('设备号 ' + '、'.join(str(i) for i in idx)) if idx else '没有可打开的设备'}")
+    if any_cv:
+        print("  → 相机节点：取图方式 opencv，相机来源填上面的设备号，采集后端选对应的那个")
+
+    print("\n== 迈德威视 MindVision ==")
+    from .camera import mindvision_cam
+    if mindvision_cam.sdk_available():
+        devs = mindvision_cam.enumerate_mindvision()
+        if devs:
+            for i, d in enumerate(devs):
+                print(f"  {i}  {d.user_name or d.model}　序列号 {d.serial}　{d.extra.get('port', '')}")
+            print("  → 相机节点：取图方式 mindvision，相机来源填序列号或上面的序号")
+        else:
+            print("  SDK 能用，但没枚举到相机（驱动装了吗？是否被厂商软件占用？）")
+    else:
+        print("  没找到 Python 模块 mvsdk。它在厂商的 **Python Demo / SDK 开发包** 里，")
+        print("  运行时目录（只有 MVCAMSDK.dll 那些）不带它。装好之后把 mvsdk.py 所在目录")
+        print("  填进相机节点的「迈德威视 SDK 目录」，或设成环境变量 MVSDK_PATH")
+
+    print("\n== 海康机器人 MVS ==")
+    from .camera import hik_cam
+    if hik_cam.sdk_available():
+        try:
+            devs = hik_cam.enumerate_hik()
+            print(f"  SDK 可用，枚举到 {len(devs)} 台")
+            for d in devs:
+                print(f"    {d.display_name}　{d.ip or ''}　序列号 {d.serial}")
+        except Exception as e:                                   # pragma: no cover
+            print(f"  SDK 可用但枚举失败：{e}")
+    else:
+        print("  没找到 MVS SDK（没装海康相机的话正常）")
+
+    if args.gige:
+        print("\n== GigE Vision 广播发现 ==")
+        from .camera.manager import enumerate_cameras
+        devs = enumerate_cameras(timeout=args.timeout)
+        for d in devs:
+            print(f"  {d.display_name}　{d.ip}　{d.manufacturer} {d.model}")
+        if not devs:
+            print("  没发现网络相机")
+    else:
+        print("\n（加 --gige 还会广播搜索网络相机，需要几秒）")
+    return 0
+
+
 def cmd_validate(args) -> int:
     sol = _load(args.solution, args.plugins)
     problems = 0
@@ -588,6 +653,11 @@ def main(argv=None) -> int:
     w = sub.add_parser("new", help="新建空方案"); w.add_argument("solution", help="方案文件"); w.set_defaults(fn=cmd_new)
     sc = sub.add_parser("shortcut", help="在桌面创建快捷方式"); sc.add_argument("solution", nargs="?", help="快捷方式打开的方案（可选）")
     sc.add_argument("--name", default="CVFlow", help="快捷方式名称"); sc.set_defaults(fn=cmd_shortcut)
+    cp = sub.add_parser("cameras", help="看看各条取图路线分别认不认得本机的相机")
+    cp.add_argument("--probe", type=int, default=4, metavar="个数", help="OpenCV 试到几号设备（默认 4）")
+    cp.add_argument("--gige", action="store_true", help="同时广播搜索网络相机（要几秒）")
+    cp.add_argument("--timeout", type=float, default=1.0, help="网络搜索超时秒数")
+    cp.set_defaults(fn=cmd_cameras)
     gp = sub.add_parser("gpu", help="自检推理环境（后端、显卡、实测加载）")
     gp.add_argument("model", nargs="?", help="用来实测的 ONNX 模型文件（可选）")
     gp.add_argument("--provider", default="auto", choices=["auto", "cpu", "cuda", "tensorrt"], help="指定推理后端")

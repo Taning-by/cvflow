@@ -243,3 +243,54 @@ def test_enumerate_lists_cameras_for_the_search_dialog(fake_sdk):
 def test_registered_as_a_camera_kind():
     from cvflow.camera.manager import CAMERA_KINDS
     assert "mindvision" in CAMERA_KINDS
+
+
+# ==================================================== OpenCV 后端选择与诊断命令
+def test_opencv_backend_names_map_to_opencv_constants():
+    """采集后端的名字要对上 OpenCV 的常量：Windows 默认走 MSMF，只认 UVC；
+    厂商注册的 DirectShow 滤镜（迈德威视的 MindVision.ax）只有 dshow 看得见。"""
+    import cv2
+    from cvflow.camera.opencv_cam import BACKENDS
+    assert BACKENDS["dshow"] == getattr(cv2, "CAP_DSHOW", 700)
+    assert BACKENDS["msmf"] == getattr(cv2, "CAP_MSMF", 1400)
+    assert BACKENDS["auto"] == 0
+
+
+def test_opencv_rejects_unknown_backend():
+    from cvflow.camera.manager import create_camera
+    cam = create_camera("opencv", "c", {"source": 0, "backend": "没这个后端"})
+    with pytest.raises(CameraError) as e:
+        cam.open()
+    assert "未知的采集后端" in str(e.value)
+
+
+def test_opencv_failure_hints_at_dshow(monkeypatch):
+    """用默认后端按设备号打不开时，要提示可能得换 dshow——这正是迈德威视相机的情形。"""
+    import cv2
+    from cvflow.camera.manager import create_camera
+
+    class Dead:
+        def isOpened(self):
+            return False
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda *a, **k: Dead())
+    cam = create_camera("opencv", "c", {"source": 0, "backend": "auto"})
+    with pytest.raises(CameraError) as e:
+        cam.open()
+    assert "dshow" in str(e.value)
+
+
+def test_cameras_command_reports_every_route(capsys, monkeypatch):
+    """cvflow cameras 要把每条取图路线分别报一遍，并在缺 mvsdk 时说清它在哪个包里。"""
+    from cvflow import cli
+    from cvflow.camera import mindvision_cam
+    monkeypatch.setattr(mindvision_cam, "sdk_available", lambda: False)
+    monkeypatch.setattr("cvflow.camera.opencv_cam.probe_indices", lambda b, n: [] if b != "auto" else [0])
+    assert cli.main(["cameras", "--probe", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "OpenCV" in out and "迈德威视" in out and "海康" in out
+    assert "设备号 0" in out                                  # 探到的设备号要列出来
+    assert "mvsdk" in out and "Python Demo" in out            # 告诉用户去哪个包里找
