@@ -144,3 +144,22 @@ def test_powershell_scripts_parse_on_windows_powershell_51(name):
                 continue                                   # 注释里提到不算
             hits.append(f"{name}:{line} 用了 {what}")
     assert not hits, "Windows PowerShell 5.1 解析不了这些写法：\n" + "\n".join(hits)
+
+
+@pytest.mark.parametrize("name", ["packaging/build.ps1", "install.ps1"])
+def test_powershell_scripts_have_no_python_isms(name):
+    """PowerShell 脚本里不能混进 Python 写法（三引号文档字符串最容易手滑）。
+
+    三引号在 PowerShell 里不是注释，会被当成字符串拼接解析；写在 param() 前面更是直接
+    解析错误——脚本一行都不执行。PowerShell 的函数注释要用 # 或者 <# #>。
+    """
+    quotes = chr(34) * 3
+    text = (Path(__file__).resolve().parent.parent / name).read_text(encoding="utf-8-sig")
+    assert quotes not in text, f"{name} 里有 Python 三引号"
+    # 用了 param() 的函数，param() 必须是函数体的第一条语句
+    for m in re.finditer(r"^function\s+([\w-]+)\s*\{", text, re.M):
+        body = text[m.end():m.end() + 400]
+        stmts = [l.strip() for l in body.split("\n") if l.strip() and not l.strip().startswith("#")]
+        if any(x.startswith("param(") for x in stmts[:4]):
+            assert stmts[0].startswith("param("), \
+                f"{name} 的 {m.group(1)}：param() 必须是函数体第一条语句，实际是 {stmts[0][:40]!r}"

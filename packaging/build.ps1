@@ -40,6 +40,7 @@ param(
     [switch] $TrimCudnn,                    # GPU 组件里去掉 cudnn_adv（省 258 MB）
     [switch] $FreezeOnly,                   # 只冻结，不封安装包
     [switch] $InstallerOnly,                # 跳过冻结，直接把已有的 dist\CVFlow 封成安装包
+    [string] $Iscc = "",                    # Inno Setup 的 ISCC.exe 路径（自动找不到时手工指定）
     [switch] $Clean,                        # 先清掉 build/ 和 dist/
     [string] $Python = "",                  # 用哪个 Python，默认优先用项目里的 .venv
     [string] $Version = "0.1.0"
@@ -63,6 +64,60 @@ function Say  { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok   { param($m) Write-Host "    $m"   -ForegroundColor Green }
 function Note { param($m) Write-Host "    $m"   -ForegroundColor DarkGray }
 function Die  { param($m) Write-Host "`n✗ $m`n" -ForegroundColor Red; exit 1 }
+
+# 找 Inno Setup 的命令行编译器 ISCC.exe。
+# 装的位置比想象中多：winget 可能按用户装（%LOCALAPPDATA%\Programs），也可能按机器装
+# （Program Files / Program Files (x86)）；版本目录名还会随大版本变（Inno Setup 6 / 7…）。
+# 所以除了常见路径，还要查注册表的卸载项（按用户装的在 HKCU）和 PATH。
+function Find-Iscc {
+    param([ref] $Searched)
+    $tried = @()
+
+    if ($Iscc) {                                   # 手工指定优先
+        $tried += $Iscc
+        if (Test-Path $Iscc) { $Searched.Value = $tried; return $Iscc }
+    }
+
+    $roots = @("${env:ProgramFiles(x86)}", "$env:ProgramFiles",
+               "$env:LOCALAPPDATA\Programs", "$env:ProgramW6432") | Where-Object { $_ }
+    foreach ($r in $roots) {
+        foreach ($d in @("Inno Setup 6", "Inno Setup 5")) {      # 固定名字先试，最快
+            $p = Join-Path (Join-Path $r $d) "ISCC.exe"
+            $tried += $p
+            if (Test-Path $p) { $Searched.Value = $tried; return $p }
+        }
+        # 大版本号变了也能找到（Inno Setup 7…）
+        $dirs = Get-ChildItem -LiteralPath $r -Directory -Filter "Inno Setup*" -ErrorAction SilentlyContinue
+        foreach ($d in $dirs) {
+            $p = Join-Path $d.FullName "ISCC.exe"
+            $tried += $p
+            if (Test-Path $p) { $Searched.Value = $tried; return $p }
+        }
+    }
+
+    # 注册表的卸载项里有 InstallLocation，按用户装的在 HKCU
+    $keys = @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+              "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+              "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+    $tried += "注册表卸载项（HKLM / HKLM WOW6432Node / HKCU）"
+    foreach ($k in $keys) {
+        $subs = Get-ChildItem -LiteralPath $k -ErrorAction SilentlyContinue
+        foreach ($sub in $subs) {
+            $prop = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+            if ($prop -and $prop.DisplayName -like "Inno Setup*" -and $prop.InstallLocation) {
+                $p = Join-Path $prop.InstallLocation "ISCC.exe"
+                if (Test-Path $p) { $Searched.Value = $tried; return $p }
+            }
+        }
+    }
+
+    $tried += "PATH 上的 ISCC.exe"
+    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $Searched.Value = $tried; return $cmd.Source }
+
+    $Searched.Value = $tried
+    return $null
+}
 
 Set-Location -LiteralPath $Root -ErrorAction Stop
 
@@ -177,22 +232,22 @@ if ($FreezeOnly) { Ok "按 -FreezeOnly 到此为止：$app"; exit 0 }
 
 # --------------------------------------------------------------------- 4. 封安装包
 Say "Inno Setup 封装"
-$iscc = $null
-foreach ($p in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")) {
-    if (Test-Path $p) { $iscc = $p; break }
-}
-if (-not $iscc) {
-    # 注意别用 PS7 的 ?. 空条件运算符：Windows PowerShell 5.1 解析不了，
-    # 整个脚本会在解析期就失败（一行都不执行）
-    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($cmd) { $iscc = $cmd.Source }
-}
+$searched = @()
+$iscc = Find-Iscc ([ref]$searched)
 if (-not $iscc) {
     Die @"
-找不到 Inno Setup 6（ISCC.exe）。装一个：
+找不到 ISCC.exe（Inno Setup 的命令行编译器）。找过这些地方：
+$($searched -join "`n")
+
+还没装的话装一个：
     winget install JRSoftware.InnoSetup
     或 choco install innosetup
     或从 https://jrsoftware.org/isdl.php 下载安装
+
+**已经装了**却没找到（装到别的盘、或者是按用户装的）：先找出来再指过去
+    Get-ChildItem $env:LOCALAPPDATA, $env:ProgramFiles, "C:\" -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 3 -ExpandProperty FullName
+    .\packaging\build.ps1 -InstallerOnly -Iscc "找到的那个路径"
 
 **装完不用重新冻结**（那一步要十几分钟），直接接着封装即可：
     .\packaging\build.ps1 -InstallerOnly
