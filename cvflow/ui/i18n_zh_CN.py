@@ -112,7 +112,7 @@ NODE_LABELS = {
 
 PARAM_LABELS = {
     "Address": "地址", "Binarize": "二值化方式", "Input Count": "输入个数", "Max Batch": "批次上限",
-    "Wait Ms": "合批等待（毫秒）", "Weight Group": "权重共享组", "Arrival": "输入到达方式",
+    "Wait Ms": "合批等待（毫秒）", "Weight Group": "权重共享组", "MindVision SDK path": "迈德威视 SDK 目录", "Arrival": "输入到达方式",
     "Trigger this branch only: grab one frame and run down to the deep-learning node, "
     "where it waits for the other branches.":
         "只触发这一路：取一帧图，沿本路跑到深度学习节点，在那里等其它路汇合。\n"

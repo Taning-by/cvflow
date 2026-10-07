@@ -118,7 +118,8 @@ class CameraSource(Node):
     outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT)]
     params = [Param("camera", "cam0", "string", description="Shared camera name"),
               Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS),
-                    description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS genicam=GenTL 驱动"),
+                    description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS "
+                                "mindvision=迈德威视（USB3/GigE，走厂商 SDK）genicam=GenTL 驱动"),
               Param("source", "", "string", description="folder path | device index/URL | GenICam index/serial"),
               Param("trigger_mode", "keep", "enum", choices=["keep", "off", "software", "hardware"],
                     description="keep=沿用相机当前设置 off=自由采集 software=软触发 hardware=外部触发"),
@@ -128,6 +129,9 @@ class CameraSource(Node):
               Param("timeout_s", 2.0, "float", min=0.01, max=60),
               Param("grayscale", False, "bool"),
               Param("cti", "", "file", label="GenTL producer (.cti)", advanced=True),
+              Param("sdk_path", "", "dir", label="MindVision SDK path", advanced=True,
+                    description="迈德威视 SDK 里 mvsdk.py 所在的目录（一般是 Demo\\Python）。"
+                                "留空则按环境变量 MVSDK_PATH 和常见安装路径找"),
               Param("features", {}, "json", label="Camera features (JSON)", advanced=True)]
 
     def _config(self):
@@ -139,6 +143,8 @@ class CameraSource(Node):
                "exposure_us": self.get("exposure_us"), "gain": self.get("gain")}
         if self.get("cti"):
             cfg["cti"] = paths.resolve(self.get("cti"))
+        if self.get("sdk_path"):
+            cfg["sdk_path"] = paths.resolve(self.get("sdk_path"))
         if self.get("features"):
             cfg["features"] = self.get("features")
         return cfg

@@ -185,13 +185,41 @@ Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用
 
 菜单 **相机 → 相机管理**（工具栏也有入口），和 VisionMaster 的相机管理一样：
 
-* **搜索相机**：用 GigE Vision 发现协议在本机每个网卡上广播，列出网络上所有 GigE 相机的 IP、MAC、厂商、型号、序列号、用户名，并标出"不在本机网段"的相机。搜索不依赖任何 SDK；装了海康 MVS SDK 时会同时用 SDK 枚举（含 USB3 相机），填了 GenTL 驱动时也会用 GenICam 枚举。
+* **搜索相机**：用 GigE Vision 发现协议在本机每个网卡上广播，列出网络上所有 GigE 相机的 IP、MAC、厂商、型号、序列号、用户名，并标出"不在本机网段"的相机。搜索不依赖任何 SDK；装了海康 MVS SDK 或迈德威视 SDK 时会同时用各自的 SDK 枚举（含 USB3 相机），填了 GenTL 驱动时也会用 GenICam 枚举。
 * **按 IP 添加**：向指定 IP 单播发现请求，没响应也可以先手动加入。
 * **连接测试**：读相机的 GigE Vision 版本寄存器，报告在线与否和耗时；海康相机还会尝试用 SDK 打开。
 * **强制 IP**：相机和网卡不在同一网段时，按 MAC 给相机下发临时 IP。
 * **添加到流程**：生成一个"相机"节点，取图方式自动选择海康 MVS（`hik`）或 GenICam（`genicam`）。
 
-相机节点参数：触发模式（沿用 / 自由采集 / 软触发 / 硬件触发）、曝光（微秒）、增益、超时，以及任意 GenICam 特性的 JSON。海康 MVS SDK 的 Python 模块通过环境变量 `MVCAM_SDK_PATH` 指向 `MVS/Development/Samples/Python/MvImport` 目录；GenICam 方式需要 `pip install harvesters` 和厂商的 `.cti` 驱动。
+相机节点参数：触发模式（沿用 / 自由采集 / 软触发 / 硬件触发）、曝光（微秒）、增益、超时，以及任意 GenICam 特性的 JSON。
+
+### 支持哪些相机
+
+| 取图方式 | 适用 | 需要装什么 |
+|---|---|---|
+| `folder` | 用一个文件夹里的图片模拟相机，开发调试用 | 无 |
+| `opencv` | UVC 摄像头、视频流（RTSP 等） | 无 |
+| `hik` | 海康机器人（HIKROBOT）GigE / USB3 | MVS SDK，`MVCAM_SDK_PATH` 指向 `MVS/Development/Samples/Python/MvImport` |
+| `mindvision` | **迈德威视（MindVision）GigE / USB3** | 厂商驱动 + SDK，`MVSDK_PATH` 或节点参数「迈德威视 SDK 目录」指向 `mvsdk.py` 所在目录 |
+| `genicam` | 任何符合 GenICam/GenTL 的相机 | `pip install harvesters` + 厂商的 `.cti` 驱动 |
+
+**迈德威视和海康这类相机走的是厂商自己的协议**，不是 USB3 Vision 标准，所以 `opencv` 和
+`genicam` 两条路都接不上，必须用对应的 SDK 后端。接法见下面「接一台迈德威视相机」。
+
+### 接一台迈德威视相机
+
+1. 装厂商的**相机驱动 + SDK**（装完 `MVCAMSDK_X64.dll` 会进系统目录），用它自带的演示软件
+   先确认相机能出图——这一步不通的话，任何软件都接不上。
+2. 找到 SDK 里的 **`mvsdk.py`**（Python 封装，一般在 `Demo\Python` 之类的目录）。
+3. 在 CVFlow 里加一个**相机节点**，参数这样填：
+   * 取图方式 `mindvision`
+   * 相机来源：留空取第一台；多台时填**序列号**、**友好名**或**索引**（`0`、`1`…）
+   * 高级参数「**迈德威视 SDK 目录**」：填 `mvsdk.py` 所在的目录（或设环境变量 `MVSDK_PATH`，
+     两者都没有时会去几个常见安装路径找）
+   * 触发模式：`off` 自由采集 / `software` 软触发 / `hardware` 硬件触发（PLC 接线触发）
+4. 点节点上的**触发图标**取一帧，确认出图。
+
+**用演示软件占着相机的话 CVFlow 打不开它** —— 这类 SDK 一般是独占的，先把厂商软件关掉。
 
 ## PLC 联动
 
