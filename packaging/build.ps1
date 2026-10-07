@@ -120,6 +120,10 @@ function Find-Iscc {
 }
 
 Set-Location -LiteralPath $Root -ErrorAction Stop
+# .NET 的"当前目录"和 PowerShell 的"当前位置"是两回事：Set-Location 只改后者。
+# 不同步的话，任何 [System.IO.*] 调用拿到相对路径都会跑去进程启动时的目录找
+# （典型现象：明明在仓库里建的 .python.tmp，却报 C:\Users\xxx\.python.tmp 找不到）。
+[Environment]::CurrentDirectory = (Get-Location).Path
 
 $app = "$Root\dist\CVFlow"
 

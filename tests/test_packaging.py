@@ -163,3 +163,33 @@ def test_powershell_scripts_have_no_python_isms(name):
         if any(x.startswith("param(") for x in stmts[:4]):
             assert stmts[0].startswith("param("), \
                 f"{name} 的 {m.group(1)}：param() 必须是函数体第一条语句，实际是 {stmts[0][:40]!r}"
+
+
+@pytest.mark.parametrize("name", ["packaging/build.ps1", "install.ps1"])
+def test_powershell_scripts_sync_dotnet_current_directory(name):
+    """Set-Location 之后必须同步 [Environment]::CurrentDirectory。
+
+    PowerShell 的"当前位置"和 .NET 的"当前目录"是两回事，Set-Location 只改前者。
+    不同步的话，任何 [System.IO.*] 调用拿到相对路径都会跑去进程启动时的目录找——
+    实际现象是：明明在仓库里建好的 .python.tmp，下载时却报
+    C:\\Users\\Administrator\\.python.tmp 找不到。
+    """
+    text = (Path(__file__).resolve().parent.parent / name).read_text(encoding="utf-8-sig")
+    if "Set-Location" not in text:
+        pytest.skip(f"{name} 没有切目录")
+    assert "[Environment]::CurrentDirectory" in text, \
+        f"{name} 调了 Set-Location 却没同步 .NET 的当前目录"
+    loc = text.index("Set-Location")
+    env = text.index("[Environment]::CurrentDirectory")
+    assert env > loc, f"{name} 要先 Set-Location 再同步，顺序反了"
+
+
+def test_save_file_makes_the_destination_absolute():
+    """Save-File 自己也要把相对路径转绝对：它是可复用函数，不该假设调用方同步过。"""
+    text = (Path(__file__).resolve().parent.parent / "install.ps1").read_text(encoding="utf-8-sig")
+    body = text[text.index("function Save-File"):]
+    body = body[:body.index("\nfunction ", 1)]
+    assert "IsPathRooted" in body and "GetFullPath" in body
+    # 找真正的调用而不是注释里提到的那次：带上实参才唯一
+    assert body.index("IsPathRooted") < body.index("::Create($Dest)"), \
+        "要在打开文件之前就把路径转成绝对的"

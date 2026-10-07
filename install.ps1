@@ -68,6 +68,9 @@ $PyDir     = ".python"
 # （$ProgressPreference = "SilentlyContinue"）又变成几分钟一点反馈都没有，看着像卡死。
 function Save-File {
     param([string] $Url, [string] $Dest)
+    # 相对路径先转成绝对：[System.IO.File]::Create 按 .NET 的当前目录解析，不是 $PWD
+    if (-not [System.IO.Path]::IsPathRooted($Dest)) { $Dest = Join-Path (Get-Location).Path $Dest }
+    $Dest = [System.IO.Path]::GetFullPath($Dest)
     # PS 5.1 默认可能还在用 TLS 1.0/1.1，而 GitHub 只收 1.2 以上
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
     $req = [System.Net.HttpWebRequest]::Create($Url)
@@ -115,6 +118,10 @@ function Die      { param($m) Write-Host "`n✗ $m`n" -ForegroundColor Red; exit
 
 # 以脚本所在目录为准，双击或从别的盘执行都不会跑错地方
 Set-Location -LiteralPath $PSScriptRoot -ErrorAction Stop
+# .NET 的"当前目录"和 PowerShell 的"当前位置"是两回事：Set-Location 只改后者。
+# 不同步的话，任何 [System.IO.*] 调用拿到相对路径都会跑去进程启动时的目录找
+# （典型现象：明明在仓库里建的 .python.tmp，却报 C:\Users\xxx\.python.tmp 找不到）。
+[Environment]::CurrentDirectory = (Get-Location).Path
 if (-not (Test-Path "pyproject.toml")) { Die "这个脚本要放在 CVFlow 仓库根目录里执行" }
 
 # --------------------------------------------------------------- 0. 项目自带的 Python
