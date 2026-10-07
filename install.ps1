@@ -42,6 +42,7 @@ param(
     [switch] $Recreate,             # 删掉旧的虚拟环境从头装（装乱了用这个，代码不受影响）
     [switch] $AllowConda,           # 允许用 conda 环境里的解释器建 venv（默认拒绝，见下）
     [switch] $BootstrapPython,      # 把一份便携版 CPython 下到 .python\，整个项目自带 Python
+    [string] $PythonArchive = "",   # 已经手工下好的便携版压缩包（网络慢时用，照样校验 SHA256）
     [string] $Python = "python",    # 用哪个 Python 建虚拟环境，可写 py -3.12 或绝对路径
     [string] $Venv   = ".venv",     # 虚拟环境目录
     [string] $Model  = ""           # 可选：装完用这个 ONNX 模型实测一次
@@ -61,6 +62,51 @@ $PyRelease = "20261003"
 $PyAsset   = "cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz"
 $PySha256  = "4b6f0beebbb695a0f3ea237b8c3eaa5bd424f47a7bc25b2fbe3a43390c770f08"
 $PyDir     = ".python"
+
+# 流式下载并显示进度。
+# 不用 Invoke-WebRequest：PS 5.1 下它画进度条会把大文件拖慢十倍以上，而关掉进度条
+# （$ProgressPreference = "SilentlyContinue"）又变成几分钟一点反馈都没有，看着像卡死。
+function Save-File {
+    param([string] $Url, [string] $Dest)
+    # PS 5.1 默认可能还在用 TLS 1.0/1.1，而 GitHub 只收 1.2 以上
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.UserAgent = "cvflow-installer"
+    $req.Timeout = 30000              # 连不上就别干等
+    $req.ReadWriteTimeout = 120000
+    try { $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+          $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials } catch { }
+    $resp = $req.GetResponse()
+    $total = $resp.ContentLength
+    $in = $resp.GetResponseStream()
+    $out = [System.IO.File]::Create($Dest)
+    $buf = New-Object byte[] 262144
+    $done = [long]0
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastMs = [long]0
+    try {
+        while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $out.Write($buf, 0, $n)
+            $done += $n
+            if (($sw.ElapsedMilliseconds - $lastMs) -ge 400) {
+                $lastMs = $sw.ElapsedMilliseconds
+                $secs = [math]::Max($sw.Elapsed.TotalSeconds, 0.001)
+                $speed = ($done / 1MB) / $secs
+                if ($total -gt 0) {
+                    $pct = [int]($done * 100 / $total)
+                    $left = if ($speed -gt 0.01) { [TimeSpan]::FromSeconds((($total - $done) / 1MB) / $speed).ToString("mm\:ss") } else { "--:--" }
+                    $msg = "`r    {0,6:N1} / {1:N1} MB   {2,3}%   {3,5:N1} MB/s   剩余 {4}   " -f ($done / 1MB), ($total / 1MB), $pct, $speed, $left
+                    Write-Host $msg -NoNewline
+                } else {
+                    Write-Host ("`r    已下载 {0,6:N1} MB   {1,5:N1} MB/s   " -f ($done / 1MB), $speed) -NoNewline
+                }
+            }
+        }
+    } finally {
+        $out.Close(); $in.Close(); $resp.Close()
+        Write-Host ("`r    {0:N1} MB 下载完成，用时 {1:N0} 秒{2}" -f ($done / 1MB), $sw.Elapsed.TotalSeconds, (" " * 20))
+    }
+}
 
 function Say      { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok       { param($m) Write-Host "    $m"   -ForegroundColor Green }
@@ -85,12 +131,28 @@ if ($BootstrapPython) {
         New-Item -ItemType Directory -Path $tmp -ErrorAction Stop | Out-Null
         # 压缩包直接下到解压目录里：待会儿用相对文件名调 tar，命令行里就不会出现带盘符的路径
         $tgz = Join-Path $tmp $PyAsset
-        try {
-            # IWR 默认画进度条，大文件会慢十倍以上
-            $old = $ProgressPreference; $ProgressPreference = "SilentlyContinue"
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -ErrorAction Stop
-            $ProgressPreference = $old
-        } catch { Die "下载失败：$url`n$($_.Exception.Message)" }
+        if ($PythonArchive) {
+            # 网络慢或者下不动时：自己用浏览器/下载工具下好，再指过来（照样校验 SHA256）
+            if (-not (Test-Path $PythonArchive)) { Die "找不到 -PythonArchive 指定的文件：$PythonArchive" }
+            Note "用本地压缩包：$PythonArchive"
+            Copy-Item -LiteralPath $PythonArchive -Destination $tgz -ErrorAction Stop
+        } else {
+            Note $url
+            try { Save-File -Url $url -Dest $tgz }
+            catch {
+                Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+                Die @"
+下载失败：$($_.Exception.Message)
+
+这个包在 GitHub 上，国内直连有时很慢甚至连不上。两条退路：
+  · 自己用浏览器或下载工具把它下下来，再指过去（会照样校验 SHA256）：
+      $url
+      .\install.ps1 -BootstrapPython -PythonArchive "D:\下载\$PyAsset"
+  · 机器上装一个普通的 64 位 Python 3.10-3.14，然后不用 -BootstrapPython：
+      .\install.ps1 -Python "C:\Python312\python.exe"
+"@
+            }
+        }
         $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz).Hash.ToLower()
         if ($got -ne $PySha256) {
             Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
