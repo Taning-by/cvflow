@@ -1,0 +1,699 @@
+{
+  "format": 1,
+  "name": "demo_tcp_handshake",
+  "plugin_dirs": [],
+  "variables": {
+    "product": {
+      "value": "PART-A",
+      "dtype": "string",
+      "description": "当前产品型号"
+    },
+    "last_request": {
+      "value": 0,
+      "dtype": "int",
+      "description": "最近一次请求编号"
+    }
+  },
+  "comm": {
+    "devices": [
+      {
+        "name": "上位机",
+        "kind": "tcp_server",
+        "config": {
+          "host": "0.0.0.0",
+          "port": 6000,
+          "max_clients": 8,
+          "default_target": "broadcast",
+          "framing": "delimiter",
+          "terminator": "\\n",
+          "encoding": "utf-8",
+          "max_frame": 4096,
+          "frame_timeout_s": 2.0,
+          "heartbeat_s": 0.0,
+          "heartbeat_text": "HB\\n",
+          "auto_connect": true,
+          "connect_timeout_s": 3.0,
+          "request_timeout_s": 1.0
+        }
+      }
+    ],
+    "parse_rules": [
+      {
+        "name": "request",
+        "kind": "delimited",
+        "separator": ",",
+        "encoding": "utf-8",
+        "strip": true,
+        "to_variables": false,
+        "fields": [
+          {
+            "name": "cmd",
+            "index": 0,
+            "dtype": "string"
+          },
+          {
+            "name": "request_id",
+            "index": 1,
+            "dtype": "int"
+          }
+        ]
+      }
+    ],
+    "format_rules": [
+      {
+        "name": "result",
+        "kind": "text",
+        "separator": ",",
+        "terminator": "\\n",
+        "missing": "",
+        "fields": [
+          {
+            "name": "head",
+            "source": "literal:RESULT"
+          },
+          {
+            "name": "request_id",
+            "source": "request_id",
+            "dtype": "int"
+          },
+          {
+            "name": "status",
+            "source": "status"
+          },
+          {
+            "name": "x",
+            "source": "out.x",
+            "dtype": "float",
+            "decimals": 3
+          },
+          {
+            "name": "y",
+            "source": "out.y",
+            "dtype": "float",
+            "decimals": 3
+          },
+          {
+            "name": "angle",
+            "source": "out.angle",
+            "dtype": "float",
+            "decimals": 3
+          }
+        ]
+      },
+      {
+        "name": "busy",
+        "kind": "text",
+        "separator": ",",
+        "terminator": "\\n",
+        "fields": [
+          {
+            "name": "head",
+            "source": "literal:BUSY"
+          },
+          {
+            "name": "request_id",
+            "source": "request_id",
+            "dtype": "int"
+          }
+        ]
+      },
+      {
+        "name": "error",
+        "kind": "text",
+        "separator": ",",
+        "terminator": "\\n",
+        "fields": [
+          {
+            "name": "head",
+            "source": "literal:ERROR"
+          },
+          {
+            "name": "request_id",
+            "source": "request_id",
+            "dtype": "int"
+          },
+          {
+            "name": "code",
+            "source": "error_code",
+            "dtype": "int"
+          }
+        ]
+      },
+      {
+        "name": "result_json",
+        "kind": "json",
+        "terminator": "\\n",
+        "json_indent": 0,
+        "fields": [
+          {
+            "name": "request_id",
+            "source": "request_id",
+            "dtype": "int"
+          },
+          {
+            "name": "status",
+            "source": "status"
+          },
+          {
+            "name": "holes",
+            "source": "out.holes",
+            "dtype": "int"
+          },
+          {
+            "name": "x",
+            "source": "out.x",
+            "dtype": "float",
+            "decimals": 3
+          },
+          {
+            "name": "y",
+            "source": "out.y",
+            "dtype": "float",
+            "decimals": 3
+          },
+          {
+            "name": "angle",
+            "source": "out.angle",
+            "dtype": "float",
+            "decimals": 3
+          },
+          {
+            "name": "width",
+            "source": "out.width",
+            "dtype": "float",
+            "decimals": 2
+          }
+        ]
+      }
+    ],
+    "receive_rules": [
+      {
+        "name": "触发检测",
+        "device": "上位机",
+        "source": "message",
+        "match": "startswith",
+        "pattern": "TRIGGER",
+        "action": "trigger_flow",
+        "flow": "main",
+        "parse": "request",
+        "request_field": "request_id",
+        "busy_policy": "reject",
+        "max_queue": 1,
+        "enabled": true
+      }
+    ],
+    "send_rules": [],
+    "handshakes": [
+      {
+        "name": "检测握手",
+        "device": "上位机",
+        "flow": "main",
+        "mode": "text",
+        "enabled": true,
+        "result_format": "result",
+        "busy_format": "busy",
+        "error_format": "error",
+        "busy_policy": "reject",
+        "run_timeout_s": 5.0,
+        "dedup_window_s": 3.0,
+        "dedup_action": "resend"
+      }
+    ]
+  },
+  "flows": [
+    {
+      "name": "main",
+      "description": "取图 → 灰度 → 阈值 → 开运算 → 数孔；两把卡尺量宽度与偏转角；圆查找给出定位坐标。发布 holes / x / y / angle / width。",
+      "nodes": [
+        {
+          "id": "4a4f3bd6",
+          "type": "source.image_folder",
+          "name": "取图",
+          "enabled": true,
+          "position": [
+            40.0,
+            60.0
+          ],
+          "values": {
+            "directory": "../images",
+            "mode": "next",
+            "index": 0,
+            "loop": true,
+            "grayscale": false
+          }
+        },
+        {
+          "id": "c2416601",
+          "type": "preprocess.color",
+          "name": "灰度",
+          "enabled": true,
+          "position": [
+            250.0,
+            60.0
+          ],
+          "values": {
+            "mode": "gray",
+            "channel": -1
+          }
+        },
+        {
+          "id": "ee1ee2c4",
+          "type": "preprocess.threshold",
+          "name": "阈值",
+          "enabled": true,
+          "position": [
+            460.0,
+            60.0
+          ],
+          "values": {
+            "method": "binary_inv",
+            "thresh": 120,
+            "high": 255,
+            "block_size": 31,
+            "c": 5.0
+          }
+        },
+        {
+          "id": "d03e0869",
+          "type": "preprocess.morphology",
+          "name": "开运算",
+          "enabled": true,
+          "position": [
+            670.0,
+            60.0
+          ],
+          "values": {
+            "op": "open",
+            "shape": "ellipse",
+            "ksize": 3,
+            "iterations": 1
+          }
+        },
+        {
+          "id": "7775df93",
+          "type": "analysis.blob",
+          "name": "孔",
+          "enabled": true,
+          "position": [
+            880.0,
+            60.0
+          ],
+          "values": {
+            "binarize": "auto",
+            "polarity": "bright",
+            "low": 128,
+            "high": 255,
+            "min_area": 500,
+            "max_area": 5000,
+            "min_width": 0,
+            "min_height": 0,
+            "connectivity": "8",
+            "sort": "area_desc",
+            "max_count": 100
+          }
+        },
+        {
+          "id": "bc0983af",
+          "type": "logic.judge",
+          "name": "孔数判定",
+          "enabled": true,
+          "position": [
+            1090.0,
+            60.0
+          ],
+          "values": {
+            "op": "==",
+            "low": 3.0,
+            "high": 100.0,
+            "text": "",
+            "name": "holes"
+          }
+        },
+        {
+          "id": "b16e1f3f",
+          "type": "analysis.circle",
+          "name": "定位",
+          "enabled": true,
+          "position": [
+            880.0,
+            210.0
+          ],
+          "values": {
+            "method": "hough",
+            "roi": null,
+            "min_radius": 15,
+            "max_radius": 40,
+            "min_dist": 20,
+            "param1": 100,
+            "param2": 30,
+            "max_count": 1
+          }
+        },
+        {
+          "id": "cf669330",
+          "type": "analysis.caliper",
+          "name": "上卡尺",
+          "enabled": true,
+          "position": [
+            880.0,
+            360.0
+          ],
+          "values": {
+            "roi": {
+              "x": 60.0,
+              "y": 140.0,
+              "w": 520.0,
+              "h": 20.0,
+              "angle": 0.0
+            },
+            "direction": "horizontal",
+            "polarity": "any",
+            "min_contrast": 15.0,
+            "select": "first_last",
+            "smooth": 3
+          }
+        },
+        {
+          "id": "08645704",
+          "type": "analysis.caliper",
+          "name": "下卡尺",
+          "enabled": true,
+          "position": [
+            880.0,
+            510.0
+          ],
+          "values": {
+            "roi": {
+              "x": 60.0,
+              "y": 240.0,
+              "w": 520.0,
+              "h": 20.0,
+              "angle": 0.0
+            },
+            "direction": "horizontal",
+            "polarity": "any",
+            "min_contrast": 15.0,
+            "select": "first_last",
+            "smooth": 3
+          }
+        },
+        {
+          "id": "da2d92d2",
+          "type": "logic.expression",
+          "name": "偏转角",
+          "enabled": true,
+          "position": [
+            1090.0,
+            510.0
+          ],
+          "values": {
+            "expression": "degrees(atan2(b - a, 100.0))"
+          }
+        },
+        {
+          "id": "3a279974",
+          "type": "logic.judge",
+          "name": "宽度判定",
+          "enabled": true,
+          "position": [
+            1090.0,
+            360.0
+          ],
+          "values": {
+            "op": "in_range",
+            "low": 380.0,
+            "high": 420.0,
+            "text": "",
+            "name": "width"
+          }
+        },
+        {
+          "id": "32de70fb",
+          "type": "output.publish",
+          "name": "发布结果",
+          "enabled": true,
+          "position": [
+            1300.0,
+            60.0
+          ],
+          "values": {
+            "name_a": "holes",
+            "name_b": "x",
+            "name_c": "y",
+            "name_d": "angle"
+          }
+        },
+        {
+          "id": "fd47e926",
+          "type": "output.publish",
+          "name": "发布宽度",
+          "enabled": true,
+          "position": [
+            1300.0,
+            360.0
+          ],
+          "values": {
+            "name_a": "width",
+            "name_b": "b",
+            "name_c": "c",
+            "name_d": "d"
+          }
+        },
+        {
+          "id": "d32c3d8c",
+          "type": "output.render",
+          "name": "渲染",
+          "enabled": true,
+          "position": [
+            1300.0,
+            210.0
+          ],
+          "values": {
+            "thickness": 1,
+            "stamp_result": true
+          }
+        },
+        {
+          "id": "0298030b",
+          "type": "output.save_image",
+          "name": "NG 存图",
+          "enabled": true,
+          "position": [
+            1510.0,
+            210.0
+          ],
+          "values": {
+            "directory": "../../captures",
+            "when": "ng_only",
+            "format": "png",
+            "subfolder_by_result": true,
+            "prefix": "",
+            "jpeg_quality": 92
+          }
+        }
+      ],
+      "links": [
+        {
+          "src": [
+            "4a4f3bd6",
+            "image"
+          ],
+          "dst": [
+            "c2416601",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "c2416601",
+            "image"
+          ],
+          "dst": [
+            "ee1ee2c4",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "ee1ee2c4",
+            "image"
+          ],
+          "dst": [
+            "d03e0869",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "d03e0869",
+            "image"
+          ],
+          "dst": [
+            "7775df93",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "7775df93",
+            "count"
+          ],
+          "dst": [
+            "bc0983af",
+            "value"
+          ]
+        },
+        {
+          "src": [
+            "c2416601",
+            "image"
+          ],
+          "dst": [
+            "b16e1f3f",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "c2416601",
+            "image"
+          ],
+          "dst": [
+            "cf669330",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "c2416601",
+            "image"
+          ],
+          "dst": [
+            "08645704",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "cf669330",
+            "first"
+          ],
+          "dst": [
+            "da2d92d2",
+            "a"
+          ]
+        },
+        {
+          "src": [
+            "08645704",
+            "first"
+          ],
+          "dst": [
+            "da2d92d2",
+            "b"
+          ]
+        },
+        {
+          "src": [
+            "cf669330",
+            "width"
+          ],
+          "dst": [
+            "3a279974",
+            "value"
+          ]
+        },
+        {
+          "src": [
+            "7775df93",
+            "count"
+          ],
+          "dst": [
+            "32de70fb",
+            "a"
+          ]
+        },
+        {
+          "src": [
+            "b16e1f3f",
+            "cx"
+          ],
+          "dst": [
+            "32de70fb",
+            "b"
+          ]
+        },
+        {
+          "src": [
+            "b16e1f3f",
+            "cy"
+          ],
+          "dst": [
+            "32de70fb",
+            "c"
+          ]
+        },
+        {
+          "src": [
+            "da2d92d2",
+            "value"
+          ],
+          "dst": [
+            "32de70fb",
+            "d"
+          ]
+        },
+        {
+          "src": [
+            "cf669330",
+            "width"
+          ],
+          "dst": [
+            "fd47e926",
+            "a"
+          ]
+        },
+        {
+          "src": [
+            "4a4f3bd6",
+            "image"
+          ],
+          "dst": [
+            "d32c3d8c",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "bc0983af",
+            "ok"
+          ],
+          "dst": [
+            "d32c3d8c",
+            "after"
+          ]
+        },
+        {
+          "src": [
+            "d32c3d8c",
+            "image"
+          ],
+          "dst": [
+            "0298030b",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "3a279974",
+            "ok"
+          ],
+          "dst": [
+            "0298030b",
+            "after"
+          ]
+        }
+      ]
+    }
+  ]
+}

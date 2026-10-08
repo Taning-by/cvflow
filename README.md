@@ -241,22 +241,106 @@ cvflow cameras --gige     # 再加上网络相机的广播搜索（几秒）
 
 ## PLC 联动
 
-通信面板里每个设备都有 **测试连接**（TCP 探测连接耗时、Modbus/MC/S7 读一个寄存器并报告值与耗时、串口试开）。支持的设备：
+通信面板分七页：**设备 / 数据点 / 触发 / 发送 / 解析·格式 / 握手 / 调试**。界面线程不做任何阻塞
+通信，收发与轮询都在通信层自己的后台线程里，面板按 250 ms 批量刷新，所以高频通信不会卡界面。
 
-| 类型 | 说明 |
+### 在界面里配一条通信（点哪里）
+
+通信面板在主窗口**下方的「通信」页签**里。从零配一条「上位机发请求 → 视觉检测 → 回结果」：
+
+1. **设备** 页 → `添加` → 选「TCP 服务端」→ 监听 `0.0.0.0`、端口 `6000` → 「报文分帧」页确认分隔符是 `\n` → 确定。
+2. **解析/格式** 页左边「解析规则」→ `添加` → 名称 `请求`，方式「按分隔符切分」，字段表里写
+   `cmd`（第 0 段）、`request_id`（第 1 段，整数）→ 确定。
+3. 同一页右边「格式化规则」→ `添加` → 名称 `结果`，格式「文本」，字段表里挑 `literal:RESULT`、
+   `request_id`、`status`、`out.<你发布的名字>` → 确定。
+4. **触发** 页 → `添加` → 设备选刚建的那台，条件「前缀匹配」`TRIGGER`，解析规则选 `请求`，
+   动作「触发流程」→ 选流程，流程忙时选「拒绝并回复忙」→ 确定。
+5. **握手** 页 → `添加` → 设备与流程选好，模式「文本报文」，结果回复选 `结果` → 确定。
+6. **设备** 页 → `检查配置`（引用有问题会在这里一次性列出来）→ 工具栏点 **进入运行模式**。
+7. **调试** 页看收发：手动发一条 `TRIGGER,1001` 试试，或者让对端发。
+
+寄存器类设备（Modbus/MC/S7）多一步：建完设备到 **数据点** 页给地址起名字（`trigger`、
+`request_id`、`ready`、`busy`、`done`…），之后触发规则和握手都从下拉框里选这些名字，不用再记地址。
+对话框里会显示**参考地址**（40001 那一套）和**字节序的实际字节示例**，拿对端读到的字节一比就知道选哪个。
+
+流程里要主动收发时，节点库的「通信」分类里有 7 个节点；它们的**设备、数据点、规则参数都是下拉
+候选**（显示名字、存稳定 id），所以改设备名不会让流程失去引用，也不用手敲名称。
+
+### 实际支持的协议与角色
+
+| 设备类型 | 角色 | 状态 |
+|---|---|---|
+| TCP 客户端 | 主动连对端 | 可用 |
+| TCP 服务端 | 监听，多客户端，**可按客户端定向发送 / 回复请求来源 / 广播** | 可用 |
+| UDP | 保留来源地址，可回复来源 | 可用 |
+| 串口 RS-232/485 | 端口枚举、文本与二进制 | 可用（本机只有 `/dev/ttyS0`，**没有真机验证**） |
+| Modbus TCP 主站 | 主动读写对端 | 可用（与 pymodbus 双向互通测试） |
+| Modbus TCP 从站 | 对端读写本机，四个数据区独立（0x/1x/3x/4x），功能码 01/02/03/04/05/06/15/16 | 可用（与 pymodbus 双向互通测试） |
+| Modbus RTU 主站 | 串口，CRC 校验、帧长推导、请求串行化 | 可用（Linux 伪终端上与手工拼帧的从站互通验证），**没有真串口/真 PLC 验证** |
+| 三菱 MC（3E 二进制） | 主站 | 只在模拟器上验证过 |
+| 西门子 S7 | 主站（DB 块交换区） | 只在 snap7 服务器上验证过 |
+
+还**没有**实现、因此不会出现在设备类型列表里的：Modbus RTU 从站、Modbus ASCII、
+罗克韦尔 EtherNet/IP、欧姆龙 FINS、OPC UA、PROFINET。普通 TCP 不会被标成任何工业协议。
+
+### 报文分帧（TCP 与串口）
+
+TCP 是字节流：一次 `recv` 可能只有半条报文，也可能有好几条。四种分帧方式：
+
+| 方式 | 配置 |
 |---|---|
-| TCP 客户端 / 服务端、UDP、串口 | 文本报文；可配置心跳报文与间隔 |
-| Modbus TCP 主站 / 从站 | 主站轮询 PLC 寄存器；从站自带实现，PLC 直接读写本机寄存器 |
-| 三菱 MC 协议（3E 二进制） | 三菱 Q/L/iQ-R/FX5 及汇川、基恩士等兼容 PLC，支持 D/W/R 字与 M/X/Y 位软元件，地址写 `D100`、`M20`；附带 `McSimulatorServer` 模拟器 |
-| 西门子 S7 | 基于 python-snap7，以 DB 块为交换区，地址为字节偏移；S7-1200/1500 需开启 PUT/GET 并关闭 DB 优化访问 |
+| 分隔符 | `\n` / `\r\n` / `\x03`，任意转义写法 |
+| 定长 | 每 N 字节一条 |
+| 长度前缀 | 长度字段的偏移、字节数（1/2/4）、字节序、**算的是哪一段**（仅数据区 / 整条报文 / 长度字段之后）、报文头字节数、是否把报文头交给上层 |
+| 原始字节 | 一次 `recv` 一条，**不保证报文完整性**，界面上也这么写 |
 
-寄存器类设备都支持同一套握手：
+另有三道保护：单条上限、接收缓冲上限、不完整报文超时。文本编码支持 UTF-8 / ASCII / GBK /
+GB18030 / Latin-1，解不开时调试页自动按十六进制显示。UDP 不分帧——一个数据报就是一条报文。
 
-* **触发**：接收规则 `register_rising` 监视触发字的 0→非 0 上升沿。
-* **忙标志** `busy_address`：触发后写 1，流程结束并写完结果后写 0，PLC 据此等待结果。
-* **触发自动复位** `trigger_reset`：触发后由视觉把触发字清零，下一次 PLC 写 1 即可再次产生上升沿。
-* **心跳** `heartbeat_address` + `heartbeat_s`：按间隔自增，PLC 看到数值变化就知道视觉在线；文本设备则按间隔发送心跳报文。
-* **结果**：发送规则里的寄存器写入列表，`kind` 支持 int16/uint16/int32/uint32/float32/bool。
+### 数据点表（Modbus / MC / S7）
+
+给地址起名字：**流程、触发规则和检测握手都按名字引用，改地址不用改流程**。
+
+每个数据点可配：数据区（线圈 0x / 离散输入 1x / 输入寄存器 3x / 保持寄存器 4x）、协议地址、
+数据类型（Bool / Int16 / UInt16 / Int32 / UInt32 / Float32 / 定长字符串）、数量、读写方向、
+轮询周期、缩放系数、**字节序与字序**、绑定的全局变量。
+
+* 内部一律用**协议地址**（从 0 开始），界面同时显示 40001 那一套**参考地址**，换算只有一处实现。
+* 字节序用四字母布局表达：`ABCD` 不交换、`CDAB` **寄存器间字交换**、`BADC` **寄存器内字节交换**、
+  `DCBA` 两者都交换。编辑对话框里显示**实际字节示例**（`CDAB` → `0x12345678` 发出去是 `56 78 12 34`）。
+* 地址、数量、方向、越界都在保存时校验；离散输入与输入寄存器按协议本来就没有写功能码，
+  想把整张表锁成只读还有一个 `allow_remote_write` 开关。
+* 轮询与流程里的主动读写**共用同一把传输锁**，不会出现"拿到上一次请求的应答"，RTU 半双工也不会撞车。
+* 断线后数据点标记为**过期**，流程里读到过期值会明确报错（或按配置输出 `valid=False`）。
+
+### 检测握手
+
+把一台设备和一条流程绑成完整闭环：**外部请求 → 接受任务 → 执行 → 发布结果 → 对端确认**。
+信号包括 Ready / Busy / Done / OK-NG / ErrorCode / 请求编号 / 完成编号 / 确认位。三条硬保证：
+
+1. **先结果、后 Done**：发送规则写完测量值，才写完成标志与完成编号。
+2. **结果绑定请求**：接受任务的瞬间冻结请求编号、输入参数和**来源对端**，TCP 服务端因此总能回给
+   正确的那个客户端；完成编号让对端确认结果属于哪一次请求。
+3. **断线不重放**：记下连接代号，断线重连后那次旧任务的结果直接丢弃。
+
+Ready 反映**真实能力**（设备已连接 + 流程在运行 + 不忙 + 不在等确认）。忙时可选拒绝 / 丢弃 /
+有界排队，队列满了返回明确状态。重复请求可选重发上次结果 / 忽略 / 当成新请求。超时**只上报
+错误码，不重发触发或写入**——那可能让对端执行两次物理动作。"发送成功"与"对端已确认"在
+握手状态里分开记录。
+
+错误码：`0` 正常、`1` 忙、`2` 参数错误、`3` 流程异常、`4` 超时、`5` 流程未运行、`6` 重复请求、
+`7` 内部错误、`8` 判定 NG（可选）。
+
+老方案里的简版握手（`busy_address` + `trigger_reset`）继续支持，不用改。
+
+### 调试
+
+「调试」页有：手动发送（文本或十六进制，可指定对端）、Modbus 手动读写与持续监视、
+收发日志（时间 / 方向 / 设备 / 对端 / 字节数 / 文本 / 十六进制 / 说明），可按方向与关键字筛选、
+暂停滚动、停止记录、导出 CSV。日志有容量上限，满了丢最旧的并显示丢弃条数。
+
+每个设备都有**测试连接**：TCP 报连接耗时，Modbus/MC/S7 真读一个数据点并报告值与耗时，
+串口先枚举本机端口再试开，服务端类报正在监听几个客户端。
 
 * 结果面板里的文字可以选中复制：Ctrl+C 复制选中行，右键可复制单个单元格、整行或全部结果，内容过长时显示会截断但悬停和复制都是完整的。报错信息就显示在"值"一列。
 
@@ -270,10 +354,16 @@ cvflow cameras --gige     # 再加上网络相机的广播搜索（几秒）
 | 相机取图 | 相机节点类型选 `folder`，来源填 `examples/images` | 运行一次 |
 | TCP 报文触发与回复 | `cvflow gui examples/solutions/demo_holes.json`，进入运行模式 | `python examples/sim_plc.py tcp` |
 | Modbus TCP（PLC 做主站） | `cvflow gui examples/solutions/demo_modbus.json`，进入运行模式 | `python examples/sim_plc.py modbus` |
+| **完整握手：TCP 请求—应答** | `cvflow serve examples/solutions/demo_tcp_handshake.json` | `python examples/sim_handshake.py tcp` |
+| **完整握手：cvflow 做 Modbus 主站** | `python examples/sim_handshake.py slave`（先起从站） | `cvflow serve examples/solutions/demo_modbus_master.json` |
+| **完整握手：cvflow 做 Modbus 从站** | `cvflow serve examples/solutions/demo_modbus_slave.json` | `python examples/sim_handshake.py master` |
 | 三菱 MC 协议 | `python examples/sim_plc.py mc` | `cvflow gui examples/solutions/demo_mc.json`，进入运行模式 |
 | 西门子 S7 | `python examples/sim_plc.py s7` | `cvflow gui examples/solutions/demo_s7.json`，进入运行模式 |
 
-PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复位、忙标志是否出现、结果寄存器的值和心跳计数，对应软件里通信面板的"监视"页和结果页。模拟相机只实现发现协议，不出图，所以取图用文件夹模拟。
+PLC 模拟器会周期性地触发一次检测，并打印触发字是否被复位、忙标志是否出现、结果寄存器的值和心跳计数，对应软件里通信面板「调试」页和结果页。模拟相机只实现发现协议，不出图，所以取图用文件夹模拟。
+
+后三行是**完整业务闭环**的示例：请求编号、Ready/Busy/Done、结果绑定请求、对端确认、忙时与
+超时分支都走一遍。报文格式、寄存器映射与逐步说明见 [docs/comm-examples.md](docs/comm-examples.md)。
 
 ## 深度学习节点的多输入合批
 
@@ -443,21 +533,37 @@ class MyDefectNet(Node):
 
 | 概念 | 说明 |
 |---|---|
-| 设备 | `tcp_client` `tcp_server` `udp` `serial` `modbus_tcp_client`(我们是主站) `modbus_tcp_server`(我们是从站) |
-| 接收规则 | 文本设备：`startswith / equals / contains / regex / any`；Modbus：`register_rising`(0→非0) / `register_change` / `register_equals`。动作：触发某流程，或把报文写入全局变量 |
-| 发送规则 | 流程结束时按条件(always/ok/ng/error)发送。文本模板：`{status} {ok} {ng} {run_id} {duration_ms:.1f} {out.名字} {var.名字} {node[节点名].端口}`；Modbus：寄存器写入列表 `[{"address":10,"expr":"{out.count}","kind":"int16"}]`，kind 支持 int16/uint16/int32/uint32/float32/bool |
-| 节点内发送 | `Send Message`、`Modbus Write` 节点可在流程中间主动发数据 |
+| **设备** | 一条通往外部一方的链路。有稳定的 **id**，改名不破坏流程与规则里的引用；可启用/禁用、复制、随方案保存；多设备同时运行，同一设备可被多条流程引用。连接由管理器统一持有，**节点不自己建连接**。类型：`tcp_client` `tcp_server` `udp` `serial` `modbus_tcp_client`(我们是主站) `modbus_tcp_server`(我们是从站) `modbus_rtu_client` `mc` `s7` |
+| **分帧** | `delimiter` / `fixed` / `length_prefix` / `raw`，另有单条上限、缓冲上限、不完整报文超时。每条连接一个独立分帧器 |
+| **解析规则** | 报文 → 命名字段：`delimited`(按分隔符下标) / `regex`(分组) / `json`(点号路径) / `fixed_fields`(定长切片) / `whole`。字段可声明类型、缩放、是否必填、默认值 |
+| **格式化规则** | 结果 → 报文：`text` / `json` / `binary`。字段绑定来源、小数位、缩放、宽度对齐、前后缀、结束符 |
+| **数据点** | 给 Modbus/MC/S7 的地址起名字：数据区、协议地址、类型、数量、方向、轮询周期、缩放、字节序与字序、绑定变量 |
+| **触发规则** | 报文：`any / startswith / equals / contains / regex`；数据点：`rising / falling / changed / equals / not_equals / greater / less / in_range`。动作：触发某流程（可带解析出来的参数与请求编号），或写入全局变量。忙时策略：拒绝 / 丢弃 / 有界排队 |
+| **发送规则** | 流程结束时按条件(always/ok/ng/error)发送。三种载荷可并存，顺序是：写数据点 → 写寄存器（裸地址，老方案）→ 发报文（格式化规则或文本模板）。目标可选**回复请求来源** / 设备默认 / 广播 |
+| **检测握手** | 把设备与流程绑成闭环：Ready/Busy/Done/OK-NG/ErrorCode/请求编号/完成编号/确认位，见上面的「PLC 联动」 |
+| **通信节点** | `Comm Receive`（从收件箱取报文）、`Comm Send`、`Parse Message`、`Format Result`、`Read Data Point`、`Write Data Point`、`Comm Status`；采集分类里的 `Trigger Data` 被扩展成也输出请求编号与本次请求冻结的参数 |
 
-Modbus TCP 从站是自带实现（功能码 1/2/3/4/5/6/15/16），PLC 的每次写入都立即被观察到，不需要轮询；主站基于 pymodbus，按 `poll_ms` 轮询监视寄存器段并检测变化。
+文本模板的取值范围是固定的几个命名空间，**不做表达式求值**（模板里写不出可执行代码）：
+`{status} {ok} {ng} {run_id} {flow} {duration_ms:.1f} {error} {request_id}`、
+`{out.名字}`（发布结果节点）、`{var.名字}`（全局变量）、`{field.名字}`（本次请求解析出的字段）、
+`{node[节点名].端口}`。格式化规则的字段来源同样只认一张固定的取值表，外加 `literal:常量`。
+
+**后台监听是唯一读套接字的一方**：收到的报文复制进各个收件箱，`Comm Receive` 节点从自己的
+收件箱取，所以节点与监听线程不会抢读同一个连接。
+
+Modbus 两个角色都是自带实现：从站支持功能码 01/02/03/04/05/06/15/16，四个数据区互相独立，
+对端的每次写入立即被观察到、不需要轮询；主站自己掌握传输层，轮询与主动读写排在同一条队列上。
+pymodbus 现在只作为**测试对端**（第三方独立实现）使用，不是运行时依赖。
 
 ## 目录
 
 ```
 cvflow/core        类型、节点模型、注册表/插件加载、图、执行引擎、运行时、事件、变量、叠加层渲染
-cvflow/operators   内置节点（source/preprocess/analysis/dl/logic/output）
+cvflow/operators   内置节点（source/preprocess/analysis/dl/logic/output/comm）
 cvflow/camera      相机抽象：folder 模拟、OpenCV、GenICam(harvesters)
-cvflow/comm        通信设备与规则管理
-cvflow/ui          PySide6 界面
+cvflow/comm        通信：设备(base/tcp/serial)、分帧(framing)、解析与格式化(parsing)、
+                   Modbus(modbus_client/modbus_map/modbus)、MC、S7、检测握手(handshake)、管理器(manager)
+cvflow/ui          PySide6 界面（通信面板 comm_panel + 配置对话框 comm_dialogs）
 cvflow/cli.py      命令行：gui / run / serve / nodes / validate / new / gpu / shortcut
 examples/          示例图像生成器、示例方案、示例插件
 tests/             pytest（核心、算子、通信、界面 offscreen）
@@ -466,6 +572,7 @@ packaging/         Windows 安装包：PyInstaller 配置 + Inno Setup 脚本 + 
 install.ps1        Windows 一键安装（建环境 → 装对推理运行时 → 实测 CUDA）
 install.sh         Linux / macOS 一键安装
 docs/install.md    安装环境详解：步骤、自检、常见错误对照表
+docs/comm-examples.md  三个通信示例：报文格式、寄存器映射、联调步骤
 ```
 
 ## 节点黑盒测试报告
@@ -482,7 +589,7 @@ python tools/node_test_report.py
 python tools/ui_test_report.py
 ```
 
-`docs/comm-test-report.md` 是通信功能的黑盒测试报告：对端用真实套接字、Linux 伪终端串口、第三方 pymodbus 与 snap7、按协议手册手工拼出的报文做字节级核对，覆盖 TCP/UDP/串口/Modbus 主从站/三菱 MC/西门子 S7、接收与发送规则、模板、握手、心跳、事件、持久化、连接测试和无界面生产模式。重新生成：
+`docs/comm-test-report.md` 是通信功能的黑盒测试报告：对端用真实套接字、Linux 伪终端串口、第三方 pymodbus 与 snap7、按协议手册手工拼出的报文做字节级核对，覆盖报文分帧（半包/粘包/多帧/畸形/超限/超时）、报文解析与结果格式化、Modbus 数据点映射（地址换算与四种字节序按**实际字节**核对）、TCP/UDP/串口/Modbus 主从站/三菱 MC/西门子 S7、触发规则与发送条件、检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离）、通信节点、统一设备管理、持久化、连接测试、三个示例方案端到端和无界面生产模式。重新生成：
 
 ```bash
 python tools/comm_test_report.py
@@ -493,7 +600,13 @@ python tools/comm_test_report.py
 * 传统算子仅覆盖 OpenCV 能直接提供的部分：Blob、轮廓、NCC 模板匹配（仅平移）、亚像素边缘卡尺、圆查找、强度统计、二维码。形状匹配（旋转/缩放）、高精度标定、OCR 还没有。
 * 执行是单线程同步 DAG，Output 类节点总是排在其它就绪节点之后执行（存图/渲染能看到最终判定）；流程间并行，流程内不并行。节拍 < 20 ms 的高速线需要把重算子放到多进程或 C++ 扩展。
 * 海康 MVS SDK 封装和 GenICam 取图都还没有在真机上验证（本机没有相机）；GigE 发现、强制 IP、连接测试用模拟相机做了自动化测试。
-* 三菱 MC 和西门子 S7 只在模拟器/snap7 服务器上验证过，欧姆龙 FINS、罗克韦尔 EtherNet/IP 还没有。
+* **通信**：TCP（客户端/服务端）、UDP、Modbus TCP 主站与从站都做了双向互通测试（对端用第三方 pymodbus）。
+  Modbus RTU 只实现了**主站**：CRC 已按手册的已知值核对，读/写单个/写多个/字符串在 Linux 伪终端上
+  与一个手工拼帧的 RTU 从站互通验证过，但**没有在真串口和真 PLC 上跑过**（本机只有一个 `/dev/ttyS0`）；
+  RTU 从站、Modbus ASCII 还没有。
+  三菱 MC 和西门子 S7 只在模拟器/snap7 服务器上验证过。欧姆龙 FINS、罗克韦尔 EtherNet/IP、OPC UA、
+  PROFINET 都没有实现——它们不会出现在设备类型列表里，普通 TCP 也不会被标成工业协议。
+* 通信还没有 TLS 与鉴权；断线期间的发送直接失败并计数，**没有重发队列**，恢复后不会补发。
 * 还没有权限管理、运行日志落库、方案版本管理、安装包。
 
 ## 许可证

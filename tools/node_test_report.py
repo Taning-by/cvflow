@@ -103,6 +103,9 @@ def build_report(xml_path: Path) -> str:
     uncovered = [t for t in type_ids if not per[t]["func"]]
     lines += ["", "## 覆盖缺口", ""]
     lines += [f"- 没有功能用例的节点：{', '.join('`' + t + '`' for t in uncovered)}" if uncovered else "- 所有节点都有功能用例。"]
+    if any(t.startswith("comm.") for t in uncovered):
+        lines += ["- 通信类节点（`comm.*`）的功能用例在 `tests/test_comm_nodes.py`：它们需要接上真实设备才有意义，"
+                  "所以不在这份报告里，见 `docs/comm-test-report.md` 的“通信节点”一节。"]
     if unmapped:
         lines += [f"- 未归类到节点的用例：{', '.join(unmapped[:10])}"]
     lines += ["", "## 说明", "",
