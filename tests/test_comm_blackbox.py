@@ -128,8 +128,6 @@ def system():
 def pymodbus_server():
     """第三方 Modbus 从站（pymodbus 自带服务器），在独立事件循环线程里运行。"""
     pytest.importorskip("pymodbus")
-    import warnings
-    warnings.simplefilter("ignore")
     from pymodbus.datastore import ModbusDeviceContext, ModbusSequentialDataBlock, ModbusServerContext
     from pymodbus.server import ModbusTcpServer
     port = free_port()
@@ -148,7 +146,27 @@ def pymodbus_server():
             await asyncio.sleep(0.05)
         await srv.shutdown()
 
-    t = threading.Thread(target=lambda: loop.run_until_complete(main()), daemon=True)
+    def runner():
+        """跑完 main() 之后**把事件循环关干净**。
+
+        不关的话，pymodbus 服务端那些半启动的请求处理协程会一直挂着，之后被垃圾回收时抛
+        ``coroutine 'ServerRequestHandler.handle_request' was never awaited``——而且这个警告会
+        记在**当时恰好在执行的那一行**上，看着像是别处的代码有问题。Windows 用 Proactor
+        事件循环，关闭路径和 Linux 不同，这个现象在那边尤其明显。
+        """
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(main())
+        finally:
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+            leftover = asyncio.all_tasks(loop)
+            if leftover:
+                loop.run_until_complete(asyncio.gather(*leftover, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+
+    t = threading.Thread(target=runner, daemon=True)
     t.start()
     if not ready.wait(5):
         pytest.skip("pymodbus server did not start")
