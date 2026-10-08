@@ -12,6 +12,8 @@
 重新生成方案：`python examples/build_handshake_demos.py`
 自动化验收：`pytest tests/test_comm_examples.py`（示例 A 里还包含一条用 `cvflow serve` 跑的子进程用例）
 
+> 不熟悉通信面板怎么用，先看 [comm-manual.md](comm-manual.md)：从零配通的逐步操作与故障对照表。
+
 > **这三个示例的协议细节是 cvflow 的设计要求**，不是对任何一款商业软件的兼容声明——
 > 本仓库里没有 VisionMaster 的手册或截图可以逐项对照。
 

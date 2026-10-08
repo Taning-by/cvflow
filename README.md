@@ -244,6 +244,9 @@ cvflow cameras --gige     # 再加上网络相机的广播搜索（几秒）
 通信面板分七页：**设备 / 数据点 / 触发 / 发送 / 解析·格式 / 握手 / 调试**。界面线程不做任何阻塞
 通信，收发与轮询都在通信层自己的后台线程里，面板按 250 ms 批量刷新，所以高频通信不会卡界面。
 
+> **第一次配通信，直接看 [docs/comm-manual.md](docs/comm-manual.md)**：从零配通的逐步操作、
+> 分帧与字节序怎么定、握手时序图、故障对照表。下面是功能概览。
+
 ### 在界面里配一条通信（点哪里）
 
 通信面板在主窗口**下方的「通信」页签**里。从零配一条「上位机发请求 → 视觉检测 → 回结果」：
@@ -572,6 +575,7 @@ packaging/         Windows 安装包：PyInstaller 配置 + Inno Setup 脚本 + 
 install.ps1        Windows 一键安装（建环境 → 装对推理运行时 → 实测 CUDA）
 install.sh         Linux / macOS 一键安装
 docs/install.md    安装环境详解：步骤、自检、常见错误对照表
+docs/comm-manual.md    通信使用说明书：从零配通的逐步操作、分帧与字节序、握手、故障对照表
 docs/comm-examples.md  三个通信示例：报文格式、寄存器映射、联调步骤
 ```
 
