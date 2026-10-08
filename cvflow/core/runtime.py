@@ -114,6 +114,8 @@ class FlowRunner:
         self._branch_lock = threading.Lock()
         self._branch_stop = threading.Event()
         self._branch_busy: dict[str, int] = {}     # 每一路还有几次触发没跑完（界面上的触发图标据此显示）
+        self._active = 0                           # 正在执行的运行次数（通信层的"忙"判断用）
+        self._active_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -126,6 +128,12 @@ class FlowRunner:
     @property
     def last_result(self) -> RunResult | None:
         return self.engine.last_result
+
+    @property
+    def busy(self) -> bool:
+        """现在是不是正在执行一次运行。通信层据此判断"忙"，决定拒绝 / 丢弃 / 排队。"""
+        with self._active_lock:
+            return self._active > 0
 
     # ---- edit-mode execution ----
     def run_once(self, trigger: Trigger | None = None) -> RunResult:
@@ -294,11 +302,15 @@ class FlowRunner:
                 job = self._queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            with self._active_lock:
+                self._active += 1
             try:
                 job.result = self.engine.run(job.trigger)
             except Exception:  # the engine already isolates node errors; this is a safety net
                 log.exception("流程 %s：引擎异常", self.name)
             finally:
+                with self._active_lock:
+                    self._active -= 1
                 job.done.set()
 
     def _start_timer(self) -> None:

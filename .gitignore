@@ -16,8 +16,9 @@ captures/
 .idea/
 .vscode/
 .DS_Store
-# 测试过程里的临时文件
+# 测试过程里的临时文件（黑盒用例会往方案目录里写临时方案，跑完就删）
 examples/solutions/_bb_*
+examples/solutions/_ex_*
 
 # 项目自带的便携版 Python（install.sh --bootstrap-python / install.ps1 -BootstrapPython）
 .python/

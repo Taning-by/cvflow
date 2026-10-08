@@ -51,6 +51,9 @@ def _device_spec(dev: str, number: int, points: int) -> bytes:
 
 class McDevice(CommDevice, _RegisterWatcher):
     kind = "mc"
+    role = "master"
+    byte_stream = False
+    supports_registers = True
     config_schema = [
         ("host", "string", "PLC 地址", "192.168.3.39", ""),
         ("port", "int", "端口", 5000, "三菱内置以太网常用 5000/5002（需在 PLC 上开放 MC 二进制协议）"),
@@ -58,7 +61,6 @@ class McDevice(CommDevice, _RegisterWatcher):
         ("pc", "int", "PC 号", 255, ""),
         ("io", "int", "请求目标模块 I/O", 1023, "0x3FF = 本站 CPU"),
         ("station", "int", "请求目标模块站号", 0, ""),
-        ("timeout_s", "float", "超时（秒）", 1.0, ""),
         ("poll_ms", "int", "轮询间隔（毫秒）", 50, "0 表示不轮询"),
         ("watch_device", "string", "监视软元件", "D", "D / W / R / ZR"),
         ("watch_address", "int", "监视起始地址", 0, ""),
@@ -66,22 +68,24 @@ class McDevice(CommDevice, _RegisterWatcher):
         ("busy_address", "int", "忙标志地址", -1, "-1 关闭；触发后写 1，流程结束写 0（监视软元件）"),
         ("trigger_reset", "bool", "触发后自动复位触发字", False, ""),
         ("heartbeat_address", "int", "心跳地址", -1, "-1 关闭；按心跳间隔自增（监视软元件）"),
-        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
     ]
 
-    def __init__(self, name, config=None, bus=None):
-        CommDevice.__init__(self, name, config, bus)
+    def __init__(self, name, config=None, bus=None, device_id=None, enabled=True):
+        CommDevice.__init__(self, name, config, bus, device_id, enabled)
         _RegisterWatcher.__init__(self)
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._last: list[int] | None = None
 
+    def peer_text(self) -> str:
+        return f"{self.config.get('host')}:{self.config.get('port')} 网络 {self.config.get('network')}"
+
     # ---- 底层收发 ----
     def _ensure_sock(self) -> socket.socket:
         if self._sock is None:
-            s = socket.create_connection((self.config["host"], int(self.config["port"])), timeout=float(self.config.get("timeout_s", 1.0)))
-            s.settimeout(float(self.config.get("timeout_s", 1.0)))
+            s = socket.create_connection((self.config["host"], int(self.config["port"])), timeout=self.request_timeout)
+            s.settimeout(self.request_timeout)
             self._sock = s
         return self._sock
 
@@ -197,7 +201,7 @@ class McDevice(CommDevice, _RegisterWatcher):
                     pass
                 self._sock = None
 
-    def _send_bytes(self, data: bytes) -> None:
+    def _send_bytes(self, data: bytes, peer=None) -> None:
         raise CommError("MC 设备不发送原始报文，请使用 write_value()")
 
     def test_connection(self) -> tuple[bool, str]:
@@ -234,7 +238,9 @@ class McDevice(CommDevice, _RegisterWatcher):
                 self._set_connected(False, str(e))
                 self._last = None
                 self._close()
-                self._stop.wait(1.0)
+                if not self.auto_reconnect:
+                    return
+                self._stop.wait(self.reconnect_interval)
 
 
 class McSimulatorServer:

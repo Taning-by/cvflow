@@ -206,7 +206,8 @@ class RawServer:
 
 
 # =============================================================== TCP 服务端
-def test_comm_tcpserver_broadcast_framing_and_multiple_clients(system):
+def test_comm_tcpserver_routing_framing_and_multiple_clients(system):
+    """多客户端路由：结果默认只回给**请求来源**的那个客户端，另有广播选项。"""
     dev = system.mgr.add_device("plc", "tcp_server", {"host": "127.0.0.1", "port": 0, "terminator": "\\n"})
     system.mgr.add_receive_rule(ReceiveRule(name="t", device="plc", match="startswith", pattern="TRIG", flow="main"))
     system.mgr.add_send_rule(SendRule(name="r", device="plc", flow="main", template="{status},{out.count}\\n"))
@@ -214,12 +215,22 @@ def test_comm_tcpserver_broadcast_framing_and_multiple_clients(system):
     a, b = LineClient(dev.bound_port), LineClient(dev.bound_port)
     time.sleep(0.2)
     a.send(b"TRIG\n")
-    assert a.line() == "OK,3\n" and b.line() == "OK,3\n"           # 回复广播给所有客户端
+    assert a.line() == "OK,3\n"                                      # 回复发给来源客户端
+    assert b.raw(timeout=0.4) == b""                                 # 另一个客户端收不到别人的结果
     a.send(b"TR"); time.sleep(0.1); a.send(b"IG\nTRIG\n")             # 分包 + 粘包
     assert a.line() == "OK,3\n" and a.line() == "OK,3\n" and system.runner.stats.count == 3
+    b.send(b"TRIG\n"); assert b.line() == "OK,3\n"                   # 换一个客户端请求，回复也换
+    assert a.raw(timeout=0.4) == b""
     a.send(b"HELLO\n"); time.sleep(0.2)
-    assert system.runner.stats.count == 3                            # 不匹配的报文不触发
-    assert dev.stats["rx"] == 4 and dev.stats["tx"] == 3
+    assert system.runner.stats.count == 4                            # 不匹配的报文不触发
+    assert dev.stats["rx"] == 5 and dev.stats["tx"] == 4
+    # 广播：把发送规则的目标改成 broadcast，两个客户端都收到
+    system.mgr.send_rules[0].target = "broadcast"
+    a.send(b"TRIG\n")
+    assert a.line() == "OK,3\n" and b.line() == "OK,3\n"
+    # 指定客户端发送
+    system.mgr.send(dev.id, "HI\n", peer=b.sock.getsockname()[0] + ":" + str(b.sock.getsockname()[1]))
+    assert b.line() == "HI\n" and a.raw(timeout=0.4) == b""
     a.close(); b.close()
     assert _wait(lambda: dev.client_count == 0)
     c = LineClient(dev.bound_port); time.sleep(0.2); c.send(b"TRIG\n")  # 断开后新客户端仍可用
@@ -317,10 +328,18 @@ def test_comm_modbusserver_function_codes_and_exceptions(system):
     assert not c.write_registers(10, [1, 2, 3], device_id=1).isError()
     assert c.read_holding_registers(5, count=1, device_id=1).registers == [0xBEEF]
     assert c.read_holding_registers(10, count=3, device_id=1).registers == [1, 2, 3]
-    assert c.read_input_registers(10, count=3, device_id=1).registers == [1, 2, 3]
+    # 四个数据区各自独立：输入寄存器 (3x) 不是保持寄存器 (4x) 的别名
+    assert c.read_input_registers(10, count=3, device_id=1).registers == [0, 0, 0]
+    dev.write_area("input", 10, [7, 8, 9])
+    assert c.read_input_registers(10, count=3, device_id=1).registers == [7, 8, 9]
+    assert c.read_holding_registers(10, count=3, device_id=1).registers == [1, 2, 3]
     assert not c.write_coil(2, True, device_id=1).isError() and not c.write_coils(4, [True, False, True], device_id=1).isError()
     assert c.read_coils(0, count=8, device_id=1).bits[:8] == [False, False, True, False, True, False, True, False]
+    assert c.read_discrete_inputs(2, count=1, device_id=1).bits[0] is False       # 离散输入与线圈也互不影响
+    dev.write_area("discrete", 2, [True])
     assert c.read_discrete_inputs(2, count=1, device_id=1).bits[0] is True
+    # 输入寄存器与离散输入没有写功能码，第三方主站也写不进去
+    assert c.write_register(10, 1, device_id=1).isError() is False                # 4x 可写
     assert c.read_holding_registers(60, count=10, device_id=1).isError()           # 越界 → 异常响应
     assert c.write_coil(16, True, device_id=1).isError()
     dev.write_value(20, -2.5, "float32"); dev.write_value(22, -70000, "int32"); dev.write_value(24, -3, "int16")
@@ -492,7 +511,8 @@ def test_comm_rules_register_match_kinds(system):
     c.write_register(0, 5, device_id=1); assert _wait(lambda: system.runner.stats.count == 1)
     c.write_register(0, 6, device_id=1); time.sleep(0.2); assert system.runner.stats.count == 1   # 非 0→非 0 不算上升沿
     c.write_register(0, 0, device_id=1); c.write_register(0, 1, device_id=1); assert _wait(lambda: system.runner.stats.count == 2)
-    c.write_register(1, 3, device_id=1); assert _wait(lambda: "reg[1]=3" in str(system.sol.variables.get("chg")))
+    # 写变量的动作存的是**寄存器的值**（不是 "reg[1]=3" 这种字符串），流程里可直接当数字用
+    c.write_register(1, 3, device_id=1); assert _wait(lambda: system.sol.variables.get("chg") == 3)
     c.write_register(2, 6, device_id=1); time.sleep(0.1); assert system.sol.variables.get("eq") is None
     c.write_register(2, 7, device_id=1); assert _wait(lambda: system.sol.variables.get("eq") is not None)
     c.close()
@@ -621,7 +641,9 @@ def test_comm_persistence_roundtrip_and_invalid_kind(tmp_path):
     mgr2 = CommManager(sol2.bus, sol2.variables)
     assert mgr2.load_dict(sol2.comm_config) == []
     assert set(mgr2.devices) == {"plc", "hmi"} and mgr2.devices["plc"].config["busy_address"] == 1 and mgr2.devices["hmi"].config["terminator"] == "\\r\\n"
-    assert mgr2.receive_rules[0].match == "register_rising" and mgr2.send_rules[0].when == "ng"
+    # 老方案里的 register_* 写法读进来会迁移成新的条件名（source=datapoint + rising）
+    assert mgr2.receive_rules[0].match == "rising" and mgr2.receive_rules[0].source == "datapoint"
+    assert mgr2.send_rules[0].when == "ng"
     bad = dict(sol2.comm_config); bad["devices"] = bad["devices"] + [{"name": "x", "kind": "profinet", "config": {}}]
     errs = mgr2.load_dict(bad)
     assert len(errs) == 1 and "profinet" in errs[0] and set(mgr2.devices) == {"plc", "hmi"}
@@ -637,7 +659,7 @@ def test_comm_testconn_all_kinds(system):
     assert not system.mgr.add_device("dead", "tcp_client", {"host": "127.0.0.1", "port": free_port()}).test_connection()[0]
     assert system.mgr.add_device("udp", "udp", {"host": "127.0.0.1", "port": 9, "local_port": 0}).test_connection()[0]
     mbs = system.mgr.add_device("mbs", "modbus_tcp_server", {"host": "127.0.0.1", "port": 0}); mbs.connect()
-    assert "=0" in system.mgr.add_device("mbc", "modbus_tcp_client", {"host": "127.0.0.1", "port": mbs.bound_port, "poll_ms": 0}).test_connection()[1]
+    assert "= 0" in system.mgr.add_device("mbc", "modbus_tcp_client", {"host": "127.0.0.1", "port": mbs.bound_port, "poll_ms": 0}).test_connection()[1]
     assert not system.mgr.add_device("mbc2", "modbus_tcp_client", {"host": "127.0.0.1", "port": free_port(), "poll_ms": 0, "timeout_s": 0.5}).test_connection()[0]
     assert not system.mgr.add_device("mc", "mc", {"host": "127.0.0.1", "port": free_port(), "timeout_s": 0.5}).test_connection()[0]
     assert not system.mgr.add_device("s7", "s7", {"host": "127.0.0.1", "port": free_port(), "rack": 0, "slot": 1}).test_connection()[0]

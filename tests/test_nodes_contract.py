@@ -70,6 +70,15 @@ def _setup_for(type_id: str, res: dict):
         "output.save_image": ({"directory": str(res["dir"] / "out")}, {}, False),
         "output.comm_send": ({"device": "x"}, {}, True),          # 没有通信管理器 → 明确报错
         "output.modbus_write": ({"device": "x"}, {}, True),
+        # 通信节点在没有通信管理器时都应给出可读的错误，而不是抛 Traceback。
+        # 接上真实设备的功能测试在 tests/test_comm_nodes.py。
+        "comm.receive": ({"device": "x"}, {}, True),
+        "comm.send": ({"device": "x", "template": "hi"}, {}, True),
+        "comm.parse": ({"rule": "x"}, {}, True),
+        "comm.format": ({"rule": "x"}, {}, True),
+        "comm.read_point": ({"device": "x", "point": "p"}, {}, True),
+        "comm.write_point": ({"device": "x", "point": "p"}, {}, True),
+        "comm.status": ({"device": "x"}, {}, True),
         "learning.torch_template": ({}, {}, True),               # 未安装 torch → 明确报错
         "logic.gate": ({}, {"condition": True, "value": 5}, False),
         "logic.judge": ({"op": "is_true"}, {"value": True}, False),

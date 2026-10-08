@@ -434,6 +434,8 @@ class ParamPanel(QScrollArea):
             combo.setFixedHeight(M["ctl_h"])
             combo.currentTextChanged.connect(lambda x: self._emit(p, x))
             return combo
+        if k == "choice":
+            return self._choice_widget(node, p, str(v or ""))
         if k in ("file", "dir"):
             return self._path_widget(p, str(v or ""))
         if k == "rect":
@@ -450,6 +452,40 @@ class ParamPanel(QScrollArea):
         le.setFixedHeight(M["ctl_h"])
         le.editingFinished.connect(lambda: self._emit(p, le.text()))
         return le
+
+    def _choice_widget(self, node, p: Param, value: str) -> QWidget:
+        """可编辑下拉框：候选来自运行时（已配的设备、数据点、规则、流程），也允许手填。
+
+        存的是候选的**值**（设备存稳定 id），显示的是可读标签（设备显示名字），
+        所以改设备名不会让节点失去引用，用户看到的也不是一串 id。
+        """
+        from .param_options import display_label, options_for
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setFixedHeight(M["ctl_h"])
+        combo.setInsertPolicy(QComboBox.NoInsert)
+        combo.addItem("", "")
+        for opt in options_for(p.options, node):
+            combo.addItem(display_label(p.options, opt, node), opt)
+        idx = combo.findData(value)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setEditText(value)          # 列表里没有（设备还没建 / 手填的）也照常显示
+        if not combo.count() - 1:
+            combo.lineEdit().setPlaceholderText(tr("先在「通信」面板里配置，或直接填名称"))
+        combo.setToolTip(tr(p.description) if p.description else "")
+
+        def changed(_=None):
+            i = combo.currentIndex()
+            text = combo.currentText().strip()
+            # 从列表里选的用它的值；手填的按原文存
+            picked = combo.itemData(i) if i >= 0 and combo.itemText(i) == text else None
+            self._emit(p, picked if picked is not None else text)
+
+        combo.activated.connect(changed)
+        combo.lineEdit().editingFinished.connect(changed)
+        return combo
 
     @staticmethod
     def _finish_number(sb, unit: str) -> None:

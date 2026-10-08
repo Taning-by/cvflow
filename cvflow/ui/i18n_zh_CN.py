@@ -91,11 +91,16 @@ UI = {
 CATEGORIES = {
     "Source": "采集", "Preprocess": "预处理", "Analysis": "分析", "Deep Learning": "深度学习",
     "Script": "脚本", "Logic": "逻辑", "Output": "输出", "Learning": "学习",
+    "Communication": "通信",
 }
 
 NODE_LABELS = {
     "Image File": "图像文件", "Image Folder": "图像文件夹", "Camera": "相机", "Constant": "常量",
     "Trigger Data": "触发数据",
+    # 通信
+    "Comm Receive": "接收报文", "Comm Send": "发送报文", "Parse Message": "解析报文",
+    "Format Result": "格式化结果", "Read Data Point": "读数据点", "Write Data Point": "写数据点",
+    "Comm Status": "通信状态",
     "Color Convert": "颜色转换", "Blur": "滤波", "Threshold": "阈值分割", "Morphology": "形态学",
     "Resize": "缩放", "Crop ROI": "裁剪 ROI", "Canny Edges": "Canny 边缘", "Enhance": "图像增强",
     "Rotate / Flip": "旋转 / 翻转", "Bitwise": "位运算",
@@ -106,7 +111,7 @@ NODE_LABELS = {
     "Judge": "判定", "Expression": "表达式", "Set Variable": "写变量", "Get Variable": "读变量",
     "Format Text": "文本格式化", "Gate": "门控", "Delay": "延时", "Counter": "计数器",
     "Publish Result": "发布结果", "Render Overlays": "渲染叠加层", "Save Image": "保存图像",
-    "Send Message": "发送报文", "Modbus Write": "Modbus 写入",
+    "Send Message (legacy)": "发送报文（旧）", "Modbus Write (by address)": "写寄存器（按地址）",
     "Bandit Threshold Tuner": "Bandit 阈值调优", "PyTorch Model (template)": "PyTorch 模型（模板）",
 }
 

@@ -5,8 +5,10 @@
 numpy>=1.24
 opencv-python>=4.8
 PySide6-Essentials>=6.5
-pymodbus>=3.6
 pyserial>=3.5
+
+# pymodbus 不在运行时依赖里：Modbus 主站/从站都是自带实现，它只作为测试对端使用。
+# 要跑通信测试的话装 dev extra：pip install -e ".[dev]"
 
 # 推理运行时故意不写在这里：onnxruntime（CPU 版）与 onnxruntime-gpu 是同一个 Python 模块的
 # 两个发行包，谁后装谁覆盖。如果这里写上 onnxruntime，在 GPU 环境里执行

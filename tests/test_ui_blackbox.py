@@ -664,8 +664,8 @@ def test_ui_comm_device_add_edit_test_connect_remove(win, modal, monkeypatch, ap
     assert panel.dev_table.rowCount() == 1 and "hmi" not in win.comm.devices
 
 
-def test_ui_comm_rules_add_edit_remove_and_monitor(win, modal, monkeypatch, app):
-    from cvflow.ui import comm_panel as cp
+def test_ui_comm_rules_add_edit_remove(win, modal, monkeypatch, app):
+    from cvflow.ui import comm_dialogs as cd
     win.bottom_tabs.setCurrentWidget(win.comm_panel); pump(app)
     panel = win.comm_panel
     from PySide6.QtWidgets import QTabWidget
@@ -675,34 +675,273 @@ def test_ui_comm_rules_add_edit_remove_and_monitor(win, modal, monkeypatch, app)
     tabs.setCurrentWidget(rx_tab); pump(app)
 
     def fill_rx(self):
-        self.name.setText("second"); self.match.setCurrentText("equals"); self.pattern.setText("GO"); return QDialog.Accepted
-    monkeypatch.setattr(cp.ReceiveRuleDialog, "exec", fill_rx)
+        self.name.setText("second")
+        self.match.setCurrentIndex(self.match.findData("equals"))
+        self.pattern.setText("GO")
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.ReceiveRuleDialog, "exec", fill_rx)
     button(rx_tab, "添加").click(); pump(app)
-    assert panel.rx_table.rowCount() == 2 and panel.rx_table.item(1, 0).text() == "second" and win.comm.receive_rules[1].pattern == "GO"
+    assert panel.rx_table.rowCount() == 2 and panel.rx_table.item(1, 0).text() == "second"
+    assert win.comm.receive_rules[1].pattern == "GO" and win.comm.receive_rules[1].match == "equals"
     panel.rx_table.setCurrentCell(1, 0)
+    button(rx_tab, "启用/禁用").click(); pump(app)
+    assert not win.comm.receive_rules[1].enabled and "已停用" in panel.rx_table.item(1, 0).text()
     button(rx_tab, "删除").click(); pump(app)
     assert panel.rx_table.rowCount() == 1
 
     def fill_tx(self):
-        self.name.setText("hb"); self.when.setCurrentText("ng"); self.template.setText("NG\\n"); self._regs = []; return QDialog.Accepted
-    monkeypatch.setattr(cp.SendRuleDialog, "exec", fill_tx)
+        self.name.setText("hb")
+        self.when.setCurrentIndex(self.when.findData("ng"))
+        self.template.setText("NG\\n")
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.SendRuleDialog, "exec", fill_tx)
     tabs.setCurrentWidget(tx_tab); pump(app)
     button(tx_tab, "添加").click(); pump(app)
     assert panel.tx_table.rowCount() == 2 and win.comm.send_rules[1].when == "ng"
     panel.tx_table.setCurrentCell(1, 0); button(tx_tab, "删除").click(); pump(app)
     assert panel.tx_table.rowCount() == 1
-    # 监视：连接设备后手动发送，监视列表出现记录
+
+
+def test_ui_comm_debug_manual_send_log_filter_and_export(win, modal, monkeypatch, app, tmp_path):
+    """调试区：手动发文本与 HEX，日志显示方向/设备/对端/文本/十六进制，可筛选、暂停、导出。"""
     import socket
-    dev = win.comm.devices["plc"]; dev.config["port"] = 0; dev.connect(); pump(app)
-    client = socket.create_connection(("127.0.0.1", dev.bound_port), timeout=3); pump(app, 200)
-    tabs.setCurrentWidget(panel.monitor.parent()); pump(app)
-    panel.send_dev.setCurrentText("plc"); panel.send_text.setText("HELLO\\n")
-    button(panel.monitor.parent(), "发送").click(); pump(app, 200)
+    panel = win.comm_panel
+    win.bottom_tabs.setCurrentWidget(panel); pump(app)
+    from PySide6.QtWidgets import QTabWidget
+    tabs = panel.findChild(QTabWidget)
+    dev = win.comm.devices["plc"]; dev.config["port"] = 0; dev.connect(); pump(app, 200)
+    client = socket.create_connection(("127.0.0.1", dev.bound_port), timeout=3); pump(app, 300)
+    tabs.setCurrentWidget(panel.log_table.parent()); pump(app)
+    idx = panel.send_dev.findData(dev.id); panel.send_dev.setCurrentIndex(idx)
+    panel.send_text.setText("HELLO\\n")
+    button(panel.log_table.parent(), "发送").click(); pump(app, 300)
     client.settimeout(3); assert client.recv(32) == b"HELLO\n"
-    client.sendall(b"PING\n"); pump(app, 300)
-    items = [panel.monitor.item(i).text() for i in range(panel.monitor.count())]
-    assert any("HELLO" in t and "▶" in t for t in items) and any("PING" in t and "◀" in t for t in items)
+    # 十六进制发送
+    panel.send_mode.setCurrentIndex(panel.send_mode.findData("hex"))
+    panel.send_text.setText("02 41 42 03")
+    button(panel.log_table.parent(), "发送").click(); pump(app, 300)
+    assert client.recv(32) == b"\x02AB\x03"
+    client.sendall(b"PING\n"); pump(app, 500)
+    rows = [[panel.log_table.item(r, c).text() if panel.log_table.item(r, c) else ""
+             for c in range(panel.log_table.columnCount())]
+            for r in range(panel.log_table.rowCount())]
+    assert any(r[1] == "发" and "HELLO" in r[5] for r in rows)
+    assert any(r[1] == "收" and "PING" in r[5] and r[3] for r in rows)   # 收到的带来源对端
+    assert any("41 42" in r[6] for r in rows)                            # 十六进制列
+    # 按方向筛选
+    panel.log_filter_dir.setCurrentIndex(panel.log_filter_dir.findData("rx")); pump(app, 300)
+    dirs = {panel.log_table.item(r, 1).text() for r in range(panel.log_table.rowCount())}
+    assert dirs == {"收"}
+    panel.log_filter_dir.setCurrentIndex(0); pump(app, 300)
+    # 停止记录
+    panel.log_stop.setChecked(True); pump(app)
+    before = panel.log_table.rowCount()
+    client.sendall(b"QUIET\n"); pump(app, 400)
+    assert panel.log_table.rowCount() == before
+    panel.log_stop.setChecked(False); pump(app)
+    # 导出
+    out = tmp_path / "log.csv"
+    modal.answers["getSaveFileName"] = (str(out), "")
+    button(panel.log_table.parent(), "导出 CSV").click(); pump(app)
+    assert out.exists() and "HELLO" in out.read_text(encoding="utf-8-sig")
+    button(panel.log_table.parent(), "清空").click(); pump(app)
+    assert panel.log_table.rowCount() == 0
     client.close(); dev.disconnect()
+
+
+def test_ui_comm_data_points_add_edit_and_manual_readwrite(win, modal, monkeypatch, app):
+    """数据点页：新增/编辑数据点，界面显示参考地址与字节示例；调试区手动读写。"""
+    from cvflow.ui import comm_dialogs as cd
+    panel = win.comm_panel
+    win.bottom_tabs.setCurrentWidget(panel); pump(app)
+    from PySide6.QtWidgets import QTabWidget
+    tabs = panel.findChild(QTabWidget)
+
+    def add_modbus(self):
+        self.name.setText("mb"); self.kind.setCurrentIndex(self.kind.findData("modbus_tcp_server"))
+        self._fields["host"].setText("127.0.0.1"); self._fields["port"].setValue(0)
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.DeviceDialog, "exec", add_modbus)
+    tabs.setCurrentWidget(panel.dev_table.parent()); pump(app)
+    button(panel.dev_table.parent(), "添加").click(); pump(app)
+    mb = win.comm.devices["mb"]
+
+    tabs.setCurrentWidget(panel.point_table.parent()); pump(app)
+    panel.point_device.setCurrentIndex(panel.point_device.findData(mb.id)); pump(app)
+
+    def add_point(self):
+        self.name.setText("x")
+        self.address.setValue(20)
+        self.dtype.setCurrentIndex(self.dtype.findData("float32"))
+        self.layout_box.setCurrentIndex(self.layout_box.findData("CDAB"))
+        self.direction.setCurrentIndex(self.direction.findData("read_write"))
+        assert "40021" in self.ref.text()            # 参考地址换算显示给用户
+        assert "56 78 12 34" in self.layout_hint.text()   # 字节序的实际字节示例
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.DataPointDialog, "exec", add_point)
+    button(panel.point_table.parent(), "添加").click(); pump(app)
+    assert panel.point_table.rowCount() == 1
+    assert panel.point_table.item(0, 0).text() == "x"
+    assert "40021" in panel.point_table.item(0, 3).text()
+    assert panel.point_table.item(0, 7).text() == "CDAB"
+
+    # 重名的数据点被拒绝（校验信息是中文）
+    dlg = cd.DataPointDialog(panel, None, ["x"], [])
+    dlg.name.setText("x")
+    assert "已经有一个数据点" in dlg.validate()
+    # 只读区不能设为写
+    dlg2 = cd.DataPointDialog(panel, None, [], [])
+    dlg2.area.setCurrentIndex(dlg2.area.findData("input"))
+    dlg2.direction.setCurrentIndex(dlg2.direction.findData("write"))
+    assert "不可写" in dlg2.validate()
+
+    # 调试区手动读写这个数据点
+    mb.connect(); pump(app, 200)
+    tabs.setCurrentWidget(panel.log_table.parent()); pump(app)
+    panel.mb_dev.setCurrentIndex(panel.mb_dev.findData(mb.id)); pump(app)
+    panel.mb_point.setCurrentText("x")
+    panel.mb_value.setText("12.5")
+    button(panel.log_table.parent(), "写入").click(); pump(app)
+    assert "已写入" in panel.mb_result.text()
+    button(panel.log_table.parent(), "读取").click(); pump(app)
+    assert "12.5" in panel.mb_result.text()
+    panel.mb_value.setText("abc")
+    button(panel.log_table.parent(), "写入").click(); pump(app)
+    assert "不是数字" in panel.mb_result.text()
+    mb.disconnect()
+
+
+def test_ui_comm_handshake_and_rule_library(win, modal, monkeypatch, app):
+    """解析/格式化规则与检测握手：能建、能存、状态表显示实时状态。"""
+    from cvflow.ui import comm_dialogs as cd
+    panel = win.comm_panel
+    win.bottom_tabs.setCurrentWidget(panel); pump(app)
+    from PySide6.QtWidgets import QTabWidget
+    tabs = panel.findChild(QTabWidget)
+    tabs.setCurrentWidget(panel.parse_table.parent().parent()); pump(app)
+
+    def add_parse(self):
+        self.name.setText("req")
+        self.kind.setCurrentIndex(self.kind.findData("delimited"))
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.ParseRuleDialog, "exec", add_parse)
+    button(panel.parse_table.parent(), "添加").click(); pump(app)
+    assert panel.parse_table.rowCount() == 1 and "req" in win.comm.parse_rules
+
+    def add_format(self):
+        self.name.setText("res")
+        self.kind.setCurrentIndex(self.kind.findData("text"))
+        self.template.setText("{status},{request_id}\\n")
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.FormatRuleDialog, "exec", add_format)
+    button(panel.format_table.parent(), "添加").click(); pump(app)
+    assert panel.format_table.rowCount() == 1 and "res" in win.comm.format_rules
+
+    tabs.setCurrentWidget(panel.hs_table.parent()); pump(app)
+
+    def add_hs(self):
+        self.name.setText("hs")
+        self.mode.setCurrentIndex(self.mode.findData("text"))
+        self._formats["result_format"].setCurrentText("res")
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.HandshakeDialog, "exec", add_hs)
+    button(panel.hs_table.parent(), "添加").click(); pump(app)
+    assert panel.hs_table.rowCount() == 1 and win.comm.handshakes[0].name == "hs"
+    assert panel.hs_table.item(0, 4).text() in ("离线", "就绪")
+    # 文本模式没选结果格式化规则时要报错
+    dlg = cd.HandshakeDialog(panel, None, [(win.comm.devices["plc"].id, "plc")], ["main"], [], {}, [])
+    dlg.name.setText("x"); dlg.mode.setCurrentIndex(dlg.mode.findData("text"))
+    assert "结果回复" in dlg.validate()
+    button(panel.hs_table.parent(), "删除").click(); pump(app)
+    assert panel.hs_table.rowCount() == 0
+
+
+def test_ui_comm_device_delete_warns_about_references(win, modal, monkeypatch, app):
+    """删除被引用的设备时，提示里要列出**具体的引用位置**。"""
+    panel = win.comm_panel
+    win.bottom_tabs.setCurrentWidget(panel); pump(app)
+    from PySide6.QtWidgets import QTabWidget
+    tabs = panel.findChild(QTabWidget)
+    tabs.setCurrentWidget(panel.dev_table.parent()); pump(app)
+    panel.dev_table.setCurrentCell(0, 0)
+    modal.answers["question"] = lambda: __import__("PySide6.QtWidgets", fromlist=["QMessageBox"]).QMessageBox.No
+    button(panel.dev_table.parent(), "删除").click(); pump(app)
+    asked = modal.texts("question")[-1]
+    assert "接收规则「trigger」" in asked and "发送规则「result」" in asked
+    assert "plc" in win.comm.devices                       # 选了“否”，没有删掉
+
+
+def test_ui_comm_device_copy_and_enable_toggle(win, modal, monkeypatch, app):
+    panel = win.comm_panel
+    win.bottom_tabs.setCurrentWidget(panel); pump(app)
+    from PySide6.QtWidgets import QTabWidget
+    tabs = panel.findChild(QTabWidget)
+    tabs.setCurrentWidget(panel.dev_table.parent()); pump(app)
+    panel.dev_table.setCurrentCell(0, 0)
+    button(panel.dev_table.parent(), "复制").click(); pump(app)
+    assert panel.dev_table.rowCount() == 2 and "plc_副本" in win.comm.devices
+    panel.dev_table.setCurrentCell(1, 0)
+    button(panel.dev_table.parent(), "启用/禁用").click(); pump(app)
+    assert not win.comm.devices["plc_副本"].enabled
+    assert "已禁用" in panel.dev_table.item(1, 2).text()
+    button(panel.dev_table.parent(), "删除").click(); pump(app)
+    assert panel.dev_table.rowCount() == 1
+
+
+def test_ui_comm_node_params_offer_live_choices(win, modal, app):
+    """通信节点的设备/数据点参数在参数面板里是**下拉候选**，不用手敲名字。
+
+    下拉框显示设备名、存的是稳定 id，所以改名不会让节点失去引用；选了设备之后，
+    数据点的候选跟着那台设备变。
+    """
+    from PySide6.QtWidgets import QComboBox
+    from cvflow.core import registry
+    from cvflow.ui.param_options import options_for
+    # 先建一台带数据点的设备
+    mb = win.comm.add_device("mb", "modbus_tcp_server", {"host": "127.0.0.1", "port": 0}, points=[
+        {"name": "x", "area": "holding", "address": 20, "dtype": "float32", "direction": "read_write"},
+        {"name": "y", "area": "holding", "address": 22, "dtype": "float32", "direction": "read_write"}])
+    node = win.graph.add_node(registry.create("comm.write_point", name="写X"))
+    win.param_panel.set_node(node, win.graph); pump(app)
+    combos = [c for c in win.param_panel.findChildren(QComboBox) if c.isEditable()]
+    assert len(combos) >= 2
+    dev_combo = combos[0]
+    assert [dev_combo.itemText(i) for i in range(dev_combo.count())] == ["", "mb"]
+    assert dev_combo.itemData(1) == mb.id            # 显示名字、存 id
+    # 选设备
+    dev_combo.setCurrentIndex(1); dev_combo.activated.emit(1); pump(app)
+    assert node.values["device"] == mb.id
+    # 数据点候选跟着设备走
+    assert options_for("comm.points", node) == ["x", "y"]
+    win.param_panel.set_node(node, win.graph); pump(app)
+    combos = [c for c in win.param_panel.findChildren(QComboBox) if c.isEditable()]
+    point_combo = next(c for c in combos if "x" in [c.itemText(i) for i in range(c.count())])
+    i = [point_combo.itemText(k) for k in range(point_combo.count())].index("y")
+    point_combo.setCurrentIndex(i); point_combo.activated.emit(i); pump(app)
+    assert node.values["point"] == "y"
+    # 改设备名之后，节点引用照旧（存的是 id）
+    win.comm.rename_device(mb.id, "mb2")
+    assert win.comm.resolve(node.values["device"]) is win.comm.devices["mb2"]
+    # 候选里没有的值也能手填（先写节点、后建设备的顺序）
+    node.set("point", "还没建的点")
+    assert node.values["point"] == "还没建的点"
+
+
+def test_ui_comm_validate_button_reports_problems(win, modal, app):
+    """「检查配置」把引用了不存在的设备/流程/规则一次性列出来，正常时给一句统计。"""
+    panel = win.comm_panel
+    win.bottom_tabs.setCurrentWidget(panel); pump(app)
+    from PySide6.QtWidgets import QTabWidget
+    tabs = panel.findChild(QTabWidget)
+    tabs.setCurrentWidget(panel.dev_table.parent()); pump(app)
+    button(panel.dev_table.parent(), "检查配置").click(); pump(app)
+    assert "没有问题" in modal.texts("information")[-1]
+    win.comm.receive_rules[0].device = "ghost"
+    win.comm.add_send_rule(type(win.comm.send_rules[0])(name="坏的", device="ghost", format="没有这条"))
+    button(panel.dev_table.parent(), "检查配置").click(); pump(app)
+    warned = modal.texts("warning")[-1]
+    assert "接收规则「trigger」" in warned and "不存在的设备" in warned
+    assert "格式化规则" in warned
 
 
 # =============================================================== 相机管理

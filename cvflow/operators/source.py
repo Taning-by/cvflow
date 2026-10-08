@@ -198,14 +198,29 @@ class TriggerData(Node):
     type_id = "source.trigger"
     category = "Source"
     label = "Trigger Data"
-    description = "Expose the trigger that started this run (e.g. the PLC message) to the flow."
+    description = ("Expose the trigger that started this run: the PLC message, the request id and "
+                   "the parameters frozen when the request was accepted.")
     color = "#2e7d32"
     outputs = [Port("message", DataType.STRING), Port("source", DataType.STRING),
-               Port("device", DataType.STRING), Port("payload", DataType.DICT)]
+               Port("device", DataType.STRING), Port("payload", DataType.DICT),
+               Port("request_id", DataType.INT), Port("fields", DataType.DICT),
+               Port("value", DataType.ANY), Port("peer", DataType.STRING)]
+    params = [Param("field", "", "string", description="要单独输出到 value 端口的字段名"),
+              Param("required", False, "bool", description="字段不存在时报错")]
 
     def process(self, ctx, inputs):
+        """``fields`` 是**接受请求时冻结**的那一份参数，所以同一条流程并发排队也不会串。"""
         t = ctx.trigger
+        payload = dict(getattr(t, "payload", None) or {})
+        fields = dict(payload.get("fields") or {})
+        name = str(self.get("field") or "")
+        if name and self.get("required") and name not in fields:
+            raise NodeError(f"本次触发没有字段 {name!r}（有：{'、'.join(fields) or '无'}）")
         return {"message": getattr(t, "message", "") or "",
                 "source": getattr(getattr(t, "source", None), "value", "manual"),
                 "device": getattr(t, "device", "") or "",
-                "payload": dict(getattr(t, "payload", None) or {})}
+                "payload": payload,
+                "request_id": int(payload.get("request_id") or 0),
+                "fields": fields,
+                "value": fields.get(name) if name else None,
+                "peer": str(payload.get("peer") or "")}

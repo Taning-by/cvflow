@@ -26,9 +26,10 @@ dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.8",
     "PySide6-Essentials>=6.5",
-    "pymodbus>=3.6",
     "pyserial>=3.5",
 ]
+# pymodbus 不再是运行时依赖：Modbus 主站与从站都是自带实现（见 cvflow/comm/modbus_client.py）。
+# 它现在只作为**测试对端**（第三方独立实现）用来验证互通性，所以放在 dev extra 里。
 # 注意：onnxruntime 故意不放在基础依赖里。CPU 版 onnxruntime 与 GPU 版 onnxruntime-gpu
 # 装的是同一个 Python 模块，同时存在会互相覆盖（典型症状：装了 GPU 版却只有 CPU 后端），
 # 所以把它们拆成两个互斥的 extra，由使用者二选一。
@@ -38,7 +39,7 @@ Homepage = "https://github.com/Taning-by/cvflow"
 Issues = "https://github.com/Taning-by/cvflow/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "onnx>=1.14"]
+dev = ["pytest>=7", "onnx>=1.14", "pymodbus>=3.6", "python-snap7>=1.3"]
 cpu = ["onnxruntime>=1.16"]            # 与 gpu 互斥，二选一
 # onnxruntime-gpu 自带的 cuda / cudnn extra 会把 CUDA、cuDNN 的 pip 包一并装上，
 # 配合运行时的 preload_dlls()，不需要系统装 CUDA，也不用配 LD_LIBRARY_PATH / PATH。

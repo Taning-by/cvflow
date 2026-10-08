@@ -1,28 +1,36 @@
-"""TCP client, TCP server and UDP devices (threaded, auto-reconnecting)."""
+"""TCP 客户端、TCP 服务端与 UDP。
+
+三者都在自己的后台线程里收发，不占用界面线程。字节流分帧由 ``Framer`` 负责，**每条连接一个
+分帧器**——两个客户端的字节流绝不能混在一个缓冲里。
+
+TCP 服务端支持按客户端发送：``send(data, peer="192.168.0.20:51234")`` 只发给那一个客户端，
+``send(data)`` 按 ``default_target`` 决定广播还是只发给最近通信的那个。检测握手回复**必须**
+指定对端，否则多台上位机同时连进来时结果会发错地方。
+
+UDP 记住每个来源地址，``send(data, peer=...)`` 回到来源；``reply_to_source`` 打开时，
+不指定对端的发送也会回到最近一次的来源，而不是配置里的固定目标。
+"""
 from __future__ import annotations
 
 import socket
 import threading
 import time
 
-from .base import CommDevice, CommError
+from .base import CommDevice, CommError, Peer
+from .framing import Framer
 
 
 class TcpClientDevice(CommDevice):
     kind = "tcp_client"
+    role = "client"
     config_schema = [
-        ("host", "string", "Host", "127.0.0.1", "Remote IP"),
-        ("port", "int", "Port", 5000, "Remote port"),
-        ("terminator", "string", "Terminator", "\\n", "Frame terminator (escapes ok, empty = raw)"),
-        ("encoding", "string", "Encoding", "utf-8", ""),
-        ("auto_reconnect", "bool", "Auto reconnect", True, ""),
-        ("reconnect_s", "float", "Reconnect interval (s)", 2.0, ""),
-        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
-        ("heartbeat_text", "string", "心跳报文", "HB\\n", "按心跳间隔发送，用于让 PLC 判断视觉在线"),
+        ("host", "string", "目标地址", "127.0.0.1", "对端 IP 或主机名"),
+        ("port", "int", "目标端口", 5000, ""),
+        ("heartbeat_text", "string", "心跳报文", "HB\\n", "按心跳间隔发送，让对端知道视觉在线"),
     ]
 
-    def __init__(self, name, config=None, bus=None):
-        super().__init__(name, config, bus)
+    def __init__(self, name, config=None, bus=None, device_id=None, enabled=True):
+        super().__init__(name, config, bus, device_id, enabled)
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -49,110 +57,143 @@ class TcpClientDevice(CommDevice):
                 except OSError:
                     pass
                 self._sock = None
-        self._buffer = b""
+        self.reset_framer()
         self._set_connected(False, reason)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                s = socket.create_connection((self.config["host"], int(self.config["port"])), timeout=3.0)
+                s = socket.create_connection((self.config["host"], self.cfg_int("port", 5000)),
+                                             timeout=self.connect_timeout)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 s.settimeout(0.5)
                 with self._lock:
                     self._sock = s
+                self.reset_framer()
+                peer = self._add_peer(f"{self.config['host']}:{self.config.get('port')}")
                 self._set_connected(True)
                 while not self._stop.is_set():
                     try:
                         data = s.recv(4096)
                     except socket.timeout:
+                        self.check_frame_timeout()
                         continue
                     if not data:
-                        raise ConnectionError("peer closed")
-                    self._feed(data)
+                        raise ConnectionError("对端关闭了连接")
+                    self._feed(data, peer)
             except (OSError, ConnectionError) as e:
                 if not self._stop.is_set():
                     if self.connected or not self.last_error:
                         self._error(f"{e}")
                     self._close(str(e))
-                    if not self.config.get("auto_reconnect", True):
+                    if not self.auto_reconnect:
                         return
-                    self._stop.wait(float(self.config.get("reconnect_s", 2.0)))
+                    self._stop.wait(self.reconnect_interval)
 
-    def _send_bytes(self, data: bytes) -> None:
+    def _send_bytes(self, data: bytes, peer: Peer | None = None) -> None:
         if self._sock is None:
             raise CommError("未连接")
         self._sock.sendall(data)
 
     def test_connection(self) -> tuple[bool, str]:
-        host, port = self.config["host"], int(self.config["port"])
+        host, port = self.config["host"], self.cfg_int("port", 5000)
         t0 = time.perf_counter()
         try:
-            s = socket.create_connection((host, port), timeout=3.0)
+            s = socket.create_connection((host, port), timeout=self.connect_timeout)
             s.close()
             return True, f"{host}:{port} 可连接，耗时 {(time.perf_counter() - t0) * 1000:.0f} ms"
         except OSError as e:
             return False, f"{host}:{port} 连接失败：{e}"
 
 
-class TcpServerDevice(CommDevice):
-    """Listens for PLC/HMI clients; ``send`` broadcasts to every connected client."""
+class _Client:
+    """服务端侧的一个客户端连接：套接字 + 对端信息 + 它自己的分帧器。"""
 
+    __slots__ = ("sock", "peer", "framer")
+
+    def __init__(self, sock: socket.socket, peer: Peer, framer: Framer) -> None:
+        self.sock, self.peer, self.framer = sock, peer, framer
+
+
+class TcpServerDevice(CommDevice):
     kind = "tcp_server"
+    role = "server"
+    supports_peers = True
     config_schema = [
-        ("host", "string", "Bind address", "0.0.0.0", ""),
-        ("port", "int", "Port", 6000, ""),
-        ("terminator", "string", "Terminator", "\\n", "Frame terminator (escapes ok, empty = raw)"),
-        ("encoding", "string", "Encoding", "utf-8", ""),
-        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
-        ("heartbeat_text", "string", "心跳报文", "HB\\n", "按心跳间隔广播给所有已连接的客户端"),
+        ("host", "string", "监听地址", "0.0.0.0", "0.0.0.0 表示所有网卡"),
+        ("port", "int", "监听端口", 6000, ""),
+        ("max_clients", "int", "最大客户端数", 8, "超过时拒绝新连接"),
+        ("default_target", "enum:broadcast,last,none", "不指定对端时发给谁", "broadcast",
+         "broadcast 广播给所有客户端；last 只发给最近通信的那个；none 不发并计一次丢弃"),
+        ("heartbeat_text", "string", "心跳报文", "HB\\n", "按心跳间隔广播"),
     ]
 
-    def __init__(self, name, config=None, bus=None):
-        super().__init__(name, config, bus)
+    def __init__(self, name, config=None, bus=None, device_id=None, enabled=True):
+        super().__init__(name, config, bus, device_id, enabled)
         self._server: socket.socket | None = None
-        self._clients: dict[socket.socket, bytes] = {}
+        self._clients: dict[str, _Client] = {}
+        self._last_peer: str = ""
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
+    # ---- 状态 ----
     @property
     def client_count(self) -> int:
         return len(self._clients)
 
     @property
     def bound_port(self) -> int:
-        return self._server.getsockname()[1] if self._server else int(self.config["port"])
+        return self._server.getsockname()[1] if self._server else self.cfg_int("port", 6000)
+
+    def client_ids(self) -> list[str]:
+        return list(self._clients)
+
+    @property
+    def last_peer(self) -> str:
+        return self._last_peer
+
+    def peer_text(self) -> str:
+        if not self._clients:
+            return f"监听 {self.config.get('host')}:{self.bound_port}，无客户端"
+        if len(self._clients) == 1:
+            return next(iter(self._clients.values())).peer.address
+        return f"{len(self._clients)} 个客户端"
 
     def test_connection(self) -> tuple[bool, str]:
         if self._server is not None:
-            return True, f"正在监听 {self.config['host']}:{self.bound_port}，当前 {self.client_count} 个客户端"
+            return True, (f"正在监听 {self.config['host']}:{self.bound_port}，"
+                          f"当前 {self.client_count} 个客户端"
+                          + (f"：{', '.join(self.client_ids())}" if self._clients else ""))
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((self.config["host"], int(self.config["port"])))
+            s.bind((self.config["host"], self.cfg_int("port", 6000)))
             s.close()
             return True, f"端口 {self.config['port']} 可用（设备尚未启动监听）"
         except OSError as e:
             return False, f"无法监听 {self.config['host']}:{self.config['port']}：{e}"
 
+    # ---- 生命周期 ----
     def connect(self) -> None:
         if self._server:
             return
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind((self.config["host"], int(self.config["port"])))
-        srv.listen(8)
+        srv.bind((self.config["host"], self.cfg_int("port", 6000)))
+        srv.listen(max(1, self.cfg_int("max_clients", 8)))
         srv.settimeout(0.5)
         self._server = srv
         self._stop.clear()
         self._thread = threading.Thread(target=self._accept_loop, name=f"tcps-{self.name}", daemon=True)
         self._thread.start()
-        self._set_connected(True)  # for a server "connected" means listening
+        self._set_connected(True)       # 服务端的"已连接"＝正在监听
 
     def disconnect(self) -> None:
         self._stop.set()
         with self._lock:
-            for c in list(self._clients):
+            for c in list(self._clients.values()):
                 try:
-                    c.close()
+                    c.sock.close()
                 except OSError:
                     pass
             self._clients.clear()
@@ -173,82 +214,141 @@ class TcpServerDevice(CommDevice):
             try:
                 conn, addr = self._server.accept()
             except socket.timeout:
+                for c in list(self._clients.values()):      # 顺带检查不完整报文超时
+                    for err in c.framer.check_timeout():
+                        self._error(f"{c.peer.id}：{err}")
                 continue
             except OSError:
                 break
+            if len(self._clients) >= max(1, self.cfg_int("max_clients", 8)):
+                self._error(f"客户端数已达上限 {self.cfg_int('max_clients', 8)}，拒绝 {addr[0]}:{addr[1]}")
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                continue
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.settimeout(0.5)
+            pid = f"{addr[0]}:{addr[1]}"
+            peer = self._add_peer(pid, pid)
+            client = _Client(conn, peer, Framer(self.framing))
             with self._lock:
-                self._clients[conn] = b""
-            threading.Thread(target=self._client_loop, args=(conn, addr), daemon=True).start()
+                self._clients[pid] = client
+                self._last_peer = pid
+            threading.Thread(target=self._client_loop, args=(client,), daemon=True,
+                             name=f"tcps-{self.name}-{pid}").start()
 
-    def _client_loop(self, conn: socket.socket, addr) -> None:
-        term = self.terminator
-        buf = b""
+    def _client_loop(self, client: _Client) -> None:
         try:
             while not self._stop.is_set():
                 try:
-                    data = conn.recv(4096)
+                    data = client.sock.recv(4096)
                 except socket.timeout:
+                    for err in client.framer.check_timeout():
+                        self._error(f"{client.peer.id}：{err}")
                     continue
+                except OSError:
+                    break
                 if not data:
                     break
-                if not term:
-                    self._dispatch_rx(data)
+                with self._lock:
+                    self._last_peer = client.peer.id
+                if not self.byte_stream:
+                    self._dispatch_rx(data, client.peer)
                     continue
-                buf += data
-                while True:
-                    i = buf.find(term)
-                    if i < 0:
-                        break
-                    frame, buf = buf[:i], buf[i + len(term):]
-                    if frame:
-                        self._dispatch_rx(frame)
-        except OSError:
-            pass
+                frames = client.framer.feed(data)
+                for err in client.framer.take_errors():
+                    self._error(f"{client.peer.id}：{err}")
+                for frame in frames:
+                    self._dispatch_rx(frame, client.peer)
         finally:
             with self._lock:
-                self._clients.pop(conn, None)
+                self._clients.pop(client.peer.id, None)
+            self._drop_peer(client.peer.id)
             try:
-                conn.close()
+                client.sock.close()
             except OSError:
                 pass
 
-    def _send_bytes(self, data: bytes) -> None:
-        if not self._clients:
-            self.stats["dropped"] = self.stats.get("dropped", 0) + 1
-            return  # nobody listening: not an error for a server
+    def _send_bytes(self, data: bytes, peer: Peer | None = None) -> None:
+        if peer is not None:
+            client = self._clients.get(peer.id)
+            if client is None:
+                raise CommError(f"客户端 {peer.id} 已断开")
+            client.sock.sendall(data)
+            return
+        target = str(self.config.get("default_target", "broadcast"))
+        if target == "none" or not self._clients:
+            self.stats["dropped"] += 1
+            return                       # 没人连着不算错误：服务端本来就可能空闲
+        if target == "last":
+            client = self._clients.get(self._last_peer)
+            if client is None:
+                self.stats["dropped"] += 1
+                return
+            client.sock.sendall(data)
+            return
         dead = []
-        for c in list(self._clients):
+        for pid, client in list(self._clients.items()):
             try:
-                c.sendall(data)
+                client.sock.sendall(data)
+                client.peer.tx += 1
             except OSError:
-                dead.append(c)
-        for c in dead:
-            self._clients.pop(c, None)
+                dead.append(pid)
+        for pid in dead:
+            self._clients.pop(pid, None)
+            self._drop_peer(pid)
+
+    def info(self):
+        d = super().info()
+        d["clients"] = self.client_count
+        return d
 
 
 class UdpDevice(CommDevice):
     kind = "udp"
+    role = "peer"
+    byte_stream = False         # 一个数据报就是一条报文，边界由协议保证
+    supports_peers = True
     config_schema = [
-        ("host", "string", "Remote host", "127.0.0.1", ""),
-        ("port", "int", "Remote port", 7000, ""),
-        ("local_port", "int", "Local port", 7001, "0 = any"),
-        ("terminator", "string", "Terminator", "", "Usually empty: one datagram = one frame"),
-        ("encoding", "string", "Encoding", "utf-8", ""),
+        ("host", "string", "目标地址", "127.0.0.1", ""),
+        ("port", "int", "目标端口", 7000, ""),
+        ("local_host", "string", "本地绑定地址", "0.0.0.0", ""),
+        ("local_port", "int", "本地绑定端口", 7001, "0 表示由系统分配"),
+        ("reply_to_source", "bool", "回复发给来源", True,
+         "打开时，不指定对端的发送回到最近一次来源地址，而不是上面的固定目标"),
+        ("encoding", "string", "文本编码", "utf-8", ""),
+        ("max_frame", "int", "单个数据报上限（字节）", 65535, ""),
+        ("heartbeat_text", "string", "心跳报文", "", "留空关闭"),
     ]
 
-    def __init__(self, name, config=None, bus=None):
-        super().__init__(name, config, bus)
+    def __init__(self, name, config=None, bus=None, device_id=None, enabled=True):
+        super().__init__(name, config, bus, device_id, enabled)
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._last_peer: str = ""
+
+    @property
+    def bound_port(self) -> int:
+        return self._sock.getsockname()[1] if self._sock else self.cfg_int("local_port", 0)
+
+    @property
+    def last_peer(self) -> str:
+        return self._last_peer
+
+    def peer_text(self) -> str:
+        fixed = f"{self.config.get('host')}:{self.config.get('port')}"
+        if self._last_peer:
+            return f"来源 {self._last_peer} / 目标 {fixed}"
+        return f"目标 {fixed}"
 
     def connect(self) -> None:
         if self._sock:
             return
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("0.0.0.0", int(self.config.get("local_port", 0))))
+        s.bind((str(self.config.get("local_host", "0.0.0.0") or "0.0.0.0"), self.cfg_int("local_port", 0)))
         s.settimeout(0.5)
         self._sock = s
         self._stop.clear()
@@ -259,7 +359,10 @@ class UdpDevice(CommDevice):
     def disconnect(self) -> None:
         self._stop.set()
         if self._sock:
-            self._sock.close()
+            try:
+                self._sock.close()
+            except OSError:
+                pass
             self._sock = None
         if self._thread:
             self._thread.join(2.0)
@@ -267,27 +370,47 @@ class UdpDevice(CommDevice):
         self._set_connected(False, "已关闭")
 
     def _loop(self) -> None:
+        limit = max(1, self.cfg_int("max_frame", 65535))
         while not self._stop.is_set() and self._sock:
             try:
-                data, _ = self._sock.recvfrom(65535)
+                data, addr = self._sock.recvfrom(65535)
             except socket.timeout:
                 continue
             except OSError:
                 break
-            self._feed(data)
+            pid = f"{addr[0]}:{addr[1]}"
+            peer = self._add_peer(pid, pid)
+            self._last_peer = pid
+            if len(data) > limit:
+                self._error(f"数据报 {len(data)} 字节超过上限 {limit}，已截断")
+                data = data[:limit]
+            self._dispatch_rx(data, peer)
 
-    def _send_bytes(self, data: bytes) -> None:
+    def _send_bytes(self, data: bytes, peer: Peer | None = None) -> None:
         if not self._sock:
             raise CommError("未打开")
-        self._sock.sendto(data, (self.config["host"], int(self.config["port"])))
+        if peer is not None:
+            host, _, port = peer.address.rpartition(":")
+            self._sock.sendto(data, (host, int(port)))
+            return
+        if self.config.get("reply_to_source") and self._last_peer:
+            host, _, port = self._last_peer.rpartition(":")
+            self._sock.sendto(data, (host, int(port)))
+            return
+        self._sock.sendto(data, (self.config["host"], self.cfg_int("port", 7000)))
 
     def test_connection(self) -> tuple[bool, str]:
+        if self._sock is not None:
+            return True, (f"UDP 已绑定 {self.config.get('local_host', '0.0.0.0')}:{self.bound_port}，"
+                          f"目标 {self.config['host']}:{self.config['port']}"
+                          + (f"，最近来源 {self._last_peer}" if self._last_peer else ""))
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("0.0.0.0", int(self.config.get("local_port", 0))))
-            s.sendto(b"", (self.config["host"], int(self.config["port"])))
+            s.bind((str(self.config.get("local_host", "0.0.0.0") or "0.0.0.0"), self.cfg_int("local_port", 0)))
+            s.sendto(b"", (self.config["host"], self.cfg_int("port", 7000)))
             s.close()
-            return True, f"UDP 无连接；本地端口 {self.config.get('local_port', 0)} 可用，远端 {self.config['host']}:{self.config['port']} 可寻址"
+            return True, (f"UDP 无连接概念；本地端口 {self.config.get('local_port', 0)} 可绑定，"
+                          f"远端 {self.config['host']}:{self.config['port']} 可寻址")
         except OSError as e:
             return False, f"UDP 端口检查失败：{e}"

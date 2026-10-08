@@ -19,6 +19,9 @@ _FMT = {"int16": ">h", "uint16": ">H", "int32": ">i", "uint32": ">I", "float32":
 
 class S7Device(CommDevice, _RegisterWatcher):
     kind = "s7"
+    role = "master"
+    byte_stream = False
+    supports_registers = True
     config_schema = [
         ("host", "string", "PLC 地址", "192.168.0.1", ""),
         ("rack", "int", "机架号", 0, "1200/1500 为 0"),
@@ -31,11 +34,10 @@ class S7Device(CommDevice, _RegisterWatcher):
         ("busy_address", "int", "忙标志字节偏移", -1, "-1 关闭；触发后写 1，流程结束写 0"),
         ("trigger_reset", "bool", "触发后自动复位触发字", False, ""),
         ("heartbeat_address", "int", "心跳字节偏移", -1, "-1 关闭；按心跳间隔自增"),
-        ("heartbeat_s", "float", "心跳间隔（秒）", 0.0, "0 关闭"),
     ]
 
-    def __init__(self, name, config=None, bus=None):
-        CommDevice.__init__(self, name, config, bus)
+    def __init__(self, name, config=None, bus=None, device_id=None, enabled=True):
+        CommDevice.__init__(self, name, config, bus, device_id, enabled)
         _RegisterWatcher.__init__(self)
         self._client = None
         self._thread: threading.Thread | None = None
@@ -52,6 +54,10 @@ class S7Device(CommDevice, _RegisterWatcher):
             c.connect(str(self.config["host"]), int(self.config["rack"]), int(self.config["slot"]), int(self.config.get("port", 102)))
             self._client = c
         return self._client
+
+    def peer_text(self) -> str:
+        return (f"{self.config.get('host')} 机架 {self.config.get('rack')} 槽 {self.config.get('slot')}"
+                f" DB{self.config.get('db_number')}")
 
     def _db(self) -> int:
         return int(self.config["db_number"])
@@ -114,7 +120,7 @@ class S7Device(CommDevice, _RegisterWatcher):
                     pass
                 self._client = None
 
-    def _send_bytes(self, data: bytes) -> None:
+    def _send_bytes(self, data: bytes, peer=None) -> None:
         raise CommError("S7 设备不发送原始报文，请使用 write_value()")
 
     def test_connection(self) -> tuple[bool, str]:
@@ -155,4 +161,6 @@ class S7Device(CommDevice, _RegisterWatcher):
                 self._set_connected(False, str(e))
                 self._last = None
                 self._close()
-                self._stop.wait(1.0)
+                if not self.auto_reconnect:
+                    return
+                self._stop.wait(self.reconnect_interval)

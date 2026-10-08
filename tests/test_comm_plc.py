@@ -49,7 +49,7 @@ def test_connection_tests_for_text_and_modbus_devices():
     mbs.write_registers(0, [42])
     mbc = mgr.add_device("mbc", "modbus_tcp_client", {"host": "127.0.0.1", "port": mbs.bound_port, "poll_ms": 0})
     ok, msg = mbc.test_connection()
-    assert ok and "=42" in msg
+    assert ok and "= 42" in msg
     assert mgr.test_connection("nope") == (False, "没有名为 'nope' 的设备")
     mgr.shutdown()
 

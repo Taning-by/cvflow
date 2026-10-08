@@ -62,7 +62,7 @@ class Port:
             self.dtype = DataType(self.dtype)
 
 
-PARAM_KINDS = ("int", "float", "bool", "string", "enum", "file", "dir", "rect", "code",
+PARAM_KINDS = ("int", "float", "bool", "string", "enum", "choice", "file", "dir", "rect", "code",
                "color", "list", "json")
 
 
@@ -81,6 +81,10 @@ class Param:
     description: str = ""
     advanced: bool = False
     filter: str = ""  # file-dialog filter for kind == "file"
+    #: kind == "choice" 时的候选来源名（见 ``cvflow.ui.param_options``）。
+    #: 候选是**运行时才知道**的——配了哪些通信设备、哪些数据点、哪些流程——所以不能像 enum
+    #: 那样写死在 choices 里。界面渲染成可编辑下拉框：能从列表里挑，也能手填（配置顺序不限）。
+    options: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in PARAM_KINDS:
@@ -89,6 +93,8 @@ class Param:
             self.label = self.name.replace("_", " ").title()
         if self.kind == "enum" and not self.choices:
             raise ValueError(f"参数 {self.name!r}：enum 类型需要 choices")
+        if self.kind == "choice" and not self.options:
+            raise ValueError(f"参数 {self.name!r}：choice 类型需要 options（候选来源名）")
         self.default = self.coerce(self.default)
 
     def coerce(self, value: Any) -> Any:
@@ -104,7 +110,8 @@ class Param:
             if isinstance(value, str):
                 return value.strip().lower() in ("1", "true", "yes", "on")
             return bool(value)
-        if k in ("string", "file", "dir", "code", "color"):
+        if k in ("string", "choice", "file", "dir", "code", "color"):
+            # choice 存的就是普通字符串：列表只是候选，手填的值一样有效，老方案也照常读
             return "" if value is None else str(value)
         if k == "enum":
             return value if value in self.choices else self.choices[0]
@@ -133,7 +140,7 @@ class Param:
     def to_dict(self) -> dict:
         return {"name": self.name, "kind": self.kind, "label": self.label, "default": self.default,
                 "min": self.min, "max": self.max, "step": self.step, "choices": list(self.choices),
-                "description": self.description, "advanced": self.advanced}
+                "options": self.options, "description": self.description, "advanced": self.advanced}
 
 
 class Node:
@@ -156,6 +163,11 @@ class Node:
     triggerable: bool = False
     color: str = "#4a6fa5"      # title colour hint for the editor
     is_judge: bool = False      # if True, a False "ok" output marks the node (and run) NG
+
+    #: 这个节点要在同批就绪的节点里**最后**执行——它汇报的是本次运行的结论，
+    #: 所以必须等判定与叠加层都齐了（存图、渲染、回传结果都属于这一类）。
+    #: Output 分类默认就是这样，无需显式设置。
+    runs_last: bool = False
 
     def __init__(self, node_id: str | None = None, name: str | None = None) -> None:
         self.id: str = node_id or uuid.uuid4().hex[:8]
@@ -232,6 +244,11 @@ class Node:
         raise NotImplementedError
 
     # ---- introspection ----
+    @classmethod
+    def is_late(cls) -> bool:
+        """是否属于"最后执行"的一类。见 ``runs_last``。"""
+        return bool(cls.runs_last) or cls.category == "Output"
+
     @classmethod
     def input_port(cls, name: str) -> Port | None:
         return next((p for p in cls.inputs if p.name == name), None)

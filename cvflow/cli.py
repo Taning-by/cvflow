@@ -557,6 +557,8 @@ def cmd_serve(args) -> int:
     set_manager(mgr)
     runners = {name: FlowRunner(g, sol.variables, sol.bus) for name, g in sol.flows.items()}
     mgr.set_runners(runners)
+    for e in mgr.validate():      # 配置自检：引用了不存在的设备/流程/规则，产线上要在启动时就看到
+        print("通信配置：", e, file=sys.stderr)
     for e in mgr.connect_all():
         print("通信：", e, file=sys.stderr)
     for name, r in runners.items():
@@ -565,10 +567,14 @@ def cmd_serve(args) -> int:
         if args.continuous and name == (args.flow or next(iter(runners))):
             r.set_continuous(args.continuous)
     for d in mgr.devices.values():
+        points = f"，{len(d.points)} 个数据点" if getattr(d, "points", None) is not None and len(d.points) else ""
         if hasattr(d, "bound_port"):      # 服务端类设备报告真实监听端口，配 0 时尤其有用
-            print(f"设备 {d.name}（{d.kind}）监听 {d.config.get('host', '0.0.0.0')}:{d.bound_port}")
+            print(f"设备 {d.name}（{d.kind}）监听 {d.config.get('host', '0.0.0.0')}:{d.bound_port}{points}")
         else:
-            print(f"设备 {d.name}（{d.kind}）")
+            print(f"设备 {d.name}（{d.kind}）{d.peer_text()}{points}")
+    for hs in mgr.handshakes:
+        print(f"检测握手 {hs.name}（{hs.config.mode}）：设备 {mgr.device_label(hs.config.device)}"
+              f" ↔ 流程 {hs.config.flow}")
     print(f"运行中：流程 {list(runners)}，按 Ctrl-C 停止")
     stop = False
 
@@ -585,7 +591,13 @@ def cmd_serve(args) -> int:
             for name, r in runners.items():
                 s = r.stats
                 print(f"[{name}] 运行={s.count} OK={s.ok} NG={s.ng} 错误={s.error} 平均={s.avg_ms:.1f}ms "
-                      f"排队={r.pending()} | " + " ".join(f"{d.name}:{'已连接' if d.connected else '未连接'}" for d in mgr.devices.values()))
+                      f"排队={r.pending()} | "
+                      + " ".join(f"{d.name}:{'已连接' if d.connected else '未连接'}" for d in mgr.devices.values())
+                      + ("" if not mgr.handshakes else " | " + " ".join(
+                          f"{h.name}:{h.status_dict()['state_label']}"
+                          f"(受理{h.counters['accepted']}/完成{h.counters['completed']}"
+                          f"/忙拒{h.counters['rejected_busy']}/超时{h.counters['timeout']})"
+                          for h in mgr.handshakes)))
     for r in runners.values():
         r.stop()
     mgr.shutdown()

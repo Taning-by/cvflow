@@ -87,7 +87,20 @@ def test_source_trigger_data():
     g = Graph(); n = g.add_node(reg.create("source.trigger"))
     r = FlowRunner(g).run_once(Trigger(TriggerSource.COMM, device="plc", message="TRIG,7", payload={"k": 1}))
     o = r.node_results[n.id].outputs
-    assert o == {"message": "TRIG,7", "source": "comm", "device": "plc", "payload": {"k": 1}}
+    assert o == {"message": "TRIG,7", "source": "comm", "device": "plc", "payload": {"k": 1},
+                 "request_id": 0, "fields": {}, "value": None, "peer": ""}
+    # 通信层接受请求时冻结的那一份参数：请求编号、来源对端、解析出来的字段
+    g2 = Graph(); n2 = g2.add_node(reg.create("source.trigger", values={"field": "model"}))
+    r2 = FlowRunner(g2).run_once(Trigger(TriggerSource.COMM, device="plc", payload={
+        "request_id": 1001, "peer": "10.0.0.5:5000", "fields": {"model": "A1", "lot": 7}}))
+    o2 = r2.node_results[n2.id].outputs
+    assert o2["request_id"] == 1001 and o2["peer"] == "10.0.0.5:5000"
+    assert o2["fields"] == {"model": "A1", "lot": 7} and o2["value"] == "A1"
+    # required=True 时字段缺失要明确报错
+    g3 = Graph(); n3 = g3.add_node(reg.create("source.trigger", values={"field": "nope", "required": True}))
+    r3 = FlowRunner(g3).run_once(Trigger(TriggerSource.COMM, payload={"fields": {"a": 1}}))
+    assert r3.node_results[n3.id].status.value == "error"
+    assert "没有字段" in r3.node_results[n3.id].error
 
 
 # =============================================================== Preprocess

@@ -115,12 +115,15 @@ class Log(Node):
 class CommSend(Node):
     type_id = "output.comm_send"
     category = "Output"
-    label = "Send Message"
-    description = "Send text to a communication device (TCP/UDP/serial) configured in the Communication panel."
+    label = "Send Message (legacy)"
+    description = ("Send text to a communication device. Kept for existing solutions - the "
+                   "Communication category's 'Comm Send' supersedes it (HEX, reply to the "
+                   "requesting client, templates).")
     color = _COLOR
     inputs = [Port("text", DataType.STRING)]
     outputs = [Port("sent", DataType.BOOL)]
-    params = [Param("device", "", "string"), Param("append", "\\n", "string", description="Terminator (escapes allowed)")]
+    params = [Param("device", "", "choice", options="comm.devices"),
+              Param("append", "\\n", "string", description="Terminator (escapes allowed)")]
 
     def process(self, ctx, inputs):
         from ..comm.manager import get_manager
@@ -136,12 +139,15 @@ class CommSend(Node):
 class ModbusWrite(Node):
     type_id = "output.modbus_write"
     category = "Output"
-    label = "Modbus Write"
-    description = "Write a value into holding register(s) of a Modbus device (client or server)."
+    label = "Modbus Write (by address)"
+    description = ("Write a value into holding register(s) by raw address. Kept for existing "
+                   "solutions - 'Write Data Point' writes by data point name instead, which "
+                   "carries the type, byte order and scaling with it.")
     color = _COLOR
     inputs = [Port("value", DataType.ANY)]
     outputs = [Port("ok", DataType.BOOL)]
-    params = [Param("device", "", "string"), Param("address", 0, "int", min=0, max=65535),
+    params = [Param("device", "", "choice", options="comm.devices"),
+              Param("address", 0, "int", min=0, max=65535),
               Param("kind", "int16", "enum", choices=["int16", "uint16", "int32", "float32", "bool"]),
               Param("scale", 1.0, "float", description="value * scale before conversion")]
 

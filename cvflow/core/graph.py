@@ -126,8 +126,9 @@ class Graph:
         order: list[str] = []
         ready = [nid for nid in self.nodes if indeg[nid] == 0]  # insertion order = deterministic
         while ready:
-            # prefer non-output nodes so Save/Render/Send nodes see the final judgement and all overlays
-            idx = next((i for i, n in enumerate(ready) if self.nodes[n].category != "Output"), 0)
+            # 先跑普通节点，把"汇报结论"的那类（存图、渲染、回传结果）留到最后，
+            # 它们才能看到最终判定与全部叠加层。见 Node.runs_last / Node.is_late。
+            idx = next((i for i, n in enumerate(ready) if not type(self.nodes[n]).is_late()), 0)
             nid = ready.pop(idx)
             order.append(nid)
             for s in succ[nid]:
