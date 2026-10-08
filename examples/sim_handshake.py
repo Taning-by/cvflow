@@ -151,7 +151,7 @@ def run_slave(a) -> int:
     """扮演 PLC（Modbus 从站）：cvflow 做主站轮询我的触发位。"""
     from cvflow.comm.modbus import ModbusTcpServerDevice
     plc = ModbusTcpServerDevice("模拟PLC", {"host": a.host, "port": a.port, "unit_id": a.unit,
-                                            "register_count": 64})
+                                            "register_count": 8192})
     plc.connect()
     print(f"模拟 PLC（Modbus 从站）已监听 {a.host}:{plc.bound_port}，站号 {a.unit}")
     print("请打开 demo_modbus_master.json 并进入运行模式（cvflow 会主动连过来轮询）\n")
