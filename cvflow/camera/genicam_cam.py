@@ -17,6 +17,41 @@ _BAYER = {
 }
 
 
+def _attr(obj, name: str) -> str:
+    """读一个 GenTL INFO 属性。
+
+    标准允许 producer 不实现某一项，这时属性访问抛的是 NotImplementedException 而不是
+    AttributeError——``getattr`` 的默认值挡不住它，所以这里统一兜底。
+    """
+    try:
+        return str(getattr(obj, name, "") or "")
+    except Exception:
+        return ""
+
+
+def _patch_family_tree() -> None:
+    """harvesters 用 ``_family_tree`` 拼日志消息，而它只捕获 AttributeError。
+
+    碰上不实现 DEVICE_INFO_ID 的 producer，相机明明已经打开，却会崩在 ``create()`` 里
+    一句 debug 日志的字符串拼接上（崩溃点还在 ImageAcquirer 构造之前，设备就此没人接管）。
+    这个函数只服务于日志，拿不到名字时返回占位符是安全的。取图路径上也有二十多处用它，
+    所以必须从这里修，光躲开 create 没用。
+    """
+    from harvesters import core
+    if getattr(core._family_tree, "_cvflow_safe", False):
+        return
+    orig = core._family_tree
+
+    def safe(node, tree=""):
+        try:
+            return orig(node, tree)
+        except Exception:
+            return tree or "<id 不可用>"
+
+    safe._cvflow_safe = True
+    core._family_tree = safe
+
+
 def _pick(infos, source) -> int:
     """按序列号 / 用户自定义名 / GenTL id 选一台，都不匹配时才当枚举索引用。
 
@@ -27,11 +62,11 @@ def _pick(infos, source) -> int:
     if not sel:
         return 0
     for i, d in enumerate(infos):
-        if sel in (getattr(d, "serial_number", ""), getattr(d, "user_defined_name", ""), getattr(d, "id_", "")):
+        if sel in (_attr(d, "serial_number"), _attr(d, "user_defined_name"), _attr(d, "id_")):
             return i
     if sel.isdigit() and int(sel) < len(infos):
         return int(sel)
-    known = "、".join(getattr(d, "serial_number", "") or getattr(d, "id_", "") or "?" for d in infos)
+    known = "、".join(_attr(d, "serial_number") or _attr(d, "id_") or "?" for d in infos)
     raise CameraError(f"GenICam：没有序列号/名字为 {sel!r} 的设备。已枚举到 {len(infos)} 台：{known}")
 
 
@@ -48,6 +83,7 @@ class GenICamCamera(Camera):
             from harvesters.core import Harvester
         except ImportError as e:  # pragma: no cover - optional dependency
             raise CameraError("GenICam 支持需要 `pip install harvesters` 以及厂商的 GenTL .cti 驱动") from e
+        _patch_family_tree()
         cti = self.config.get("cti")
         if not cti:
             raise CameraError("GenICam 相机：必须配置 'cti'（GenTL 驱动路径）")
@@ -135,14 +171,17 @@ def enumerate_genicam(cti: str) -> list:
         from harvesters.core import Harvester
     except ImportError as e:
         raise CameraError("GenICam 支持需要 `pip install harvesters`") from e
+    _patch_family_tree()
     h = Harvester()
-    h.add_file(str(cti))
-    h.update()
     out = []
-    for i, d in enumerate(h.device_info_list):
-        out.append(GigEDevice(ip=getattr(d, "ip_address", "") or "", mac="", manufacturer=getattr(d, "vendor", "") or "",
-                              model=getattr(d, "model", "") or "", version=getattr(d, "version", "") or "",
-                              serial=getattr(d, "serial_number", "") or "", user_name=getattr(d, "user_defined_name", "") or "",
-                              source="genicam", extra={"index": i, "cti": str(cti)}))
-    h.reset()
+    try:
+        h.add_file(str(cti))
+        h.update()
+        for i, d in enumerate(h.device_info_list):
+            out.append(GigEDevice(ip=_attr(d, "ip_address"), mac="", manufacturer=_attr(d, "vendor"),
+                                  model=_attr(d, "model"), version=_attr(d, "version"),
+                                  serial=_attr(d, "serial_number"), user_name=_attr(d, "user_defined_name"),
+                                  source="genicam", extra={"index": i, "cti": str(cti)}))
+    finally:
+        h.reset()
     return out
