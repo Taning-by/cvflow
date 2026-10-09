@@ -195,20 +195,22 @@ class CameraDialog(QDialog):
         dev = self._selected()
         if dev is None:
             return
-        try:
-            from ..camera.hik_cam import sdk_available
-            hik = sdk_available()
-        except Exception:
-            hik = False
         cti = self.cti.text().strip()
-        if hik:
+        index = str(dev.extra.get("index", 0))
+        # 按这台设备实际是被哪条路枚举出来的决定取图方式：厂商 SDK 优先，其次通用 GenTL。
+        # 不能只看某个 SDK 装没装——装了海康 SDK 不代表手上这台就是海康相机。
+        sources = dev.extra.get("sources") or [dev.source]
+        if "mindvision" in sources:
+            kind, source = "mindvision", dev.serial or index
+        elif "hik" in sources:
             kind, source = "hik", dev.serial or dev.ip
-        elif cti:
-            kind, source = "genicam", dev.serial or str(dev.extra.get("index", 0))
+        elif "genicam" in sources or cti:
+            kind, source = "genicam", dev.serial or index
         else:
             kind, source = "hik", dev.serial or dev.ip
             QMessageBox.information(self, "添加到流程",
-                                    "已按海康 MVS 方式添加节点。取图前请安装 MVS SDK，或填写 GenTL 驱动改用 GenICam 方式。")
+                                    "这台相机只被 GigE 广播发现，没有任何 SDK 枚举到它。已按海康方式添加，"
+                                    "取图前请安装 MVS SDK，或填写 GenTL 驱动改用 GenICam 方式。")
         name = dev.user_name or dev.serial or dev.ip or "cam"
         self.add_requested.emit(kind, source, name, cti if kind == "genicam" else "")
         self.accept()
