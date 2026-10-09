@@ -138,9 +138,11 @@ class CameraSource(Node):
               Param("timeout_s", 2.0, "float", min=0.01, max=60),
               Param("grayscale", False, "bool"),
               Param("cti", "", "file", label="GenTL producer (.cti)", advanced=True),
-              Param("sdk_path", "", "dir", label="MindVision SDK path", advanced=True,
-                    description="迈德威视 SDK 里 mvsdk.py 所在的目录（一般是 Demo\\Python）。"
-                                "留空则按环境变量 MVSDK_PATH 和常见安装路径找"),
+              Param("sdk_path", "", "dir", label="Vendor SDK path", advanced=True,
+                    description="厂商 SDK 的 Python 模块目录，装在非默认路径时才要填。"
+                                "迈德威视填 mvsdk.py 所在目录（一般是 Demo\\Python）；"
+                                "海康填 MvImport 目录（一般是 MVS\\Development\\Samples\\Python\\MvImport）。"
+                                "留空则按环境变量和常见安装路径找"),
               Param("features", {}, "json", label="Camera features (JSON)", advanced=True)]
 
     def _config(self):

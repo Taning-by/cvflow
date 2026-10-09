@@ -1,8 +1,12 @@
 """海康机器人（HIKROBOT）工业相机，基于 MVS SDK 的 Python 接口 ``MvCameraControl_class``。
 
-这是 VisionMaster 使用的同一套 SDK。需要先安装 MVS（Windows/Linux 都有），
-SDK 的 Python 模块在 MVS 安装目录的 Samples/Python/MvImport 下；也可以用
-环境变量 ``MVCAM_SDK_PATH`` 指向该目录。
+这是 VisionMaster 使用的同一套 SDK。需要先安装 MVS（Windows/Linux 都有，且要带上 Python 示例），
+Python 模块在 ``<MVS>/Development/Samples/Python/MvImport`` 下。MVS 可以装在任意路径，所以这里
+按环境变量（``MVCAM_SDK_PATH`` / ``MVCAM_COMMON_RUNENV``）与常见安装位置组合着找；都找不到时
+可以在相机参数的 ``sdk_path`` 里直接指定。
+
+装不到 Python 示例时改用 GenICam 方式（``kind=genicam``）：cti 在
+``<Common Files>/MVS/Runtime/Win64_x64/`` 下，GigE 相机用 ``MvProducerGEV.cti``，USB3 用 ``MvProducerU3V.cti``。
 """
 from __future__ import annotations
 
@@ -15,14 +19,32 @@ import numpy as np
 from .base import Camera, CameraError
 from .discovery import GigEDevice
 
-_SDK_DIRS = [
+#: MvCameraControl_class.py 可能在的地方。MVS 可以装在任意盘符，两个环境变量指向的层级
+#: 也不一致（有的到 Development，有的到 MvImport），所以按「根目录 × 子路径」组合着找。
+_SDK_ROOTS = [
     os.environ.get("MVCAM_SDK_PATH", ""),
-    r"C:\Program Files (x86)\MVS\Development\Samples\Python\MvImport",
-    r"C:\Program Files\MVS\Development\Samples\Python\MvImport",
-    "/opt/MVS/Samples/64/Python/MvImport",
-    "/opt/MVS/Samples/aarch64/Python/MvImport",
-    "/opt/MVS/Samples/arm64/Python/MvImport",
+    os.environ.get("MVCAM_COMMON_RUNENV", ""),
+    r"C:\Program Files (x86)\MVS\Development",
+    r"C:\Program Files\MVS\Development",
+    "/opt/MVS",
 ]
+_SDK_SUBDIRS = ["", "Samples/Python/MvImport", "Samples/64/Python/MvImport",
+                "Samples/aarch64/Python/MvImport", "Samples/arm64/Python/MvImport",
+                "Development/Samples/Python/MvImport"]
+
+
+def _sdk_dirs(extra: str = "") -> list[str]:
+    """存在的候选目录，按优先级排好；extra 来自相机参数 sdk_path。"""
+    out: list[str] = []
+    for root in ([extra] if extra else []) + _SDK_ROOTS:
+        if not root:
+            continue
+        for sub in _SDK_SUBDIRS:
+            d = os.path.join(root, *sub.split("/")) if sub else root
+            if os.path.isdir(d) and d not in out:
+                out.append(d)
+    return out
+
 
 _PIX_MONO8 = 0x01080001
 _PIX_MONO10 = 0x01100003
@@ -34,7 +56,7 @@ _PIX_BGR8 = 0x02180015
 _mv = None
 
 
-def load_sdk():
+def load_sdk(extra_dir: str = ""):
     """导入 MvCameraControl_class；找不到时抛出带安装提示的 CameraError。"""
     global _mv
     if _mv is not None:
@@ -42,18 +64,22 @@ def load_sdk():
     try:
         import MvCameraControl_class as mv  # type: ignore
     except ImportError:
-        mv = None
-        for d in _SDK_DIRS:
-            if d and os.path.isdir(d) and d not in sys.path:
+        mv, tried = None, _sdk_dirs(extra_dir)
+        for d in tried:
+            if d not in sys.path:
                 sys.path.append(d)
-                try:
-                    import MvCameraControl_class as mv  # type: ignore
-                    break
-                except ImportError:
-                    continue
+            try:
+                import MvCameraControl_class as mv  # type: ignore
+                break
+            except ImportError:
+                continue
         if mv is None:
-            raise CameraError("未找到海康 MVS SDK 的 Python 模块 MvCameraControl_class。"
-                              "请安装 MVS，并把 Samples/Python/MvImport 目录加入 MVCAM_SDK_PATH 环境变量。")
+            looked = "\n  ".join(tried) if tried else "（没有一个候选目录存在）"
+            raise CameraError(
+                "未找到海康 MVS SDK 的 Python 模块 MvCameraControl_class。请先安装 MVS（含 Python 示例），"
+                "再把 MvImport 目录填进相机参数的 sdk_path，或设成环境变量 MVCAM_SDK_PATH；"
+                "典型位置是 <MVS 安装目录>\\Development\\Samples\\Python\\MvImport。"
+                f"\n找过这些目录：\n  {looked}")
     _mv = mv
     return mv
 
@@ -135,7 +161,7 @@ class HikCamera(Camera):
         raise CameraError(f"MVS：未找到相机 {want!r}（可用：序列号 / IP / 用户名 / 索引）")
 
     def open(self) -> None:
-        mv = load_sdk()
+        mv = load_sdk(str(self.config.get("sdk_path", "")))
         _, infos = _enum_list(mv)
         if not infos:
             raise CameraError("MVS：未发现任何相机")
