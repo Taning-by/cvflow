@@ -10,6 +10,7 @@ Python 模块在 ``<MVS>/Development/Samples/Python/MvImport`` 下。MVS 可以�
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from ctypes import POINTER, byref, c_ubyte, cast, memmove
@@ -18,6 +19,8 @@ import numpy as np
 
 from .base import Camera, CameraError
 from .discovery import GigEDevice
+
+log = logging.getLogger("cvflow.camera")
 
 #: MvCameraControl_class.py 可能在的地方。MVS 可以装在任意盘符，两个环境变量指向的层级
 #: 也不一致（有的到 Development，有的到 MvImport），所以按「根目录 × 子路径」组合着找。
@@ -111,29 +114,38 @@ def _enum_list(mv):
     return lst, infos
 
 
+def _mac(g) -> str:
+    """MV_GIGE_DEVICE_INFO 里 MAC 的字段名各版本不一致，取不到就留空——去重本来就优先用序列号。"""
+    hi, lo = getattr(g, "nMacAddrHigh", 0), getattr(g, "nMacAddrLow", 0)
+    if not (hi or lo):
+        return ""
+    return ":".join(f"{b:02X}" for b in ((hi >> 8) & 0xFF, hi & 0xFF, (lo >> 24) & 0xFF,
+                                         (lo >> 16) & 0xFF, (lo >> 8) & 0xFF, lo & 0xFF))
+
+
 def enumerate_hik() -> list[GigEDevice]:
     """通过 MVS SDK 枚举 GigE 与 USB3 相机。"""
     mv = load_sdk()
     _, infos = _enum_list(mv)
     out: list[GigEDevice] = []
     for i, info in enumerate(infos):
-        if info.nTLayerType == mv.MV_GIGE_DEVICE:
-            g = info.SpecialInfo.stGigEInfo
-            mac = ":".join(f"{b:02X}" for b in ((g.nMacAddrHigh >> 8) & 0xFF, g.nMacAddrHigh & 0xFF,
-                                                  (g.nMacAddrLow >> 24) & 0xFF, (g.nMacAddrLow >> 16) & 0xFF,
-                                                  (g.nMacAddrLow >> 8) & 0xFF, g.nMacAddrLow & 0xFF))
-            out.append(GigEDevice(ip=_ip_str(g.nCurrentIp), mac=mac, subnet=_ip_str(g.nCurrentSubNetMask),
-                                  gateway=_ip_str(g.nDefultGateWay), manufacturer=_cstr(g.chManufacturerName),
-                                  model=_cstr(g.chModelName), version=_cstr(g.chDeviceVersion),
-                                  serial=_cstr(g.chSerialNumber), user_name=_cstr(g.chUserDefinedName),
-                                  interface_ip=_ip_str(g.nNetExport), source="hik",
-                                  extra={"index": i, "layer": "gige"}))
-        elif info.nTLayerType == mv.MV_USB_DEVICE:
-            u = info.SpecialInfo.stUsb3VInfo
-            out.append(GigEDevice(ip="", mac="", manufacturer=_cstr(u.chManufacturerName), model=_cstr(u.chModelName),
-                                  version=_cstr(u.chDeviceVersion), serial=_cstr(u.chSerialNumber),
-                                  user_name=_cstr(u.chUserDefinedName), source="hik",
-                                  extra={"index": i, "layer": "usb"}))
+        try:
+            if info.nTLayerType == mv.MV_GIGE_DEVICE:
+                g = info.SpecialInfo.stGigEInfo
+                out.append(GigEDevice(ip=_ip_str(g.nCurrentIp), mac=_mac(g), subnet=_ip_str(g.nCurrentSubNetMask),
+                                      gateway=_ip_str(g.nDefultGateWay), manufacturer=_cstr(g.chManufacturerName),
+                                      model=_cstr(g.chModelName), version=_cstr(g.chDeviceVersion),
+                                      serial=_cstr(g.chSerialNumber), user_name=_cstr(g.chUserDefinedName),
+                                      interface_ip=_ip_str(g.nNetExport), source="hik",
+                                      extra={"index": i, "layer": "gige"}))
+            elif info.nTLayerType == mv.MV_USB_DEVICE:
+                u = info.SpecialInfo.stUsb3VInfo
+                out.append(GigEDevice(ip="", mac="", manufacturer=_cstr(u.chManufacturerName),
+                                      model=_cstr(u.chModelName), version=_cstr(u.chDeviceVersion),
+                                      serial=_cstr(u.chSerialNumber), user_name=_cstr(u.chUserDefinedName),
+                                      source="hik", extra={"index": i, "layer": "usb"}))
+        except Exception as e:      # 一台读不出来不该让其余几台也跟着消失
+            log.warning("MVS：第 %d 台相机的信息解析失败，已跳过：%s", i, e)
     return out
 
 
