@@ -22,15 +22,30 @@ import numpy as np
 from .base import Camera, CameraError
 from .discovery import GigEDevice
 
-#: mvsdk.py 可能在的地方。装驱动时路径可选，所以多列几个常见的。
-_SDK_DIRS = [
+#: mvsdk.py 可能在的地方。装驱动时路径可选，各版本 Demo 的层级也不一致
+#: （实测有装在 Demo\Python\Advanced 下的），所以按「根目录 × 子路径」组合着找。
+_SDK_ROOTS = [
     os.environ.get("MVSDK_PATH", ""),
-    r"C:\Program Files (x86)\MindVision\Demo\Python",
-    r"C:\Program Files\MindVision\Demo\Python",
-    r"C:\MindVision\Demo\Python",
-    "/opt/MVSDK/Python",
-    "/usr/local/MVSDK/Python",
+    r"C:\Program Files (x86)\MindVision",
+    r"C:\Program Files\MindVision",
+    r"C:\MindVision",
+    "/opt/MVSDK",
+    "/usr/local/MVSDK",
 ]
+_SDK_SUBDIRS = ["", "Demo/Python/Advanced", "Demo/Python/Basic", "Demo/Python", "Python"]
+
+
+def _sdk_dirs(extra: str = "") -> list[str]:
+    """存在的候选目录，按优先级排好；extra 来自相机参数 sdk_path。"""
+    out: list[str] = []
+    for root in ([extra] if extra else []) + _SDK_ROOTS:
+        if not root:
+            continue
+        for sub in _SDK_SUBDIRS:
+            d = os.path.join(root, *sub.split("/")) if sub else root
+            if os.path.isdir(d) and d not in out:
+                out.append(d)
+    return out
 
 _sdk = None
 
@@ -40,24 +55,25 @@ def load_sdk(extra_dir: str = ""):
     global _sdk
     if _sdk is not None:
         return _sdk
-    dirs = ([extra_dir] if extra_dir else []) + _SDK_DIRS
     try:
         import mvsdk  # type: ignore
     except ImportError:
-        mvsdk = None
-        for d in dirs:
-            if d and os.path.isdir(d) and d not in sys.path:
+        mvsdk, tried = None, _sdk_dirs(extra_dir)
+        for d in tried:
+            if d not in sys.path:
                 sys.path.append(d)
-                try:
-                    import mvsdk  # type: ignore
-                    break
-                except ImportError:
-                    continue
+            try:
+                import mvsdk  # type: ignore
+                break
+            except ImportError:
+                continue
         if mvsdk is None:
+            looked = "\n  ".join(tried) if tried else "（没有一个候选目录存在）"
             raise CameraError(
                 "未找到迈德威视 SDK 的 Python 模块 mvsdk。请先安装 MindVision 的相机驱动/SDK，"
-                "再把 SDK 里 mvsdk.py 所在的目录（一般是 Demo\\Python）填进相机参数的 sdk_path，"
-                "或设成环境变量 MVSDK_PATH。")
+                "再把 mvsdk.py 所在的目录填进相机参数的 sdk_path，或设成环境变量 MVSDK_PATH；"
+                "典型位置是 <MindVision>\\Demo\\Python\\Advanced。"
+                f"\n找过这些目录：\n  {looked}")
     _sdk = mvsdk
     return mvsdk
 
