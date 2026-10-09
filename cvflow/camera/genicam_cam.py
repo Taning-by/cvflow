@@ -5,6 +5,7 @@ Hikrobot MVS ships one too). Install with ``pip install harvesters``.
 """
 from __future__ import annotations
 
+import os
 from contextlib import suppress
 
 import numpy as np
@@ -15,6 +16,26 @@ _BAYER = {
     "BayerRG8": "COLOR_BayerRG2BGR", "BayerGR8": "COLOR_BayerGR2BGR",
     "BayerGB8": "COLOR_BayerGB2BGR", "BayerBG8": "COLOR_BayerBG2BGR",
 }
+
+
+_dll_dirs: set[str] = set()
+
+
+def _ensure_dll_dir(cti: str) -> None:
+    """把 cti 所在目录加进 DLL 搜索路径。
+
+    Windows 上 Python 3.8 起加载 DLL 不再搜索 PATH。cti 本身能加载，但它依赖的同目录运行库
+    找不到，于是落到系统里同名的其它版本上——那比直接加载失败更难查：函数调得通，结构体布局
+    却对不上，读出来是随机内存（表现为 BufferTooSmall、UnicodeDecodeError、字符串尾部带垃圾）。
+    同一个 cti 在 VisionMaster（C++，自己设过搜索目录）里正常、在这里读出垃圾，就是这个原因。
+    """
+    if os.name != "nt":
+        return
+    d = os.path.dirname(os.path.abspath(str(cti)))
+    if d and d not in _dll_dirs and os.path.isdir(d):
+        _dll_dirs.add(d)
+        with suppress(OSError, AttributeError):
+            os.add_dll_directory(d)      # 句柄故意不释放：整个进程期间都要有效
 
 
 def _attr(obj, name: str) -> str:
@@ -87,6 +108,7 @@ class GenICamCamera(Camera):
         cti = self.config.get("cti")
         if not cti:
             raise CameraError("GenICam 相机：必须配置 'cti'（GenTL 驱动路径）")
+        _ensure_dll_dir(cti)
         self._h = h = Harvester()
         try:
             h.add_file(str(cti))
@@ -172,6 +194,7 @@ def enumerate_genicam(cti: str) -> list:
     except ImportError as e:
         raise CameraError("GenICam 支持需要 `pip install harvesters`") from e
     _patch_family_tree()
+    _ensure_dll_dir(cti)
     h = Harvester()
     out = []
     try:
