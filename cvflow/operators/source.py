@@ -175,7 +175,13 @@ class CameraSource(Node):
             cam.software_trigger()
         img = cam.grab(float(self.get("timeout_s")))
         if img is None:
-            raise NodeError(f"相机 {cam.name!r}：取图超时")
+            mode = str(self.get("trigger_mode"))
+            why = ("相机多半停在触发模式等信号——先把触发模式改成 off 自由采集试一次"
+                   if mode == "keep" else
+                   f"触发模式是 {mode}，确认触发信号真的到了相机")
+            raise NodeError(f"相机 {cam.name!r}：{self.get('timeout_s')} 秒内没有取到图像。{why}；"
+                            f"也可能是防火墙拦了图像流（GigE 的 GVSP 走入站 UDP）、"
+                            f"曝光时间超过了超时、或多台相机挤在同一条链路上带宽不够")
         return {"image": img, "frame_id": img.frame_id}
 
 

@@ -11,7 +11,6 @@ import contextlib
 import logging
 import threading
 import time
-import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -23,6 +22,25 @@ from .types import Overlay, to_jsonable
 from .variables import GlobalVariables
 
 log = logging.getLogger("cvflow.engine")
+
+
+def _is_ours(e: BaseException) -> bool:
+    """cvflow 自己抛的错误（NodeError / CameraError / CommError…）消息是写给人看的。
+    其余的（TypeError、AttributeError 之类）说明代码或环境出了意外，没有栈就无从查起。"""
+    return type(e).__module__.startswith("cvflow")
+
+
+def _describe(e: BaseException) -> str:
+    """一行错误摘要：自家错误只要消息，其余带上类型名；起因没被消息包含时再串一层。"""
+    head = str(e) or type(e).__name__
+    if not _is_ours(e):
+        head = f"{type(e).__name__}: {head}"
+    cause = e.__cause__ or e.__context__
+    if cause is not None:
+        tail = str(cause) or type(cause).__name__
+        if tail and tail not in head:
+            return f"{head}　←　起因 {type(cause).__name__}: {tail}"
+    return head
 
 
 @dataclass
@@ -187,11 +205,11 @@ class Engine:
                 node.setup()
                 node._is_setup = True
             except Exception as e:
-                msg = f"{node.name}：初始化失败：{type(e).__name__}: {e}"
+                msg = f"[{node.name}] 初始化失败：{_describe(e)}"
                 node.last_error = msg
                 node.status = NodeStatus.ERROR
                 errors.append(msg)
-                log.error(msg)
+                log.error(msg, exc_info=not _is_ours(e))
         return errors
 
     def teardown_nodes(self) -> None:
@@ -278,10 +296,9 @@ class Engine:
                                 nres.status = NodeStatus.NG
                     except Exception as e:
                         nres.status = NodeStatus.ERROR
-                        nres.error = f"{type(e).__name__}: {e}"
+                        nres.error = _describe(e)
                         result.ok = False
-                        log.error("[%s] %s", node.name, nres.error)
-                        log.debug("%s", traceback.format_exc())
+                        log.error("[%s] %s", node.name, nres.error, exc_info=not _is_ours(e))
                     nres.time_ms = (time.perf_counter() - t0) * 1000
                     nres.overlays = ctx._end()
 
