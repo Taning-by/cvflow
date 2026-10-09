@@ -58,8 +58,30 @@ class Camera(ABC):
     def get_feature(self, name: str) -> Any:
         return None
 
+    def execute_command(self, name: str) -> None:
+        """执行命令型特性（UserSetLoad、TriggerSoftware 这类）；约定 value=None 即命令。"""
+        self.set_feature(name, None)
+
+    def load_user_set(self, name: str) -> None:
+        """把相机 Flash 里的一组参数恢复到工作寄存器。name 形如 UserSet1 / Default。"""
+        try:
+            self.set_feature("UserSetSelector", name)
+            self.execute_command("UserSetLoad")
+        except Exception as e:
+            raise CameraError(f"相机 {self.name!r}：加载用户集 {name} 失败"
+                              f"（这台相机可能没有这一组，或当前正在采集）：{e}") from e
+
+    def save_user_set(self, name: str) -> None:
+        """把当前参数写进相机 Flash。Flash 擦写有寿命，只在调试确认后手动调用，别放进流程。"""
+        self.set_feature("UserSetSelector", name)
+        self.execute_command("UserSetSave")
+
     def apply_settings(self, cfg: dict[str, Any]) -> None:
-        """把通用设置映射到 GenICam SFNC 特性：曝光（微秒）、增益、触发模式/源。"""
+        """把通用设置映射到 GenICam SFNC 特性：用户集、曝光（微秒）、增益、触发模式/源。"""
+        user_set = str(cfg.get("user_set") or "keep")
+        if user_set != "keep":
+            # 先恢复整套，后面的曝光/增益/触发才是在它之上的覆盖
+            self.load_user_set(user_set)
         exp = cfg.get("exposure_us")
         if exp not in (None, "", 0, 0.0):
             self.set_feature("ExposureAuto", "Off")

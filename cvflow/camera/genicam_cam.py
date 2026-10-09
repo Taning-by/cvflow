@@ -39,14 +39,13 @@ class GenICamCamera(Camera):
         sel = self.config.get("source", 0)
         kwargs = {"serial_number": str(sel)} if isinstance(sel, str) and not sel.isdigit() else {"list_index": int(sel)}
         ia = h.create(**kwargs)
-        node_map = ia.remote_device.node_map
-        for feat, val in (self.config.get("features") or {}).items():  # e.g. ExposureTime, TriggerMode
+        self._h, self._ia = h, ia
+        self.apply_settings(self.config)          # 先用户集打底，再曝光/增益/触发
+        for feat, val in (self.config.get("features") or {}).items():   # 手动特性优先级最高，最后覆盖
             try:
-                setattr(node_map, feat, val)
+                self.set_feature(feat, val)
             except Exception as e:
                 raise CameraError(f"GenICam：无法设置 {feat}={val!r}：{e}") from e
-        self._h, self._ia = h, ia
-        self.apply_settings(self.config)
         ia.start()
         self.is_open = True
 
@@ -89,8 +88,13 @@ class GenICamCamera(Camera):
             raise
 
     def set_feature(self, name: str, value) -> None:
-        if self._ia is not None:
-            setattr(self._ia.remote_device.node_map, name, value)
+        if self._ia is None:
+            return
+        node_map = self._ia.remote_device.node_map
+        if value is None:                         # 命令型特性：UserSetLoad、TriggerSoftware 这类
+            getattr(node_map, name).execute()
+        else:
+            setattr(node_map, name, value)
 
     def get_feature(self, name: str):
         if self._ia is None:
@@ -98,8 +102,7 @@ class GenICamCamera(Camera):
         return getattr(self._ia.remote_device.node_map, name).value
 
     def software_trigger(self) -> None:
-        if self._ia is not None:
-            self._ia.remote_device.node_map.TriggerSoftware.execute()
+        self.execute_command("TriggerSoftware")
 
 
 def enumerate_genicam(cti: str) -> list:

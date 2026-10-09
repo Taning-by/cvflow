@@ -125,6 +125,11 @@ class CameraSource(Node):
                     advanced=True,
                     description="只对 opencv 取图方式有效。Windows 默认走 MSMF，它只认 UVC 设备；"
                                 "厂商注册的 DirectShow 滤镜（如迈德威视的 MindVision.ax）要选 dshow"),
+              Param("user_set", "keep", "enum",
+                    choices=["keep", "Default", "UserSet1", "UserSet2", "UserSet3"],
+                    description="打开相机时从相机 Flash 恢复一组参数（GenTL / 海康）。"
+                                "keep=不加载，沿用相机当前状态。加载在曝光/增益/触发之前，"
+                                "所以下面几项仍然生效"),
               Param("trigger_mode", "keep", "enum", choices=["keep", "off", "software", "hardware"],
                     description="keep=沿用相机当前设置 off=自由采集 software=软触发 hardware=外部触发"),
               Param("trigger_source", "Line0", "string", description="硬件触发信号线", advanced=True),
@@ -143,6 +148,7 @@ class CameraSource(Node):
         if self.get("kind") == "folder":
             src = paths.resolve(src)
         cfg = {"source": src, "grayscale": self.get("grayscale"), "loop": True, "backend": self.get("backend"),
+               "user_set": self.get("user_set"),
                "trigger_mode": self.get("trigger_mode"), "trigger_source": self.get("trigger_source"),
                "exposure_us": self.get("exposure_us"), "gain": self.get("gain")}
         if self.get("cti"):
