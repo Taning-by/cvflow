@@ -223,7 +223,7 @@ def test_missing_sdk_explains_how_to_install(monkeypatch):
     from cvflow.camera import mindvision_cam
     monkeypatch.setattr(mindvision_cam, "_sdk", None)
     monkeypatch.setitem(sys.modules, "mvsdk", None)           # 让 import mvsdk 失败
-    monkeypatch.setattr(mindvision_cam, "_SDK_DIRS", ["/不存在的目录"])
+    monkeypatch.setattr(mindvision_cam, "_SDK_ROOTS", ["/不存在的目录"])
     with pytest.raises(CameraError) as e:
         mindvision_cam.load_sdk()
     msg = str(e.value)
