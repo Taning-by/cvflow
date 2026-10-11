@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 打包配置：一次产出两个 exe，共用同一份 _internal。
 
-    CVFlow.exe   窗口程序，无控制台（双击用）
-    cvflow.exe   命令行，有控制台（cvflow gpu 自检、serve 无界面生产模式）
+    CVFlow-GUI.exe   窗口程序，无控制台（双击用）
+    cvflow.exe       命令行，有控制台（cvflow gpu 自检、serve 无界面生产模式）
+
+两个名字**不能只差大小写**：Windows 的文件名不区分大小写，CVFlow.exe 和 cvflow.exe
+会落到同一个文件上，COLLECT 后写的那个把先写的覆盖掉，最后只剩一个 exe
+（表现为双击"界面"闪出一个 cmd 就退出——那其实是命令行程序）。
 
 CUDA / cuDNN 的 DLL 按 `nvidia/<包>/bin/` 的原布局收进来，运行时由
 cvflow.operators.dl._open_cudnn_search_path() 加进 DLL 搜索路径——打包后没有
@@ -104,7 +108,7 @@ cli_pyz = PYZ(cli.pure, cli.zipped_data, cipher=block_cipher)
 icon = str(ROOT / "cvflow" / "ui" / "assets" / "cvflow.ico")
 icon = icon if os.path.isfile(icon) else None
 
-gui_exe = EXE(gui_pyz, gui.scripts, [], exclude_binaries=True, name="CVFlow",
+gui_exe = EXE(gui_pyz, gui.scripts, [], exclude_binaries=True, name="CVFlow-GUI",
               debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
               console=False, icon=icon)
 cli_exe = EXE(cli_pyz, cli.scripts, [], exclude_binaries=True, name="cvflow",

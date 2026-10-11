@@ -14,7 +14,7 @@
 #define AppName "CVFlow"
 #define AppPublisher "tanxinji"
 #define AppURL "https://github.com/Taning-by/cvflow"
-#define AppExe "CVFlow.exe"
+#define AppExe "CVFlow-GUI.exe"
 #ifndef AppVersion
   #define AppVersion "0.1.0"
 #endif

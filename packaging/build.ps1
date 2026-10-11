@@ -130,10 +130,10 @@ $app = "$Root\dist\CVFlow"
 if ($InstallerOnly) {
     # 冻结那一步很贵（要搬 1.9 GB 的 CUDA/cuDNN），补装完 Inno Setup 之后没必要重做一遍
     Say "按 -InstallerOnly 跳过冻结，直接用已有的 $app"
-    if (-not (Test-Path "$app\CVFlow.exe")) {
-        Die "没有 $app\CVFlow.exe。先跑一次完整构建（或 -FreezeOnly）把程序冻结出来"
+    if (-not (Test-Path "$app\CVFlow-GUI.exe")) {
+        Die "没有 $app\CVFlow-GUI.exe。先跑一次完整构建（或 -FreezeOnly）把程序冻结出来"
     }
-    $built = (Get-Item "$app\CVFlow.exe").LastWriteTime
+    $built = (Get-Item "$app\CVFlow-GUI.exe").LastWriteTime
     Ok "沿用 $built 冻结的那一份"
 }
 
@@ -186,8 +186,15 @@ Say "PyInstaller 冻结程序（第一次比较久）"
 $env:CVFLOW_SKIP_NVIDIA = if ($SkipGpu) { "1" } else { "" }
 & $Python -m PyInstaller --noconfirm --clean --distpath "$Root\dist" --workpath "$Root\build" "$Root\packaging\cvflow.spec"
 if ($LASTEXITCODE -ne 0) { Die "PyInstaller 失败，上面的输出是第一手线索" }
-foreach ($exe in @("$app\CVFlow.exe", "$app\cvflow.exe")) {
+$guiExe = "$app\CVFlow-GUI.exe"; $cliExe = "$app\cvflow.exe"
+foreach ($exe in @($guiExe, $cliExe)) {
     if (-not (Test-Path $exe)) { Die "没产出 $exe，打包配置可能有问题" }
+}
+# 两个 exe 的名字只要只差大小写，Windows 上就是同一个文件，后写的覆盖先写的，
+# 而上面的 Test-Path 两次都会通过——只剩一个 exe 的事故就这么漏过去了（双击界面
+# 闪出 cmd 就退，因为那其实是命令行程序）。比一次内容，确保真是两个不同的程序。
+if ((Get-FileHash $guiExe).Hash -eq (Get-FileHash $cliExe).Hash) {
+    Die "界面和命令行是同一个文件——两个 exe 的名字在 Windows 上撞了（不区分大小写），改 cvflow.spec 里的 name"
 }
 $size = [math]::Round(((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum / 1GB), 2)
 Ok "冻结完成：$app（$size GB）"

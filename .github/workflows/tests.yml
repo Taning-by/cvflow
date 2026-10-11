@@ -122,7 +122,7 @@ jobs:
         run: |
           .\dist\CVFlow\cvflow.exe nodes | Select-Object -First 3
           .\dist\CVFlow\cvflow.exe gpu
-          if (-not (Test-Path .\dist\CVFlow\CVFlow.exe)) { throw "没产出界面程序" }
+          if (-not (Test-Path .\dist\CVFlow\CVFlow-GUI.exe)) { throw "没产出界面程序" }
       - name: 产出了安装程序
         shell: pwsh
         run: |

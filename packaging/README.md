@@ -41,7 +41,7 @@ onnxruntime 的 CUDA 后端是**单独一个 DLL**，运行时才去加载。不
 
 ```
 C:\Program Files\CVFlow\          程序（只读）
-  CVFlow.exe                      界面，双击打开
+  CVFlow-GUI.exe                  界面，双击打开（桌面/开始菜单快捷方式指向它）
   cvflow.exe                      命令行：cvflow gpu / serve / run
   _internal\                       运行时、依赖、（勾了的话）CUDA/cuDNN
 %ProgramData%\CVFlow\             数据（可写——Program Files 下用户改不了）
@@ -58,6 +58,12 @@ C:\Program Files\CVFlow\          程序（只读）
 CVFlow-Setup-0.1.0-x64.exe /SILENT /DIR="C:\CVFlow"
 CVFlow-Setup-0.1.0-x64.exe /SILENT /COMPONENTS="main,examples"    # 不要 GPU 组件
 ```
+
+## 两个 exe 的名字不能只差大小写
+
+Windows 文件名不区分大小写，`CVFlow.exe` 和 `cvflow.exe` 是同一个文件：PyInstaller 的
+COLLECT 会把后写的覆盖先写的，最后目录里只剩一个 exe。症状是双击「界面」闪出一个 cmd
+就退出——那其实是命令行程序。构建时会比对两个 exe 的哈希，撞名就直接报错。
 
 ## 已知限制
 
