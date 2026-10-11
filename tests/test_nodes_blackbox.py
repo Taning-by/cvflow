@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from cvflow.core import Image, Point, Rect, registry
-from cvflow.core.node import NodeStatus
+from cvflow.core.node import NodeError, NodeStatus
 from nodes_helpers import (ROOT, disk_gray, make_channel_mean_classifier, make_constant_detector, make_identity_model,
                            noisy_gray, qr_bgr, ramp_gray, run_node, run_ok, squares_bgr, squares_gray, step_gray, unique_gray)
 
@@ -555,3 +555,36 @@ def test_learning_torch_template_reports_missing_torch_cleanly():
         pass
     nr, _, _ = run_node(reg, "learning.torch_template", {"image": squares_bgr()})
     assert nr.status == NodeStatus.ERROR and "torch" in nr.error.lower()
+
+
+# ---- 轨迹节点：图像尺寸与配置不符时的取图策略（见 trajectory_node._to_canvas） ----
+def _traj_canvas(values: dict, w: int, h: int):
+    """直接问节点：这张图它会把哪块区域、按什么缩放比送进网络。"""
+    node = reg.create("dl.onnx_trajectory", values=values)
+    _, meta = node._to_canvas(Image(np.zeros((h, w, 3), np.uint8)))
+    return meta
+
+
+def test_traj_whole_image_mode_scales_instead_of_cropping():
+    """ROI 配成整图时，来了更大的图要整张缩放送进去，不能只切左上角——切掉的部分模型永远看不见。"""
+    vals = {"roi": {"x": 0, "y": 0, "w": 1280, "h": 1024}, "width": 1280, "height": 1024}
+    assert _traj_canvas(vals, 1280, 1024)["roi"] == (0, 0, 1280, 1024)      # 尺寸相符：原样送入
+    big = _traj_canvas(vals, 1920, 1440)
+    assert big["roi"] == (0, 0, 1920, 1440), "整图模式下不该裁掉任何画面"
+    assert big["scale"] == (1280 / 1920, 1024 / 1440)                        # 坐标按这个比例换算回原图
+    small = _traj_canvas(vals, 640, 512)
+    assert small["roi"] == (0, 0, 640, 512) and small["scale"] == (2.0, 2.0)
+
+
+def test_traj_roi_mode_still_crops_and_clips():
+    """配了真正的子区域 ROI 就按它裁；ROI 伸出图像时取交集，并在元数据里如实反映。"""
+    vals = {"roi": {"x": 288, "y": 256, "w": 768, "h": 576}, "width": 768, "height": 576}
+    assert _traj_canvas(vals, 1280, 1024)["roi"] == (288, 256, 768, 576)
+    clipped = _traj_canvas(vals, 640, 512)["roi"]
+    assert clipped == (288, 256, 352, 256), "ROI 超出图像时应取交集"
+
+
+def test_traj_roi_outside_image_errors_cleanly():
+    vals = {"roi": {"x": 2000, "y": 2000, "w": 768, "h": 576}, "width": 768, "height": 576}
+    with pytest.raises(NodeError, match="没有交集"):
+        _traj_canvas(vals, 1280, 1024)

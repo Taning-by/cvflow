@@ -84,18 +84,36 @@ class OnnxTrajectory(_OnnxBase):
         return (r.get("x"), r.get("y")) == (0.0, 0.0) and \
             (r.get("w"), r.get("h")) == (float(self.get("width")), float(self.get("height")))
 
-    # ---- 预处理：先裁 ROI 再缩放 ----
+    def _warn_once(self, key: str, msg: str, *args) -> None:
+        """同一种情况只提醒一次：这些检查在每帧都会命中，照实打会把日志刷爆。"""
+        seen = self.__dict__.setdefault("_warned", set())
+        if key not in seen:                      # 两路不同分辨率的相机交替送图时，各自只提醒一次
+            seen.add(key)
+            log.warning("%s：" + msg, self.name, *args)
+
+    # ---- 预处理：取出要送进网络的区域，再缩放到模型要求的输入尺寸 ----
     def _to_canvas(self, img: Image):
         w, h = int(self.get("width")), int(self.get("height"))
         r = self.rect("roi")
         data = as_bgr(img)
-        if r is not None and not r.is_empty():
+        # ROI 配成"整图"时不做裁剪：画面多大就整张送进去，再统一缩放到输入尺寸。
+        # 这样换了分辨率更大的相机也不会被悄悄切掉一角——只是分辨率变了，内容一点不少。
+        if r is not None and not r.is_empty() and not self._roi_is_full():
             x0, y0, rw, rh = r.clip(img.width, img.height).as_int()
             if rw <= 0 or rh <= 0:
                 raise NodeError(f"裁剪区 ROI 与图像（{img.width}×{img.height}）没有交集，检查「裁剪区 ROI」或相机分辨率")
+            if (x0, y0, rw, rh) != r.as_int():
+                self._warn_once(f"roi_clip:{img.width}x{img.height}",
+                                "裁剪区 ROI %s 超出图像（%d×%d），只取到交集 %d,%d %d×%d，送进网络的画面比配置的少",
+                                r.as_int(), img.width, img.height, x0, y0, rw, rh)
             data = data[y0:y0 + rh, x0:x0 + rw]
         else:
             x0, y0, rw, rh = 0, 0, img.width, img.height
+            if (rw, rh) != (w, h):
+                self._warn_once(f"full_resize:{rw}x{rh}",
+                                "图像 %d×%d 与模型输入 %d×%d 不一致，已整图缩放后推理（内容不丢，但与训练时的尺度不同，精度会下降）"
+                                + ("；长宽比也变了" if abs(rw / max(1, rh) - w / max(1, h)) > 0.01 else ""),
+                                rw, rh, w, h)
         if data.shape[1] != w or data.shape[0] != h:
             data = cv2.resize(data, (w, h), interpolation=cv2.INTER_AREA if w < rw else cv2.INTER_LINEAR)
         meta = {"scale": (w / max(1, rw), h / max(1, rh)), "pad": (0, 0), "orig": (img.width, img.height), "roi": (x0, y0, rw, rh)}
