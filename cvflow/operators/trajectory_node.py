@@ -1,10 +1,10 @@
-"""cvflow 插件：ONNX 轨迹（关键点）节点。
+"""ONNX 轨迹（关键点）节点。
 
 把 train/export_onnx.py 导出的模型接进流程：固定 ROI 裁剪 → 缩放到网络输入 → 推理 → 20 点换回原图像素，
 画出折线与序号，输出点列表 / 有效性 / 置信度 / 轨迹长度。
 
-用法：方案的 plugin_dirs 里加上本目录（或菜单 Plugins → Load plugin folder），节点库「Deep Learning」分类里
-会出现「ONNX 轨迹 (关键点)」。参数里的宽/高/ROI 按导出时的 sidecar json 填（节点也能从同名 json 自动读）。
+节点库「Deep Learning」分类里是「ONNX 轨迹 (关键点)」。参数里的宽/高/ROI 按导出时的 sidecar json 填
+（节点也能从同名 json 自动读）。
 """
 from __future__ import annotations
 
@@ -14,14 +14,15 @@ import os
 import cv2
 import numpy as np
 
-from cvflow.core import DataType, Line, NodeError, Overlay, Param, Point, Port, paths
+from cvflow.core import DataType, Line, NodeError, Overlay, Param, Point, paths, register
 from cvflow.core.types import Image
 from cvflow.operators._util import as_bgr
-from cvflow.operators.dl import MAX_INPUTS, _OnnxBase
+from cvflow.operators.dl import _OnnxBase
 
 _COLOR = "#6a1b9a"
 
 
+@register
 class OnnxTrajectory(_OnnxBase):
     type_id = "dl.onnx_trajectory"
     category = "Deep Learning"
@@ -71,8 +72,9 @@ class OnnxTrajectory(_OnnxBase):
         r = self.rect("roi")
         data = as_bgr(img)
         if r is not None and not r.is_empty():
-            r = r.clip(img.width, img.height)
-            x0, y0, rw, rh = r.as_int()
+            x0, y0, rw, rh = r.clip(img.width, img.height).as_int()
+            if rw <= 0 or rh <= 0:
+                raise NodeError(f"裁剪区 ROI 与图像（{img.width}×{img.height}）没有交集，检查「裁剪区 ROI」或相机分辨率")
             data = data[y0:y0 + rh, x0:x0 + rw]
         else:
             x0, y0, rw, rh = 0, 0, img.width, img.height

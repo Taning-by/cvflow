@@ -67,6 +67,9 @@ def _setup_for(type_id: str, res: dict):
         "dl.onnx": ({"model_path": str(res["model"]), "width": 8, "height": 8}, {}, False),
         "dl.onnx_classifier": ({"model_path": str(res["model"]), "width": 8, "height": 8, "labels_path": str(res["dir"] / "labels.txt")}, {}, False),
         "dl.onnx_detector": ({"model_path": str(res["model"]), "width": 8, "height": 8}, {}, True),   # identity 输出不是检测布局 → 应以 ERROR 结束
+        # 契约只看输出类型，identity 模型的 24×8 输出够切出 20 个点；ROI 必须落在 200×200 的测试图内
+        "dl.onnx_trajectory": ({"model_path": str(res["model"]), "width": 8, "height": 8,
+                                "roi": {"x": 10, "y": 60, "w": 180, "h": 80}}, {}, False),
         "output.save_image": ({"directory": str(res["dir"] / "out")}, {}, False),
         "output.comm_send": ({"device": "x"}, {}, True),          # 没有通信管理器 → 明确报错
         "output.modbus_write": ({"device": "x"}, {}, True),
