@@ -1,7 +1,7 @@
 """ONNX 轨迹（关键点）节点。
 
 把 train/export_onnx.py 导出的模型接进流程：固定 ROI 裁剪 → 缩放到网络输入 → 推理 → 20 点换回原图像素，
-画出折线与序号，输出点列表 / 有效性 / 置信度 / 轨迹长度。
+画出折线与各点，输出点列表 / 有效性 / 置信度 / 轨迹长度。
 
 节点库「Deep Learning」分类里是「ONNX 轨迹 (关键点)」。参数里的宽/高/ROI 按导出时的 sidecar json 填
 （节点也能从同名 json 自动读）。
@@ -46,8 +46,7 @@ class OnnxTrajectory(_OnnxBase):
         Param("conf", 0.5, "float", min=0, max=1, step=0.01, label="可执行阈值",
               description="模型的可执行概率低于它就判 NG（空夹具 / 被遮挡 / 刀已插入）"),
         Param("judge", True, "bool", label="参与判定", description="可执行概率低于阈值时把本次运行判为 NG"),
-        Param("draw_index", True, "bool", label="画序号"),
-        Param("draw_aux", True, "bool", label="画辅助点"),
+        Param("draw_aux", True, "bool", label="画辅助点", description="把籽尖/腔壁四个辅助点也标出来（黄色）"),
     ]
 
     # ---- 模型 sidecar：导出时写的同名 .json，自动把输入尺寸 / ROI 对上 ----
@@ -145,24 +144,20 @@ class OnnxTrajectory(_OnnxBase):
             aux_full[:, 1] = aux[:, 1] / sy + y0
         valid = prob >= float(self.get("conf"))
         length = float(np.linalg.norm(np.diff(full, axis=0), axis=1).sum())
-        col = "#ff1744" if valid else "#9e9e9e"
+        # 只画点和连线：轨迹点本来就密，压上序号或状态文字会把点本身盖住。
+        # 状态和置信度从 valid / score 两个输出口取，不往图上写。
         for i in range(n - 1):
-            ctx.add_overlay(Overlay.line(Line(float(full[i, 0]), float(full[i, 1]), float(full[i + 1, 0]), float(full[i + 1, 1])), col))
-        ctx.add_overlay(Overlay.points(full, "#76ff03" if valid else "#bdbdbd"))
-        if self.get("draw_index"):
-            for i, (x, y) in enumerate(full):
-                if i in (0, n - 1) or i % 5 == 0:
-                    ctx.add_overlay(Overlay.text(float(x) + 4, float(y) - 4, str(i), "#ffffff"))
+            ctx.add_overlay(Overlay.line(Line(float(full[i, 0]), float(full[i, 1]),
+                                              float(full[i + 1, 0]), float(full[i + 1, 1])),
+                                         "#ff1744" if valid else "#9e9e9e"))
+        if valid:
+            ctx.add_overlay(Overlay.points(full[1:-1], "#ffffff"))      # 中间点
+            ctx.add_overlay(Overlay.points(full[:1], "#76ff03"))        # 第 0 点：进刀侧
+            ctx.add_overlay(Overlay.points(full[-1:], "#00b0ff"))       # 末点：出刀侧
+        else:
+            ctx.add_overlay(Overlay.points(full, "#bdbdbd"))
         if self.get("draw_aux") and len(aux_full):
-            names = ["籽尖入", "腔壁入", "籽尖出", "腔壁出"]
-            for j, (x, y) in enumerate(aux_full):
-                ctx.add_overlay(Overlay.points([(x, y)], "#ffeb3b"))
-                ctx.add_overlay(Overlay.text(float(x) + 4, float(y) + 12, names[j] if j < len(names) else str(j), "#ffeb3b"))
-        # 把实际送进网络的那块区域写出来：看一眼就知道当前是整图推理还是裁了 ROI，不用去翻参数
-        rx, ry, rw, rh = meta["roi"]
-        src = "整图" if (rx, ry, rw, rh) == (0, 0, img.width, img.height) else f"ROI {rx},{ry} {rw}x{rh}"
-        ctx.add_overlay(Overlay.text(x0 + 6, y0 + 18,
-                                     f"traj {'OK' if valid else 'NG'} p={prob:.2f} L={length:.0f}px  [{src}]", col))
+            ctx.add_overlay(Overlay.points(aux_full, "#ffeb3b"))
         if self.get("judge"):
             ctx.judge(valid, "轨迹不可执行（空夹具/遮挡/刀已插入）")
         return {"points": [[float(x), float(y)] for x, y in full], "valid": bool(valid), "score": prob,
