@@ -862,6 +862,7 @@ class MainWindow(QMainWindow):
         if node.param_def(name).kind in ("file", "dir") and value and Path(str(value)).is_absolute():
             value = paths.make_relative(value)
         ports_before = ([p.name for p in node.inputs], [p.name for p in node.outputs])
+        values_before = dict(node.values)
         try:
             node.set(name, value)
         except (KeyError, ValueError) as e:
@@ -876,8 +877,14 @@ class MainWindow(QMainWindow):
         item = self.scene.node_items.get(node_id)
         if item is not None:
             item.update()
-        if name == "roi" or node.param_def(name).kind == "rect":
+        # 节点可能在 on_param_changed 里顺带改掉别的参数（例如选了模型后按 sidecar 填好输入尺寸与 ROI），
+        # 那些控件不刷新就会一直显示旧值，让人以为配置没生效。
+        derived = [k for k, v in node.values.items() if k != name and values_before.get(k) != v]
+        if derived or name == "roi" or node.param_def(name).kind == "rect":
             self.param_panel.set_node(node, g)
+            if derived:
+                self.statusBar().showMessage("已按模型配置自动填入：" + "、".join(
+                    node.param_def(k).label or k for k in derived), 6000)
         if name in getattr(node, "preload_params", ()):
             self._preload_node(node)        # 选好模型/改了后端：立刻在后台加载，别等到运行时才等
         self._mark_dirty()

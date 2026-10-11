@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import cv2
@@ -20,6 +21,7 @@ from cvflow.operators._util import as_bgr
 from cvflow.operators.dl import _OnnxBase
 
 _COLOR = "#6a1b9a"
+log = logging.getLogger("cvflow.dl")
 
 
 @register
@@ -34,11 +36,12 @@ class OnnxTrajectory(_OnnxBase):
     inputs, outputs = [], []
 
     params = [p if p.name not in ("width", "height", "letterbox", "color", "scale") else
-              Param(p.name, {"width": 768, "height": 576, "letterbox": False, "color": "rgb", "scale": 1 / 255.0}[p.name],
+              Param(p.name, {"width": 1280, "height": 1024, "letterbox": False, "color": "rgb", "scale": 1 / 255.0}[p.name],
                     p.kind, min=p.min, max=p.max, choices=p.choices, description=p.description, advanced=p.advanced)
               for p in _OnnxBase.params] + [
-        Param("roi", {"x": 288, "y": 256, "w": 768, "h": 576}, "rect", label="裁剪区 ROI",
-              description="先裁这个区域再缩放到宽/高送入网络；留空则用整张图。训练时用的是哪个 ROI 就填哪个"),
+        Param("roi", {"x": 0, "y": 0, "w": 1280, "h": 1024}, "rect", label="裁剪区 ROI",
+              description="先裁这个区域再缩放到宽/高送入网络。选模型后会按同名 .json 自动填好，一般不用动。"
+                          "当它从 (0,0) 起、宽高又等于下面的输入宽/高时，裁剪和缩放都是空操作，等于整张原图直接送进网络"),
         Param("num_points", 20, "int", min=2, max=256, label="轨迹点数"),
         Param("conf", 0.5, "float", min=0, max=1, step=0.01, label="可执行阈值",
               description="模型的可执行概率低于它就判 NG（空夹具 / 被遮挡 / 刀已插入）"),
@@ -50,21 +53,36 @@ class OnnxTrajectory(_OnnxBase):
     # ---- 模型 sidecar：导出时写的同名 .json，自动把输入尺寸 / ROI 对上 ----
     def on_param_changed(self, name, value):
         super().on_param_changed(name, value)
-        if name == "model_path" and value:
-            side = os.path.splitext(paths.resolve(value))[0] + ".json"
-            if os.path.isfile(side):
-                try:
-                    d = json.load(open(side, encoding="utf-8"))
-                    for k in ("width", "height", "color", "scale", "mean", "std", "layout"):
-                        if k in d:
-                            self.values[k] = self.param_def(k).coerce(d[k])
-                    if d.get("roi"):
-                        x, y, w, h = d["roi"]
-                        self.values["roi"] = {"x": float(x), "y": float(y), "w": float(w), "h": float(h), "angle": 0.0}
-                    if d.get("num_points"):
-                        self.values["num_points"] = int(d["num_points"])
-                except Exception:   # sidecar 坏了就按手填的来
-                    pass
+        if name != "model_path" or not value:
+            return
+        side = os.path.splitext(paths.resolve(value))[0] + ".json"
+        if not os.path.isfile(side):
+            # 没有 sidecar 时参数仍是上一个模型留下的，尺寸对不上会直接出错误结果，必须说出来
+            log.warning("%s 旁边没有同名的 .json，输入尺寸与 ROI 仍沿用上一个模型的，请自行核对是否匹配",
+                        os.path.basename(paths.resolve(value)))
+            return
+        try:
+            d = json.load(open(side, encoding="utf-8"))
+            for k in ("width", "height", "color", "scale", "mean", "std", "layout"):
+                if k in d:
+                    self.values[k] = self.param_def(k).coerce(d[k])
+            if d.get("roi"):
+                x, y, w, h = d["roi"]
+                self.values["roi"] = {"x": float(x), "y": float(y), "w": float(w), "h": float(h), "angle": 0.0}
+            if d.get("num_points"):
+                self.values["num_points"] = int(d["num_points"])
+        except Exception as e:      # sidecar 坏了就按手填的来，但不能默不作声
+            log.warning("读取 %s 失败（%s），输入尺寸与 ROI 仍按当前参数", side, e)
+            return
+        r = self.get("roi")
+        log.info("按 %s 配置：输入 %sx%s，ROI %s", os.path.basename(side), self.get("width"), self.get("height"),
+                 "整张图（不裁剪）" if self._roi_is_full() else f"x{r['x']:.0f} y{r['y']:.0f} w{r['w']:.0f} h{r['h']:.0f}")
+
+    def _roi_is_full(self) -> bool:
+        """ROI 左上角在原点、尺寸又等于网络输入时，裁剪与缩放都是空操作——就是"整张图直接送进去"。"""
+        r = self.get("roi") or {}
+        return (r.get("x"), r.get("y")) == (0.0, 0.0) and \
+            (r.get("w"), r.get("h")) == (float(self.get("width")), float(self.get("height")))
 
     # ---- 预处理：先裁 ROI 再缩放 ----
     def _to_canvas(self, img: Image):
@@ -122,7 +140,11 @@ class OnnxTrajectory(_OnnxBase):
             for j, (x, y) in enumerate(aux_full):
                 ctx.add_overlay(Overlay.points([(x, y)], "#ffeb3b"))
                 ctx.add_overlay(Overlay.text(float(x) + 4, float(y) + 12, names[j] if j < len(names) else str(j), "#ffeb3b"))
-        ctx.add_overlay(Overlay.text(x0 + 6, y0 + 18, f"traj {'OK' if valid else 'NG'} p={prob:.2f} L={length:.0f}px", col))
+        # 把实际送进网络的那块区域写出来：看一眼就知道当前是整图推理还是裁了 ROI，不用去翻参数
+        rx, ry, rw, rh = meta["roi"]
+        src = "整图" if (rx, ry, rw, rh) == (0, 0, img.width, img.height) else f"ROI {rx},{ry} {rw}x{rh}"
+        ctx.add_overlay(Overlay.text(x0 + 6, y0 + 18,
+                                     f"traj {'OK' if valid else 'NG'} p={prob:.2f} L={length:.0f}px  [{src}]", col))
         if self.get("judge"):
             ctx.judge(valid, "轨迹不可执行（空夹具/遮挡/刀已插入）")
         return {"points": [[float(x), float(y)] for x, y in full], "valid": bool(valid), "score": prob,
