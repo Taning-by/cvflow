@@ -65,7 +65,10 @@ def describe_shape(shape: list) -> str:
 
 
 # --------------------------------------------------------------------------- 共享会话
-_FAILED_PROVIDERS: set[str] = set()       # 本进程内加载失败过的推理后端，不再重复尝试
+#: 本进程内失败过的 ``(后端, 显卡编号)``，不再重复尝试。
+#: **带上显卡编号**是必须的：显卡编号填错时 CUDA 会注册失败，如果只记后端名，
+#: 把编号改回来之后 CUDA 仍然被当成不可用，只能重启软件才能恢复（用户就是这么被卡住的）。
+_FAILED_PROVIDERS: set[tuple[str, int]] = set()
 _PROVIDER_NAMES = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider",
                    "tensorrt": "TensorrtExecutionProvider"}
 _GPU_PROVIDERS = ("CUDAExecutionProvider", "TensorrtExecutionProvider")
@@ -87,6 +90,59 @@ _SUBMIT_TIMEOUT_S = 300.0
 _WHEEL_CONFLICT_WARNED = False
 _GPU_RUNTIME_PRELOADED = False
 _PROVIDER_LOADABLE: dict[str, bool] = {}   # GPU 后端的动态库能否加载，探测一次就记住
+_CUDA_DEVICES: int | None = None           # 本机可见的 CUDA 显卡数，探测一次就记住（-1＝问不出来）
+
+
+def cuda_device_count() -> int:
+    """本机**可见**的 CUDA 显卡数量；问不出来时返回 -1。
+
+    问的是驱动自己的 API（Linux ``libcuda.so.1`` / Windows ``nvcuda.dll``），所以数出来的编号
+    和 onnxruntime 用的编号完全一致——``CUDA_VISIBLE_DEVICES`` 对两边同样生效，被它屏蔽的卡
+    这里也数不到。不用 nvidia-smi：那个数的是物理卡，屏蔽时会多出几个根本用不了的编号，
+    反而会把"编号不存在"误判成存在。
+    """
+    global _CUDA_DEVICES
+    if _CUDA_DEVICES is not None:
+        return _CUDA_DEVICES
+    import ctypes
+    _CUDA_DEVICES = -1
+    for name in (("nvcuda.dll",) if os.name == "nt" else ("libcuda.so.1", "libcuda.so")):
+        try:
+            lib = ctypes.CDLL(name)
+        except OSError:
+            continue                               # 驱动没装（或没有 NVIDIA 显卡）
+        try:
+            rc = lib.cuInit(0)
+            if rc == 100:                          # CUDA_ERROR_NO_DEVICE：驱动在，但一块卡都没有
+                _CUDA_DEVICES = 0
+            elif rc == 0:
+                n = ctypes.c_int(0)
+                if lib.cuDeviceGetCount(ctypes.byref(n)) == 0:
+                    _CUDA_DEVICES = int(n.value)
+        except Exception:                          # pragma: no cover - 取决于本机驱动
+            pass
+        break
+    return _CUDA_DEVICES
+
+
+def device_range_text() -> str:
+    """可用显卡编号的说法，用在报错里。问不出显卡数时返回空字符串。"""
+    n = cuda_device_count()
+    if n < 0:
+        return ""
+    if n == 0:
+        return "本机没有可见的 CUDA 显卡"
+    return f"本机可见 {n} 块 CUDA 显卡，编号 0" + (f"~{n - 1}" if n > 1 else "")
+
+
+def reset_provider_cache() -> None:
+    """忘掉"哪个后端失败过"，让下一次建会话重新探测。
+
+    改了推理后端或显卡编号就该重试一次：失败往往是**配置**造成的（编号填到不存在的卡上），
+    改对了必须立刻生效，不能逼着用户重启软件。
+    """
+    _FAILED_PROVIDERS.clear()
+    _PROVIDER_LOADABLE.clear()
 
 
 def nvidia_dll_dirs(roots: list[str] | None = None) -> list[str]:
@@ -536,7 +592,8 @@ class _OnnxBase(Node):
                     description="推理后端。auto 按 TensorRT → CUDA → CPU 挑第一个能用的；"
                                 "想确认实际跑在哪里，看日志里的「使用推理后端」一行"),
               Param("device_id", 0, "int", min=0, max=15,
-                    description="用哪一块显卡（多卡时有意义）。CPU 后端会忽略这个参数"),
+                    description="用哪一块显卡（多卡时有意义）。编号从 0 开始，填了不存在的编号会直接报错"
+                                "（本机有几块卡看 cvflow gpu，或日志里的提示）。CPU 后端会忽略这个参数"),
               Param("session_scope", "auto", "enum", choices=["auto", "shared", "exclusive"], advanced=True,
                     description="权重加载几份。shared=全软件共用一份；exclusive=按权重共享组/节点各加载一份，"
                                 "GPU 上可以用各自的流并行，代价是显存成倍；"
@@ -578,6 +635,9 @@ class _OnnxBase(Node):
     def on_param_changed(self, name: str, value) -> None:
         if name in ("input_count", "arrival"):
             self._rebuild_ports()
+        if name in ("provider", "device_id"):
+            # 换后端或换卡是一次明确的"再试一次"：把失败记忆清掉，否则上一次失败会一直粘着
+            reset_provider_cache()
 
     @property
     def input_count(self) -> int:
@@ -620,13 +680,15 @@ class _OnnxBase(Node):
         """定出本次要尝试的推理后端，并告诉调用方是否会落在 GPU 上。
 
         get_available_providers() 列的是编译进包里的后端，不代表运行时真能加载；
-        本进程里已经失败过的后端记在 _FAILED_PROVIDERS 里，不再重复尝试。
+        本进程里已经失败过的 ``(后端, 显卡编号)`` 记在 _FAILED_PROVIDERS 里，不再重复尝试——
+        只记这一块卡，换一块（或把填错的编号改回来）照样会再试一次。
         """
         try:
             import onnxruntime as ort
         except ImportError:                       # 真正的报错留给 _create_session
             return ["CPUExecutionProvider"], False
-        avail = [p for p in ort.get_available_providers() if p not in _FAILED_PROVIDERS]
+        device = int(self.get("device_id"))
+        avail = [p for p in ort.get_available_providers() if (p, device) not in _FAILED_PROVIDERS]
         prov = str(self.get("provider"))
         if prov == "auto":
             order = ("TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider")
@@ -639,6 +701,21 @@ class _OnnxBase(Node):
             providers = [p for p in providers if p not in _GPU_PROVIDERS or _provider_loadable(ort, p)]
         providers = providers or ["CPUExecutionProvider"]
         return providers, providers[0] != "CPUExecutionProvider"
+
+    def _check_device(self) -> None:
+        """要用显卡时先确认显卡编号真的存在，不存在就立刻把话说明白。
+
+        不拦住的后果很隐蔽：onnxruntime 对着不存在的编号注册 CUDA 会**静默失败**，会话退回
+        CPU-only，而我们只能看到"后端没注册上"，于是报成"缺少运行库"并把 CUDA 整个记成不可用——
+        用户按提示去重装 onnxruntime 当然修不好，而且把编号改回来也不管用了。
+        """
+        if not self._resolve_providers()[1]:           # 这次根本不用显卡：没什么要检查的
+            return
+        n, device = cuda_device_count(), int(self.get("device_id"))
+        if n > 0 and device >= n:
+            raise NodeError(f"显卡编号 {device} 不存在：{device_range_text()}。"
+                            f"把「显卡编号」改回这个范围即可"
+                            + ("（多卡机器上注意 CUDA_VISIBLE_DEVICES 会重排编号）" if n > 1 else ""))
 
     def _session_owner(self, on_gpu: bool) -> str:
         """推理会话（权重）的归属：空字符串＝全软件共用一份。
@@ -666,6 +743,7 @@ class _OnnxBase(Node):
             raise NodeError("未设置模型文件")
         if not os.path.isfile(path):
             raise NodeError(f"模型文件不存在：{path}")
+        self._check_device()                  # 编号不对就先报出来，别等会话悄悄退回 CPU
         skey = self._session_key(path)
         if skey[-1] and skey == self._failed_exclusive:
             skey = skey[:-1] + ("",)          # 这套配置上次独占就失败了，直接用共享的，别每次运行都重试
@@ -747,19 +825,23 @@ class _OnnxBase(Node):
         active = list(session.get_providers())
         for p in providers:
             if p != "CPUExecutionProvider" and p not in active:
-                _FAILED_PROVIDERS.add(p)
+                _FAILED_PROVIDERS.add((p, device))     # 只记这一块卡，换卡还会再试
                 why = _why_provider_failed(ort, p)
                 # Windows 的加载错误里不一定带库名，所以提示按后端给，不靠关键字猜
                 if p == "TensorrtExecutionProvider":
                     hint = "；缺 TensorRT 本体，只想用显卡的话把推理后端改成 cuda 或 auto"
+                elif not why:
+                    # 动态库本身加载得上，却没注册成功：和运行库无关，多半是这块卡用不了
+                    hint = (f"；运行库是好的，问题在显卡本身——{self._device_hint(device)}"
+                            f"。换一块卡或把「显卡编号」改对再试")
                 elif frozen():
                     hint = "；安装时没勾「GPU 推理支持」组件，重新运行安装程序勾上即可"
                 elif "cudnn" in why:
                     hint = "；缺 cuDNN，可装 pip install nvidia-cudnn-cu12"
                 else:
                     hint = "；缺 CUDA 运行库，pip install -e \".[gpu]\" 会把它们一起装上"
-                log.warning("推理后端 %s 无法加载（%s）%s，本次运行不再尝试",
-                            p, why or "通常是缺少对应版本的 CUDA/cuDNN 运行库", hint)
+                log.warning("推理后端 %s（%d 号卡）无法加载（%s），本次运行不再用这块卡试它%s",
+                            p, device, why or "onnxruntime 没报原因，只写到了 stderr", hint)
         prov = str(self.get("provider"))
         where = active[0] if active else "?"
         if active and active[0] in _GPU_PROVIDERS:
@@ -769,14 +851,32 @@ class _OnnxBase(Node):
             if want not in ort.get_available_providers():
                 # 根本没编译进这个 onnxruntime 包里——装的多半是 CPU 版
                 reason = "当前安装的 onnxruntime 里没有这个后端"
+                fix = _PROVIDER_FIX.get(want, "")
+            elif want in _GPU_PROVIDERS and not _why_provider_failed(ort, want):
+                # 运行库都加载得上，所以不是装歪了：按本机的显卡情况说原因，别让人去重装
+                reason = f"运行库正常，但 {device} 号卡用不了——{self._device_hint(device)}"
+                fix = "先把「显卡编号」对上（0 号卡一定存在的话就填 0），再用 cvflow gpu 看本机有几块卡"
             else:
                 reason = "这个后端在本机加载失败（缺少对应的运行库）"
+                fix = _PROVIDER_FIX.get(want, "")
             log.warning("%s：请求的推理后端 %s 不可用（%s），实际使用 %s。%s",
-                        self.name, prov, reason, where, _PROVIDER_FIX.get(want, ""))
+                        self.name, prov, reason, where, fix)
             _warn_if_both_wheels_installed()
         else:
             log.info("%s：模型 %s 使用推理后端 %s", self.name, os.path.basename(path), where)
         return _SharedSession(session, read_input_spec(session), active)
+
+    @staticmethod
+    def _device_hint(device: int) -> str:
+        """``device`` 这个编号在本机的处境，用在报错与提示里。"""
+        n = cuda_device_count()
+        if n < 0:
+            return "问不出本机有几块 CUDA 显卡（驱动没装好？）"
+        if n == 0:
+            return "本机没有可见的 CUDA 显卡"
+        if device >= n:
+            return f"{device_range_text()}，{device} 号卡不存在"
+        return f"{device_range_text()}，编号本身没问题（可能是显存不足或这块卡被别的程序占住）"
 
     def _release_runner(self) -> None:
         if self._runner_key is not None:
@@ -804,6 +904,7 @@ class _OnnxBase(Node):
         path = paths.resolve(self.get("model_path"))
         if not path or not os.path.isfile(path) or not self.enabled:
             return                                    # 禁用的节点不占显存
+        self._check_device()
         skey = self._session_key(path)
         if skey == self._preloaded_key:
             return                                    # 这套配置已经加载过了

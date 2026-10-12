@@ -230,12 +230,22 @@ def cmd_gpu(args) -> int:
             print("     完整步骤和常见错误：docs/install.md")
 
     print("\n== 显卡 ==")
+    visible = dl.cuda_device_count()
     gpus = _nvidia_smi("gpu=index,name,driver_version,memory.used,memory.total")
     if not gpus:
         print("  没找到 nvidia-smi（没有 NVIDIA 显卡，或驱动没装好）")
     for row in gpus:
         idx, name, driver, used, total = [x.strip() for x in row.split(",")]
         print(f"  {idx} 号卡 {name}　驱动 {driver}　已用 {used}/{total} MiB")
+    if visible >= 0:
+        # 这才是 onnxruntime 看到的编号范围：CUDA_VISIBLE_DEVICES 屏蔽掉的卡 nvidia-smi 照样列出来
+        print(f"  CUDA 可见：{dl.device_range_text()}（节点里的「显卡编号」只能填这个范围）")
+        if len(gpus) > visible:
+            print(f"    注意：nvidia-smi 列出 {len(gpus)} 块，可见只有 {visible} 块"
+                  f"，CUDA_VISIBLE_DEVICES 屏蔽了一部分")
+    if visible > 0 and args.device >= visible:
+        print(f"  ⚠ --device {args.device} 不存在，下面的实测会失败；"
+              f"可用编号 0~{visible - 1}")
 
     if not args.model:
         print("\n加上一个模型文件可以实测它跑在哪、占多少显存：cvflow gpu 你的模型.onnx")

@@ -1200,9 +1200,10 @@ def test_dl_provider_load_failure_is_reported_and_not_retried(cls_model, monkeyp
     assert nr.status == NodeStatus.OK, nr.error                      # 回退之后照样能跑
     assert node._runner.holder.providers == ["CPUExecutionProvider"]
     msgs = [r.getMessage() for r in caplog.records]
-    assert sum("CUDAExecutionProvider 无法加载" in m for m in msgs) == 1
+    assert sum("CUDAExecutionProvider（0 号卡）无法加载" in m for m in msgs) == 1
     assert any("使用推理后端 CPUExecutionProvider" in m for m in msgs)
-    assert "CUDAExecutionProvider" in clean_failed_providers         # 记下来，本进程不再尝试
+    # 记下来的是"后端 + 这块卡"，本进程不再用这块卡试它（换一块卡还会再试）
+    assert ("CUDAExecutionProvider", 0) in clean_failed_providers
     caplog.clear()
     eng2, _ = build(cls_model, [channel_image(1)], scale=0.5)         # 另一份配置，重新建会话
     eng2.run()
@@ -1219,6 +1220,82 @@ def test_dl_explicit_provider_unavailable_warns(cls_model, monkeypatch, caplog, 
     assert eng.run().node_results[node.id].status == NodeStatus.OK
     assert any("请求的推理后端 cuda 不可用" in r.getMessage() for r in caplog.records)
     eng.teardown_nodes()
+
+
+# ------------------------------------------------- 显卡编号（填错是最常见的"GPU 用不上"）
+def test_dl_wrong_device_id_says_the_valid_range_and_keeps_cuda_usable(
+        cls_model, monkeypatch, clean_failed_providers):
+    """显卡编号填到不存在的卡上：要直接报清楚，而且**不能**顺手把 CUDA 整个判死。
+
+    这是用户踩到的那个坑：填错编号 → CUDA 注册失败 → 后端被记成不可用 →
+    把编号改回来也还是跑 CPU，只能重启软件。
+    """
+    import onnxruntime as ort
+    from cvflow.core.node import NodeError
+    from cvflow.operators import dl
+    monkeypatch.setattr(ort, "get_available_providers",
+                        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(dl, "_provider_loadable", lambda ort_mod, p: True)
+    monkeypatch.setattr(dl, "cuda_device_count", lambda: 2)
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model, provider="cuda", device_id=5))
+    with pytest.raises(NodeError) as err:
+        node.preload()
+    assert "显卡编号 5 不存在" in str(err.value) and "编号 0~1" in str(err.value)
+    assert not clean_failed_providers                   # CUDA 没被记成不可用
+    _reject_gpu_providers(monkeypatch)
+    node.set("device_id", 1)                            # 改对编号：当场生效，不用重启
+    node.preload()                                      # 这块卡真的用不上时才退回 CPU
+    assert ("CUDAExecutionProvider", 1) in clean_failed_providers
+    assert ("CUDAExecutionProvider", 0) not in clean_failed_providers
+    node.teardown()
+
+
+def test_dl_provider_failure_is_remembered_per_card(cls_model, monkeypatch, clean_failed_providers):
+    """失败记忆带着显卡编号：1 号卡失败不影响 0 号卡还能试。"""
+    import onnxruntime as ort
+    from cvflow.operators import dl
+    monkeypatch.setattr(ort, "get_available_providers",
+                        lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(dl, "_provider_loadable", lambda ort_mod, p: True)
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model, provider="cuda", device_id=1))
+    clean_failed_providers.add(("CUDAExecutionProvider", 1))
+    assert node._resolve_providers() == (["CPUExecutionProvider"], False)
+    node.values["device_id"] = 0            # 直接改值，不走 set()（那会清掉失败记忆，见下一个用例）
+    assert node._resolve_providers() == (["CUDAExecutionProvider"], True)
+
+
+def test_dl_changing_backend_or_card_retries_once(cls_model, clean_failed_providers):
+    """改推理后端 / 显卡编号是一次明确的"再试一次"，失败记忆要清掉。"""
+    node = reg.create("dl.onnx_classifier", values=cls_values(cls_model))
+    clean_failed_providers.add(("CUDAExecutionProvider", 0))
+    node.set("device_id", 0)
+    assert not clean_failed_providers
+    clean_failed_providers.add(("CUDAExecutionProvider", 0))
+    node.set("provider", "cuda")
+    assert not clean_failed_providers
+    clean_failed_providers.add(("CUDAExecutionProvider", 0))
+    node.set("width", 8)                    # 与后端无关的参数不清
+    assert clean_failed_providers
+
+
+@pytest.mark.parametrize("count,text", [
+    (-1, ""),                                            # 问不出来（没驱动）：不要瞎说
+    (0, "本机没有可见的 CUDA 显卡"),
+    (1, "本机可见 1 块 CUDA 显卡，编号 0"),
+    (4, "本机可见 4 块 CUDA 显卡，编号 0~3"),
+])
+def test_dl_device_range_text(monkeypatch, count, text):
+    from cvflow.operators import dl
+    monkeypatch.setattr(dl, "_CUDA_DEVICES", count)
+    assert dl.device_range_text() == text
+
+
+def test_dl_cuda_device_count_matches_the_driver():
+    """真机上数出来的显卡数必须是 -1（问不出来）或者 >= 0，并且结果会被缓存。"""
+    from cvflow.operators import dl
+    n = dl.cuda_device_count()
+    assert n >= -1
+    assert dl.cuda_device_count() == n == dl._CUDA_DEVICES
 
 
 # =========================================== 事件驱动：每路各自触发，在深度学习节点汇合
