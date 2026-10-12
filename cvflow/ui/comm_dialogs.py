@@ -20,7 +20,7 @@ from ..comm.handshake import (BUSY_POLICY_LABELS, DEDUP_LABELS, ERROR_TEXT, Hand
 from ..comm.manager import (ACTION_LABELS, DATA_MATCH_LABELS, DEVICE_KIND_LABELS, DEVICE_KINDS,
                             DEVICE_STATUS, DEVICE_STATUS_LABELS, PLANNED_PROTOCOLS,
                             RULE_SOURCE_LABELS, SEND_TARGET_LABELS, TEXT_MATCH_LABELS,
-                            WHEN_LABELS, ReceiveRule, SendRule)
+                            TRIGGER_ACTIONS, WHEN_LABELS, ReceiveRule, SendRule)
 from ..comm.modbus_map import (AREA_INFO, DIRECTION_LABELS, DTYPE_LABELS, LAYOUT_LABELS,
                                DataPoint, MapError, layout_example, reference_text)
 from ..comm.parsing import (FORMAT_LABELS, PARSE_LABELS, SOURCE_SPECIALS, FormatField, FormatRule,
@@ -321,9 +321,11 @@ class ReceiveRuleDialog(_BaseDialog):
 
     def __init__(self, parent, rule: ReceiveRule, devices: list[tuple[str, str]],
                  flows: list[str], parse_rules: list[str] | None = None,
-                 points: dict[str, list[str]] | None = None) -> None:
+                 points: dict[str, list[str]] | None = None,
+                 trigger_nodes: dict[str, list[tuple[str, str]]] | None = None) -> None:
         super().__init__(parent, "触发规则", 620)
         self._points = points or {}
+        self._trigger_nodes = trigger_nodes or {}        # {流程名: [(节点 id, 节点名)]}
         form = QFormLayout(self.body)
         self.name = QLineEdit(rule.name)
         self.device = QComboBox()
@@ -348,6 +350,8 @@ class ReceiveRuleDialog(_BaseDialog):
             self.action.addItem(label, key)
         self.action.setCurrentIndex(max(0, self.action.findData(rule.action)))
         self.flow = QComboBox(); self.flow.addItems(flows or ["main"]); self.flow.setCurrentText(rule.flow)
+        # 触发节点：显示节点名，存的是节点 id（改名不会让规则失去引用）；也允许手填
+        self.node = QComboBox(); self.node.setEditable(True); self.node.setInsertPolicy(QComboBox.NoInsert)
         self.variable = QLineEdit(rule.variable)
         self.parse = QComboBox(); self.parse.addItem("", "")
         for name in parse_rules or []:
@@ -365,6 +369,7 @@ class ReceiveRuleDialog(_BaseDialog):
                       ("条件", self.match), ("文本内容", self.pattern), ("数据点", self.point),
                       ("寄存器地址（没有数据点时）", self.address), ("比较值", self.value),
                       ("区间上界", self.value2), ("动作", self.action), ("流程", self.flow),
+                      ("触发节点", self.node),
                       ("全局变量", self.variable), ("解析规则", self.parse),
                       ("请求编号字段", self.request_field), ("流程忙时", self.busy_policy),
                       ("排队上限", self.max_queue), ("", self.enabled)]
@@ -375,10 +380,15 @@ class ReceiveRuleDialog(_BaseDialog):
             self._labels[w] = lbl
         form.addRow(_hint("触发位一直保持为 1 时**不会**重复触发：必须先回到不满足条件，"
                           "才会再次产生一次触发。"))
+        form.addRow(_hint("动作选「触发节点」时只跑那一路：被指定的「触发」节点连到哪个采集节点，"
+                          "就只有那条支路（及其下游）执行，别的路不动。"
+                          "忙时策略也只看这一路。"))
         self.source.currentIndexChanged.connect(lambda _: self._sync())
         self.match.currentIndexChanged.connect(lambda _: self._sync_visibility())
         self.action.currentIndexChanged.connect(lambda _: self._sync_visibility())
         self.device.currentIndexChanged.connect(lambda _: self._sync_points())
+        self.flow.currentTextChanged.connect(lambda _: self._sync_nodes())
+        self._sync_nodes(rule.node)
         self._sync(initial=rule.match)
 
     def _sync(self, initial: str = "") -> None:
@@ -393,6 +403,21 @@ class ReceiveRuleDialog(_BaseDialog):
         self.match.blockSignals(False)
         self._sync_points()
         self._sync_visibility()
+
+    def _sync_nodes(self, want: str = "") -> None:
+        """按当前选中的流程填"触发节点"的候选。"""
+        want = want or (self.node.currentData() or self.node.currentText().strip())
+        self.node.clear()
+        self.node.addItem("", "")
+        for nid, label in self._trigger_nodes.get(self.flow.currentText(), []):
+            self.node.addItem(label, nid)
+        idx = self.node.findData(want)
+        if idx >= 0:
+            self.node.setCurrentIndex(idx)
+        else:
+            self.node.setEditText(want)        # 节点还没建 / 手填的：原样显示
+        if self.node.count() <= 1:
+            self.node.lineEdit().setPlaceholderText("这条流程里还没有「触发」节点")
 
     def _sync_points(self) -> None:
         current = self.point.currentText()
@@ -413,13 +438,15 @@ class ReceiveRuleDialog(_BaseDialog):
         self._show(self.value, (not is_msg) and match in ("equals", "not_equals", "greater",
                                                           "less", "in_range"))
         self._show(self.value2, (not is_msg) and match == "in_range")
-        trigger = self.action.currentData() == "trigger_flow"
-        self._show(self.flow, trigger)
-        self._show(self.busy_policy, trigger)
-        self._show(self.max_queue, trigger)
-        self._show(self.request_field, trigger)
-        self._show(self.parse, trigger and is_msg)
-        self._show(self.variable, not trigger)
+        action = self.action.currentData() or ""
+        runs_flow = action in TRIGGER_ACTIONS
+        self._show(self.flow, runs_flow)
+        self._show(self.node, action == "trigger_node")
+        self._show(self.busy_policy, runs_flow)
+        self._show(self.max_queue, runs_flow)
+        self._show(self.request_field, runs_flow)
+        self._show(self.parse, runs_flow and is_msg)
+        self._show(self.variable, not runs_flow)
 
     def validate(self) -> str:
         if not self.name.text().strip():
@@ -438,7 +465,16 @@ class ReceiveRuleDialog(_BaseDialog):
             return "请填数据点名称，或填寄存器地址。"
         if self.action.currentData() == "set_variable" and not self.variable.text().strip():
             return "动作是“写入全局变量”时，必须填变量名。"
+        if self.action.currentData() == "trigger_node" and not self._node_ref():
+            return "动作是“触发节点”时，必须选一个「触发」节点（流程里没有就先在流程图里加一个）。"
         return ""
+
+    def _node_ref(self) -> str:
+        """触发节点的引用：从列表里选的用节点 id，手填的按原文存。"""
+        i = self.node.currentIndex()
+        text = self.node.currentText().strip()
+        picked = self.node.itemData(i) if i >= 0 and self.node.itemText(i) == text else None
+        return str(picked if picked else text)
 
     def result(self) -> ReceiveRule:
         return ReceiveRule(id="", name=self.name.text().strip(), device=self.device.currentData() or "",
@@ -446,7 +482,8 @@ class ReceiveRuleDialog(_BaseDialog):
                            pattern=self.pattern.text(), point=self.point.currentText().strip(),
                            address=self.address.value(), value=self.value.value(),
                            value2=self.value2.value(), action=self.action.currentData(),
-                           flow=self.flow.currentText(), variable=self.variable.text().strip(),
+                           flow=self.flow.currentText(), node=self._node_ref(),
+                           variable=self.variable.text().strip(),
                            parse=self.parse.currentText().strip(),
                            request_field=self.request_field.text().strip(),
                            busy_policy=self.busy_policy.currentData(),

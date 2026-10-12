@@ -47,6 +47,11 @@ class NodeError(Exception):
     """Raise from ``process`` for a clean, user-facing failure message."""
 
 
+#: "触发"节点往下游连的端口名。接到采集节点的同名输入上，就声明了"这一路由谁触发"。
+#: 节点、流程图切分、通信的触发动作三处都按这个名字找端口，所以只在这里写一次。
+TRIGGER_PORT = "trigger"
+
+
 @dataclass
 class Port:
     name: str
@@ -161,6 +166,11 @@ class Node:
     #: 能不能单独触发这一路（取一帧图、沿本路跑到深度学习节点汇合）。
     #: 置 True 的节点会在画布上带一个可点的触发图标，产线上同一个动作由 PLC 报文触发。
     triggerable: bool = False
+
+    #: 是不是"路径入口"（触发节点）：把 ``TRIGGER_PORT`` 输出接到采集节点上，
+    #: 它和它的下游就构成一条**独立的路**——被触发时只跑这一路，别的路不动。
+    #: 通信面板的触发规则可以直接指定触发哪一个这样的节点。
+    is_trigger_entry: bool = False
     color: str = "#4a6fa5"      # title colour hint for the editor
     is_judge: bool = False      # if True, a False "ok" output marks the node (and run) NG
 

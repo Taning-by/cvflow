@@ -1,4 +1,9 @@
-"""Image sources: files, folders, cameras, constants and trigger data."""
+"""采集类节点：图像文件、文件夹、相机、常量，以及路径入口「触发」节点。
+
+「触发」节点（``source.trigger``）既是本次触发的数据来源，也是**一条路的入口**：
+它的 ``trigger`` 输出接到采集节点上，这一路就可以被单独触发（通信面板的触发规则指定节点，
+或者在画布上点它的触发图标），别的路不动。详见 ``TriggerNode`` 的说明。
+"""
 from __future__ import annotations
 
 import os
@@ -8,13 +13,23 @@ import cv2
 
 from ..camera import camera_manager, CAMERA_KINDS
 from ..core import paths
-from ..core.node import Node, NodeError, Param, Port
+from ..core.node import TRIGGER_PORT, Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import DataType, Image
 from ._util import odd  # noqa: F401  (re-export convenience)
 
 _IMG_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
 _EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+def trigger_input() -> Port:
+    """采集节点的"触发"输入：接「触发」节点，声明这一路由它触发。
+
+    端口是**可选**的：不接就跟着整条流程跑（手动运行、定时运行、整流程触发都照旧）。
+    接上之后这一路就有了明确的入口，PLC 的一条报文只会跑这一路。
+    """
+    return Port(TRIGGER_PORT, DataType.ANY, optional=True,
+                description="接「触发」节点：这一路由它触发；不接则跟着整条流程跑")
 
 
 @register
@@ -25,6 +40,7 @@ class ImageFile(Node):
     triggerable = True        # 画布上带触发图标：可以只触发这一路
     description = "Load a single image from disk (cached until the file changes)."
     color = "#2e7d32"
+    inputs = [trigger_input()]
     outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING)]
     params = [Param("path", "", "file", label="Path", filter=_IMG_FILTER),
               Param("grayscale", False, "bool")]
@@ -60,6 +76,7 @@ class ImageFolder(Node):
     triggerable = True        # 画布上带触发图标：可以只触发这一路
     description = "Iterate over the images of a folder, one per run (simulated production)."
     color = "#2e7d32"
+    inputs = [trigger_input()]
     outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING), Port("index", DataType.INT)]
     params = [Param("directory", "", "dir"),
               Param("mode", "next", "enum", choices=["next", "fixed", "random"]),
@@ -115,6 +132,7 @@ class CameraSource(Node):
     triggerable = True        # 画布上带触发图标：可以只触发这一路
     description = "Grab a frame from a named camera (folder simulator, OpenCV device/stream, GenICam)."
     color = "#2e7d32"
+    inputs = [trigger_input()]
     outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT)]
     params = [Param("camera", "cam0", "string", description="Shared camera name"),
               Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS),
@@ -208,14 +226,34 @@ class Constant(Node):
 
 
 @register
-class TriggerData(Node):
+class TriggerNode(Node):
+    """路径入口：一条"路"从哪里开始、由谁触发，同时把本次触发的参数取出来。
+
+    两种用法，一个节点全包：
+
+    * **当路径入口**：把 ``trigger`` 输出接到采集节点（相机 / 图像文件 / 图像文件夹）的
+      ``trigger`` 输入上。这条路就被声明出来了——通信面板的触发规则里把动作选成
+      「触发节点」并指到这个节点，PLC 的一条报文（或一个寄存器位）就只跑这一路：
+      它下游的采集、算法、输出都跑，**别的路一动不动**（相机不会被白取一帧）。
+      画布上它自带触发图标，点一下就在编辑模式下手动跑一次这一路，接线前就能验证。
+    * **当触发数据**：不接下游时它就只是把触发信息取出来（和老方案里的"触发数据"完全一样），
+      不切分流程。
+
+    ``fields`` 是**接受请求时冻结**的那一份参数，所以同一条流程并发排队也不会串。
+    """
+
     type_id = "source.trigger"
     category = "Source"
-    label = "Trigger Data"
-    description = ("Expose the trigger that started this run: the PLC message, the request id and "
-                   "the parameters frozen when the request was accepted.")
+    label = "Trigger"
+    triggerable = True        # 画布上带触发图标：点一下只跑这一路
+    is_trigger_entry = True   # trigger 输出接了下游时，"它和它的下游"就是一路
+    description = ("Entry point of one path: wire 'trigger' into an acquisition node so a PLC rule can "
+                   "run just that path, and read the request id / frozen parameters of this trigger.")
     color = "#2e7d32"
-    outputs = [Port("message", DataType.STRING), Port("source", DataType.STRING),
+    outputs = [Port(TRIGGER_PORT, DataType.ANY,
+                    description="接到「采集」类节点的 trigger 输入上，表示那一路由本节点触发"
+                                "（值恒为 True，只用来声明路径和执行顺序）"),
+               Port("message", DataType.STRING), Port("source", DataType.STRING),
                Port("device", DataType.STRING), Port("payload", DataType.DICT),
                Port("request_id", DataType.INT), Port("fields", DataType.DICT),
                Port("value", DataType.ANY), Port("peer", DataType.STRING)]
@@ -223,14 +261,14 @@ class TriggerData(Node):
               Param("required", False, "bool", description="字段不存在时报错")]
 
     def process(self, ctx, inputs):
-        """``fields`` 是**接受请求时冻结**的那一份参数，所以同一条流程并发排队也不会串。"""
         t = ctx.trigger
         payload = dict(getattr(t, "payload", None) or {})
         fields = dict(payload.get("fields") or {})
         name = str(self.get("field") or "")
         if name and self.get("required") and name not in fields:
             raise NodeError(f"本次触发没有字段 {name!r}（有：{'、'.join(fields) or '无'}）")
-        return {"message": getattr(t, "message", "") or "",
+        return {TRIGGER_PORT: True,
+                "message": getattr(t, "message", "") or "",
                 "source": getattr(getattr(t, "source", None), "value", "manual"),
                 "device": getattr(t, "device", "") or "",
                 "payload": payload,

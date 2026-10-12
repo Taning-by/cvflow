@@ -240,6 +240,83 @@ def test_node_comm_status(h):
     assert out["connected"] is True and json.loads(out["text"])["kind"] == "tcp_server"
 
 
+# ============================================================ 按路径触发（动作＝触发节点）
+def two_paths(h, images_dir):
+    """两条独立的路：触发 → 采集。返回 (触发A, 触发B, 采集A, 采集B)。"""
+    t1 = node(h, "source.trigger", "触发A")
+    t2 = node(h, "source.trigger", "触发B")
+    a = node(h, "source.image_folder", "采集A", directory=str(images_dir))
+    b = node(h, "source.image_folder", "采集B", directory=str(images_dir))
+    h.flow.add_link(t1.id, "trigger", a.id, "trigger")
+    h.flow.add_link(t2.id, "trigger", b.id, "trigger")
+    return t1, t2, a, b
+
+
+def test_rule_triggers_one_path_only(h, images_dir):
+    """触发规则的动作选「触发节点」：一条报文只跑那一路，另一路一动不动。"""
+    from cvflow.core import events
+    done = []
+    h.bus.subscribe(events.RUN_FINISHED, lambda result=None, **k: done.append(result))
+    t1, t2, a, b = two_paths(h, images_dir)
+    dev = h.mgr.add_device("plc", "tcp_server", {"host": "127.0.0.1", "port": 0})
+    h.mgr.add_receive_rule(ReceiveRule(name="路A", device=dev.id, source="message", match="startswith",
+                                       pattern="A", action="trigger_node", flow="main", node=t1.id))
+    assert h.mgr.validate() == []
+    assert dict(h.mgr.trigger_nodes("main")) == {t1.id: "触发A", t2.id: "触发B"}
+    assert h.mgr.node_label("main", t1.id) == "触发A"      # 界面上显示名字，存的是 id
+    h.mgr.connect_all()
+    h.runner.start()
+    c = socket.create_connection(("127.0.0.1", dev.bound_port), timeout=3)
+    time.sleep(0.2)
+    c.sendall(b"A,1\n")
+    assert _wait(lambda: done)
+    res = done[-1].node_results
+    assert res[a.id].status.value == "ok" and res[t1.id].outputs["trigger"] is True
+    assert b.id not in res and t2.id not in res            # 另一路没被触发
+    c.sendall(b"A,2\n")                                    # 同一路再来一次：排队跑完
+    assert _wait(lambda: len(done) >= 2)
+    assert h.runner.branch_pending(t1.id) == 0
+    c.sendall(b"B,1\n")                                    # 没有规则匹配 B：谁都不动
+    time.sleep(0.3)
+    assert len(done) == 2
+    c.close()
+
+
+def test_rule_pointing_at_a_wrong_node_is_reported(h):
+    """规则指到不存在 / 不是「触发」节点的目标上：自检要报出来。"""
+    n = node(h, "source.constant", "常量")
+    h.mgr.add_receive_rule(ReceiveRule(name="坏的", match="any", action="trigger_node",
+                                       flow="main", node="nope"))
+    assert any("不存在的触发节点" in p for p in h.mgr.validate())
+    h.mgr.receive_rules[0].node = n.id
+    assert any("不是「触发」节点" in p for p in h.mgr.validate())
+    h.mgr.receive_rules[0].flow = "没有这条流程"
+    assert any("不存在的流程" in p for p in h.mgr.validate())
+
+
+def test_rule_trigger_node_without_downstream_is_flagged(h):
+    """指到一个还没接采集节点的「触发」节点：会退化成跑整条流程，自检要提醒。"""
+    t = node(h, "source.trigger", "触发A")
+    h.mgr.add_receive_rule(ReceiveRule(name="路A", match="any", action="trigger_node",
+                                       flow="main", node=t.id))
+    assert any("还没接到采集节点上" in p for p in h.mgr.validate())
+    cam = node(h, "source.camera", "采集A")
+    h.flow.add_link(t.id, "trigger", cam.id, "trigger")
+    assert h.mgr.validate() == []
+
+
+def test_rule_with_trigger_node_round_trips_through_the_solution(h, images_dir):
+    """按路径触发的规则要能存进方案再读回来（节点引用用 id，所以改名也不丢）。"""
+    t1, _t2, _a, _b = two_paths(h, images_dir)
+    h.mgr.add_receive_rule(ReceiveRule(name="路A", source="message", match="any",
+                                       action="trigger_node", flow="main", node=t1.id))
+    cfg = h.mgr.to_dict()
+    mgr2 = CommManager(EventBus())
+    assert mgr2.load_dict(cfg) == []
+    rule = mgr2.receive_rules[0]
+    assert rule.action == "trigger_node" and rule.node == t1.id and rule.flow == "main"
+
+
 # ============================================================ 设备管理
 def test_device_ids_are_stable_across_rename(h):
     dev = h.mgr.add_device("plc", "tcp_server", {"host": "127.0.0.1", "port": 0})

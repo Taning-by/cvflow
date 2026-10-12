@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .node import Node
+from .node import TRIGGER_PORT, Node
 from .types import types_compatible
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -163,6 +163,36 @@ class Graph:
                     seen.add(link.dst_node)
                     stack.append(link.dst_node)
         return seen
+
+    def trigger_entries(self) -> list[str]:
+        """定义了"一路"的触发节点 id。
+
+        只算**真的往下游连了**的触发节点：``trigger`` 输出接到采集节点上，才说明用户是拿它
+        当路径入口用的。没接下游的触发节点只是在读本次触发的参数（老方案里的"触发数据"），
+        它不切分流程，照旧跟着整条流程跑。
+        """
+        return [nid for nid, node in self.nodes.items()
+                if getattr(node, "is_trigger_entry", False) and self.output_links(nid, TRIGGER_PORT)]
+
+    def trigger_path(self, entry_id: str) -> set[str]:
+        """触发 ``entry_id`` 这一路时该跑哪些节点。
+
+        ＝ 全部节点 － 只属于**别的**触发节点的那些。同时属于多路的节点（汇合点及其下游）留着：
+        它们的输入都是可选的，没被触发的那一路在汇合点上就是"这一轮没有图"。
+        与支路无关的节点（读变量之类）也留着。
+        """
+        mine = self.descendants(entry_id) | {entry_id}
+        others: set[str] = set()
+        for other in self.trigger_entries():
+            if other != entry_id:
+                others |= self.descendants(other) | {other}
+        return set(self.nodes) - (others - mine)
+
+    def trigger_owner(self, node_id: str) -> str | None:
+        """node_id 属于哪个触发节点那一路。不属于任何一路、或同时属于多路时返回 None。"""
+        owners = [nid for nid in self.trigger_entries()
+                  if nid == node_id or node_id in self.descendants(nid)]
+        return owners[0] if len(owners) == 1 else None
 
     def input_branches(self, gate_id: str) -> dict[str, set[str]]:
         """汇合点每一路输入"独占"的上游节点集合，按输入端口名分组。

@@ -1,10 +1,10 @@
 # 节点功能黑盒测试报告
 
-生成时间：2026-10-08 02:08　环境：Python 3.10.12, OpenCV 5.0.0, numpy 2.2.6, onnxruntime 1.23.2, Linux 5.15.0-117-generic
+生成时间：2026-10-11 19:13　环境：Python 3.10.12, OpenCV 5.0.0, numpy 2.2.6, onnxruntime 1.23.2, Linux 5.15.0-117-generic
 
-测试方式：只通过节点的公开接口（输入端口、参数 → 输出端口）验证，期望值来自可解析计算的合成图像。契约测试对注册表中全部 49 个节点自动执行（元数据、输出端口与声明一致、错误输入被隔离）；功能测试按节点覆盖各模式与参数。
+测试方式：只通过节点的公开接口（输入端口、参数 → 输出端口）验证，期望值来自可解析计算的合成图像。契约测试对注册表中全部 50 个节点自动执行（元数据、输出端口与声明一致、错误输入被隔离）；功能测试按节点覆盖各模式与参数。
 
-**合计 194 个用例：通过 179，失败 0，跳过 15（跳过的均为“只有 ANY 类型输入、无类型约束可验证”的契约用例）。**
+**合计 203 个用例：通过 185，失败 0，跳过 18（跳过的均为“只有 ANY 类型输入、无类型约束可验证”的契约用例）。**
 
 | 分类 | 节点 | type_id | 契约用例 | 功能用例 | 结果 | 说明 |
 |---|---|---|---|---|---|---|
@@ -20,6 +20,7 @@
 | 深度学习 | ONNX 分类 | `dl.onnx_classifier` | 3 | 1 | ✅ 通过 |  |
 | 深度学习 | ONNX 推理 | `dl.onnx` | 3 | 1 | ✅ 通过 |  |
 | 深度学习 | ONNX 检测 (YOLO) | `dl.onnx_detector` | 3 | 1 | ✅ 通过 |  |
+| 深度学习 | ONNX 轨迹 (关键点) | `dl.onnx_trajectory` | 3 | 0 | ✅ 通过 | 无功能用例 |
 | 脚本 | Python 脚本 | `script.python` | 3 | 1 | ✅ 通过 |  |
 | 输出 | 保存图像 | `output.save_image` | 3 | 1 | ✅ 通过 |  |
 | 输出 | 写寄存器（按地址） | `output.modbus_write` | 3 | 1 | ✅ 通过 |  |
@@ -42,11 +43,11 @@
 | 逻辑 | 计数器 | `logic.counter` | 3 | 1 | ✅ 通过 |  |
 | 逻辑 | 读变量 | `logic.get_variable` | 2 | 1 | ✅ 通过 |  |
 | 逻辑 | 门控 | `logic.gate` | 3 | 1 | ✅ 通过 |  |
-| 采集 | 图像文件 | `source.image_file` | 2 | 1 | ✅ 通过 |  |
-| 采集 | 图像文件夹 | `source.image_folder` | 2 | 1 | ✅ 通过 |  |
+| 采集 | 图像文件 | `source.image_file` | 3 | 1 | ✅ 通过 |  |
+| 采集 | 图像文件夹 | `source.image_folder` | 3 | 1 | ✅ 通过 |  |
 | 采集 | 常量 | `source.constant` | 2 | 1 | ✅ 通过 |  |
-| 采集 | 相机 | `source.camera` | 2 | 1 | ✅ 通过 |  |
-| 采集 | 触发数据 | `source.trigger` | 2 | 1 | ✅ 通过 |  |
+| 采集 | 相机 | `source.camera` | 3 | 1 | ✅ 通过 |  |
+| 采集 | 触发 | `source.trigger` | 2 | 1 | ✅ 通过 |  |
 | 预处理 | Canny 边缘 | `preprocess.canny` | 3 | 1 | ✅ 通过 |  |
 | 预处理 | 位运算 | `preprocess.bitwise` | 3 | 1 | ✅ 通过 |  |
 | 预处理 | 图像增强 | `preprocess.enhance` | 3 | 1 | ✅ 通过 |  |
@@ -60,8 +61,9 @@
 
 ## 覆盖缺口
 
-- 没有功能用例的节点：`comm.receive`, `comm.send`, `comm.status`, `comm.format`, `comm.parse`, `comm.read_point`, `comm.write_point`
+- 没有功能用例的节点：`comm.receive`, `comm.send`, `comm.status`, `comm.format`, `comm.parse`, `comm.read_point`, `comm.write_point`, `dl.onnx_trajectory`
 - 通信类节点（`comm.*`）的功能用例在 `tests/test_comm_nodes.py`：它们需要接上真实设备才有意义，所以不在这份报告里，见 `docs/comm-test-report.md` 的“通信节点”一节。
+- 未归类到节点的用例：test_traj_whole_image_mode_scales_instead_of_cropping, test_traj_roi_mode_still_crops_and_clips, test_traj_roi_outside_image_errors_cleanly
 
 ## 说明
 

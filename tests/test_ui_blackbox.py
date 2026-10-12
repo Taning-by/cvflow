@@ -878,6 +878,41 @@ def test_ui_comm_rules_add_edit_remove(win, modal, monkeypatch, app):
     assert panel.tx_table.rowCount() == 1
 
 
+def test_ui_comm_rule_action_can_trigger_a_path(win, modal, monkeypatch, app):
+    """触发规则的动作多了「触发节点」：候选来自当前流程里的「触发」节点，表格显示"流程 / 节点"。"""
+    from PySide6.QtWidgets import QTabWidget
+    from cvflow.ui import comm_dialogs as cd
+    g = win.graph
+    trig = win.scene.add_node("source.trigger", QPointF(-320, 60))
+    cam = node_by_name(win, "取图")
+    g.add_link(trig.id, "trigger", cam.id, "trigger")       # 声明"这一路由它触发"
+    win.scene.set_graph(g); pump(app)
+    assert g.trigger_owner(cam.id) == trig.id
+    win.bottom_tabs.setCurrentWidget(win.comm_panel); pump(app)
+    panel = win.comm_panel
+    rx_tab = panel.rx_table.parent()
+    panel.findChild(QTabWidget).setCurrentWidget(rx_tab); pump(app)
+    seen = {}
+
+    def fill(self):
+        self.name.setText("按路径触发")
+        self.action.setCurrentIndex(self.action.findData("trigger_node"))
+        seen["choices"] = [(self.node.itemText(i), self.node.itemData(i)) for i in range(self.node.count())]
+        seen["node_row"] = not self.node.isHidden() and not self.flow.isHidden()
+        seen["variable_row"] = not self.variable.isHidden()
+        self.node.setCurrentIndex(self.node.findData(trig.id))
+        return QDialog.Accepted
+    monkeypatch.setattr(cd.ReceiveRuleDialog, "exec", fill)
+    button(rx_tab, "添加").click(); pump(app)
+    assert seen["node_row"] and not seen["variable_row"]     # 选了"触发节点"才显示节点那一行
+    assert (trig.name, trig.id) in seen["choices"]           # 显示名字，存的是 id
+    rule = win.comm.receive_rules[-1]
+    assert rule.action == "trigger_node" and rule.node == trig.id and rule.flow == "main"
+    row = panel.rx_table.rowCount() - 1
+    assert panel.rx_table.item(row, 5).text().startswith("触发节点")
+    assert panel.rx_table.item(row, 6).text() == f"main / {trig.name}"
+
+
 def test_ui_comm_debug_manual_send_log_filter_and_export(win, modal, monkeypatch, app, tmp_path):
     """调试区：手动发文本与 HEX，日志显示方向/设备/对端/文本/十六进制，可筛选、暂停、导出。"""
     import socket

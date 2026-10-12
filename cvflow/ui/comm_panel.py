@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 
 from ..comm.handshake import HandshakeConfig, STATE_LABELS
 from ..comm.manager import (ACTION_LABELS, DATA_MATCH_LABELS, LOG_DIRECTIONS, RULE_SOURCE_LABELS,
-                            SEND_TARGET_LABELS, TEXT_MATCH_LABELS, WHEN_LABELS, CommManager,
-                            ReceiveRule, SendRule)
+                            SEND_TARGET_LABELS, TEXT_MATCH_LABELS, TRIGGER_ACTIONS, WHEN_LABELS,
+                            CommManager, ReceiveRule, SendRule)
 from ..comm.modbus import _PointHost
 from ..comm.modbus_map import AREA_INFO, DIRECTION_LABELS
 from .comm_dialogs import (DataPointDialog, DeviceDialog, FormatRuleDialog, HandshakeDialog,
@@ -340,7 +340,12 @@ class CommPanel(QWidget):
 
     def _rx_dialog(self, rule: ReceiveRule) -> ReceiveRuleDialog:
         return ReceiveRuleDialog(self, rule, self._device_choices(), self._flows(),
-                                 list(self.mgr.parse_rules), self._point_choices())
+                                 list(self.mgr.parse_rules), self._point_choices(),
+                                 self._trigger_node_choices())
+
+    def _trigger_node_choices(self) -> dict[str, list[tuple[str, str]]]:
+        """每条流程里的「触发」节点，供触发规则按路径触发。"""
+        return {flow: self.mgr.trigger_nodes(flow) for flow in self._flows()}
 
     def _add_rx(self) -> None:
         dlg = self._rx_dialog(ReceiveRule())
@@ -899,12 +904,17 @@ class CommPanel(QWidget):
                     pattern += f" {rule.value:g}"
                 elif rule.match == "in_range":
                     pattern += f" [{rule.value:g}, {rule.value2:g}]"
-            target = rule.flow if rule.action == "trigger_flow" else f"变量 {rule.variable}"
+            if rule.action == "trigger_node":
+                target = f"{rule.flow} / {self.mgr.node_label(rule.flow, rule.node)}"
+            elif rule.action == "trigger_flow":
+                target = rule.flow
+            else:
+                target = f"变量 {rule.variable}"
             cells = [rule.name + ("" if rule.enabled else tr("（已停用）")),
                      self.mgr.device_label(rule.device) if rule.device else "全部",
                      RULE_SOURCE_LABELS.get(rule.source, rule.source), match, pattern,
                      ACTION_LABELS.get(rule.action, rule.action), target,
-                     rule.busy_policy if rule.action == "trigger_flow" else ""]
+                     rule.busy_policy if rule.action in TRIGGER_ACTIONS else ""]
             self._fill_row(self.rx_table, r, cells, rule.enabled,
                            dangling=bool(rule.device) and self.mgr.resolve(rule.device) is None)
         self.tx_table.setRowCount(len(self.mgr.send_rules))

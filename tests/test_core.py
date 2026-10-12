@@ -135,6 +135,68 @@ def test_runner_threaded_and_timer(reg):
     assert cnt.state["count"] == runner.stats.count  # state persisted across runs
 
 
+# =============================================================== 触发节点（路径入口）
+def build_two_paths(reg, images_dir):
+    """两条互相独立的路：触发 → 采集 → 发布（发布是两路共用的汇报节点）。"""
+    g = Graph("paths")
+    t1 = g.add_node(reg.create("source.trigger", name="触发A"))
+    t2 = g.add_node(reg.create("source.trigger", name="触发B"))
+    a = g.add_node(reg.create("source.image_folder", name="采集A", values={"directory": str(images_dir)}))
+    b = g.add_node(reg.create("source.image_folder", name="采集B", values={"directory": str(images_dir)}))
+    pub = g.add_node(reg.create("output.publish", name="发布", values={"name_a": "pa", "name_b": "pb"}))
+    g.add_link(t1.id, "trigger", a.id, "trigger")
+    g.add_link(t2.id, "trigger", b.id, "trigger")
+    g.add_link(a.id, "path", pub.id, "a")
+    g.add_link(b.id, "path", pub.id, "b")
+    return g, t1, t2, a, b, pub
+
+
+def test_trigger_node_splits_the_flow_into_paths(reg, images_dir):
+    """「触发」节点的 trigger 接到采集节点上，就声明了一条路。"""
+    g, t1, t2, a, b, pub = build_two_paths(reg, images_dir)
+    assert set(g.trigger_entries()) == {t1.id, t2.id}
+    assert g.trigger_owner(a.id) == t1.id and g.trigger_owner(b.id) == t2.id
+    assert g.trigger_owner(t1.id) == t1.id
+    assert g.trigger_owner(pub.id) is None                  # 两路共用的节点不归任何一路
+    path_a = g.trigger_path(t1.id)
+    assert path_a == {t1.id, a.id, pub.id}                  # 本路 + 共用的下游
+    assert t2.id not in path_a and b.id not in path_a       # 另一路一个都不跑
+    assert g.trigger_path(t2.id) == {t2.id, b.id, pub.id}
+
+
+def test_trigger_node_without_links_is_just_trigger_data(reg):
+    """没往下游接的「触发」节点只是在读本次触发的参数，不切分流程（老方案的行为不变）。"""
+    g = Graph("one")
+    t = g.add_node(reg.create("source.trigger", name="触发数据"))
+    c = g.add_node(reg.create("source.constant"))
+    assert g.trigger_entries() == [] and g.trigger_owner(t.id) is None
+    runner = FlowRunner(g)
+    assert runner.branch_only(t.id) is None                 # 整条流程照常跑
+    assert runner.branch_only(c.id) is None
+
+
+def test_trigger_node_runs_only_its_own_path(reg, images_dir):
+    """触发一路：这一路的采集与下游执行，别的路这一轮根本不进场（相机不会被白取一帧）。"""
+    g, t1, t2, a, b, pub = build_two_paths(reg, images_dir)
+    runner = FlowRunner(g)
+    assert runner.branch_only(t1.id) == {t1.id, a.id, pub.id}
+    r = runner.trigger_source(t1.id, Trigger(TriggerSource.COMM, message="GO"), wait=True, timeout=10)
+    assert r is not None
+    assert r.node_results[a.id].status == NodeStatus.OK
+    assert r.node_results[t1.id].outputs["trigger"] is True
+    assert b.id not in r.node_results and t2.id not in r.node_results
+    assert r.node_results[pub.id].status == NodeStatus.OK    # 共用的下游跟着这一路跑
+    assert r.outputs.get("pa") and not r.outputs.get("pb")
+    runner.stop()
+
+
+def test_trigger_node_path_survives_a_renamed_node(reg, images_dir):
+    """路径是按连线算的，和节点名无关（规则里存的是 id，改名也不受影响）。"""
+    g, t1, t2, a, b, pub = build_two_paths(reg, images_dir)
+    a.name = "采集A（改过名）"
+    assert g.trigger_path(t1.id) == {t1.id, a.id, pub.id}
+
+
 def test_event_bus_wildcard():
     bus = EventBus()
     got = []

@@ -19,7 +19,7 @@ from typing import Any
 from . import events, paths
 from .engine import Engine, RunResult
 from .events import EventBus
-from .graph import Graph
+from .graph import Graph, GraphError
 from .registry import NodeRegistry, registry as default_registry
 from .variables import GlobalVariables
 
@@ -205,11 +205,39 @@ class FlowRunner:
         """node_id 被单独触发时，这一次应该跑哪些节点。
 
         跑的是：本路的上游链 + 汇合点 + 汇合点的下游 + 其它与支路无关的节点（变量之类）；
-        不跑的是**别的路**的上游链——那些路这一轮没被触发，不该去抓图。
-        没有汇合点或该节点不属于任何一路时返回 None，表示整条流程照常跑。
+        不跑的是**别的路**的节点——那些路这一轮没被触发，不该去抓图。
+
+        "一路"有两种定义，可以同时存在，取交集：
+
+        * **触发节点**（显式）：``触发`` 节点的 trigger 输出接到采集节点上，于是"它和它的下游"
+          就是一路。这是用户在流程图上画出来的声明，所以优先。
+        * **异步汇合点**（推断）：深度学习节点的到达方式设为 async 时，它每一路输入各自是一路。
+
+        两种都不适用时返回 None，表示整条流程照常跑。
+        """
+        only = None
+        owner = self.graph.trigger_owner(node_id)
+        if owner is not None:
+            only = self.graph.trigger_path(owner)
+        gate_only = self._gate_branch_only(node_id, strict=only is None)
+        if gate_only is not None:
+            only = gate_only if only is None else (only & gate_only)
+        return only
+
+    def _gate_branch_only(self, node_id: str, strict: bool = True) -> set[str] | None:
+        """按异步汇合点切分出 node_id 所在的那一路；它不属于任何汇合点时返回 None。
+
+        ``strict=False`` 表示已经有触发节点给出答案了，这时多路共用上游（``input_branches``
+        要报错的情形）只记一条警告：触发节点已经把"哪一路"说清楚了，不必再拦住这次运行。
         """
         for gate in self.async_gates():
-            branches = self.graph.input_branches(gate)
+            try:
+                branches = self.graph.input_branches(gate)
+            except GraphError as e:
+                if strict:
+                    raise
+                log.warning("流程 %s：%s（已按触发节点确定这一路，继续运行）", self.name, e)
+                return None
             mine = next((p for p, nodes in branches.items() if node_id in nodes), None)
             if mine is None:
                 continue
@@ -250,6 +278,15 @@ class FlowRunner:
         """这一路是不是正有一次触发没跑完。界面上的触发图标用它决定画"正在触发"。"""
         with self._branch_lock:
             return self._branch_busy.get(node_id, 0) > 0
+
+    def branch_pending(self, node_id: str) -> int:
+        """这一路还有几次触发在排队（已经入队、还没开始跑）。
+
+        忙时策略按**这一路**判断：别的路正忙不该让这一路的触发被拒——各路本来就是独立的。
+        """
+        with self._branch_lock:
+            q = self._branches.get(node_id)
+            return q.qsize() if q is not None else 0
 
     def _branch_queue(self, node_id: str) -> "queue.Queue[_Job]":
         """取（或建）某一路的工作队列与线程。"""

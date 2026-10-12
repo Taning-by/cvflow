@@ -38,6 +38,7 @@ from typing import Any
 from ..core import events
 from ..core.engine import RunResult
 from ..core.events import EventBus
+from ..core.node import TRIGGER_PORT
 from ..core.runtime import FlowRunner, Trigger, TriggerSource
 from ..core.variables import GlobalVariables
 from .base import CommDevice, CommError, Peer
@@ -106,8 +107,12 @@ _LEGACY_MATCH_MAP = {"register_rising": "rising", "register_change": "changed",
 RULE_SOURCES = ("message", "datapoint")
 RULE_SOURCE_LABELS = {"message": "报文", "datapoint": "数据点 / 寄存器"}
 
-ACTIONS = ("trigger_flow", "set_variable")
-ACTION_LABELS = {"trigger_flow": "触发流程", "set_variable": "写入全局变量"}
+ACTIONS = ("trigger_flow", "trigger_node", "set_variable")
+ACTION_LABELS = {"trigger_flow": "触发流程（整条流程跑一次）",
+                 "trigger_node": "触发节点（只跑那一路）",
+                 "set_variable": "写入全局变量"}
+#: 会让流程跑起来的动作（相对于只写变量）。忙时策略、握手、请求编号只对这些有意义。
+TRIGGER_ACTIONS = ("trigger_flow", "trigger_node")
 
 SEND_TARGETS = ("origin", "default", "broadcast")
 SEND_TARGET_LABELS = {"origin": "回复请求来源", "default": "设备默认目标", "broadcast": "广播"}
@@ -140,6 +145,9 @@ class ReceiveRule:
     value2: float = 0                # in_range 的上界
     action: str = "trigger_flow"
     flow: str = "main"
+    #: ``action == "trigger_node"`` 时要触发哪个「触发」节点：存节点 **id**（也接受节点名，
+    #: 手填时方便）。存 id 的好处和设备一样——改节点名不会让规则失去引用。
+    node: str = ""
     variable: str = ""
     parse: str = ""                  # 解析规则名：把报文拆成字段
     request_field: str = "request_id"  # 哪个字段是请求编号
@@ -1048,6 +1056,31 @@ class CommManager:
                 hs.reject(status, code, request_id, peer_id)
         return status
 
+    def trigger_nodes(self, flow: str = "") -> list[tuple[str, str]]:
+        """各流程里的「触发」节点，供界面选择：``[(节点 id, 节点名)]``。
+
+        列出全部触发节点（哪怕还没连到采集节点上）：先配规则后接线也是常见顺序。
+        """
+        out: list[tuple[str, str]] = []
+        for name, runner in self.runners.items():
+            if flow and name != flow:
+                continue
+            out += [(nid, node.name) for nid, node in runner.graph.nodes.items()
+                    if getattr(node, "is_trigger_entry", False)]
+        return out
+
+    def find_node(self, flow: str, ref: str):
+        """按 id（或名字）在某条流程里找节点；找不到返回 None。"""
+        runner = self.runners.get(flow)
+        if runner is None or not ref:
+            return None
+        return runner.graph.nodes.get(ref) or runner.graph.find_by_name(ref)
+
+    def node_label(self, flow: str, ref: str) -> str:
+        """节点的显示名（存的是 id，界面上要显示名字）。找不到就原样显示引用。"""
+        node = self.find_node(flow, ref)
+        return node.name if node is not None else ref
+
     def _enqueue(self, rule: ReceiveRule, flow: str, trigger: Trigger) -> tuple[str, int]:
         """按忙时策略把一次触发放进流程队列。"""
         runner = self.runners.get(flow)
@@ -1058,6 +1091,8 @@ class CommManager:
             log.info("规则 %s：流程 %r 未运行，忽略触发", rule.name, flow)
             return "not_running", ERROR_CODES["not_running"]
         policy = rule.busy_policy if rule.busy_policy in BUSY_POLICIES else "queue"
+        if rule.action == "trigger_node":
+            return self._enqueue_branch(rule, runner, trigger, policy)
         pending, busy = runner.pending(), runner.busy
         if policy == "reject" and (busy or pending):
             return "busy", ERROR_CODES["busy"]
@@ -1067,6 +1102,28 @@ class CommManager:
         if policy == "queue" and pending >= max(1, int(rule.max_queue)):
             return "queue_full", ERROR_CODES["busy"]
         runner.trigger(trigger)
+        return ACCEPTED, ERROR_CODES["none"]
+
+    def _enqueue_branch(self, rule: ReceiveRule, runner: FlowRunner, trigger: Trigger,
+                        policy: str) -> tuple[str, int]:
+        """触发某个「触发」节点：只跑它下游那一路。
+
+        忙时策略只看**这一路**：各路本来就互相独立（每一路一个队列一个线程），
+        A 路正在跑不该把 B 路的触发顶掉。
+        """
+        node = self.find_node(runner.name, rule.node)
+        if node is None:
+            log.warning("规则 %s：流程 %r 里找不到触发节点 %r", rule.name, runner.name, rule.node)
+            return "no_node", ERROR_CODES["bad_params"]
+        busy, pending = runner.branch_busy(node.id), runner.branch_pending(node.id)
+        if policy == "reject" and (busy or pending):
+            return "busy", ERROR_CODES["busy"]
+        if policy == "drop" and (busy or pending):
+            runner.stats.dropped += 1
+            return "dropped", ERROR_CODES["busy"]
+        if policy == "queue" and pending >= max(1, int(rule.max_queue)):
+            return "queue_full", ERROR_CODES["busy"]
+        runner.trigger_source(node.id, trigger)
         return ACCEPTED, ERROR_CODES["none"]
 
     # ================================================== 流程结束 → 发送
@@ -1228,8 +1285,20 @@ class CommManager:
                 problems.append(f"接收规则「{rule.name}」引用了不存在的设备 {rule.device!r}")
             if rule.parse and rule.parse not in self.parse_rules:
                 problems.append(f"接收规则「{rule.name}」引用了不存在的解析规则 {rule.parse!r}")
-            if rule.action == "trigger_flow" and self.runners and rule.flow not in self.runners:
+            if rule.action in TRIGGER_ACTIONS and self.runners and rule.flow not in self.runners:
                 problems.append(f"接收规则「{rule.name}」引用了不存在的流程 {rule.flow!r}")
+            elif rule.action == "trigger_node" and self.runners:
+                node = self.find_node(rule.flow, rule.node)
+                if node is None:
+                    problems.append(f"接收规则「{rule.name}」引用了流程 {rule.flow!r} 里不存在的"
+                                    f"触发节点 {rule.node!r}")
+                elif not getattr(node, "is_trigger_entry", False):
+                    problems.append(f"接收规则「{rule.name}」指向的节点「{node.name}」不是"
+                                    f"「触发」节点，无法按路径触发")
+                elif not self.runners[rule.flow].graph.output_links(node.id, TRIGGER_PORT):
+                    # 没接下游的触发节点不构成一条路，这条规则会退化成"跑整条流程"
+                    problems.append(f"接收规则「{rule.name}」指定的触发节点「{node.name}」的 trigger 输出"
+                                    f"还没接到采集节点上，这样触发会跑整条流程")
         for rule in self.send_rules:
             dev = self.resolve(rule.device)
             if dev is None:

@@ -87,7 +87,8 @@ def test_source_trigger_data():
     g = Graph(); n = g.add_node(reg.create("source.trigger"))
     r = FlowRunner(g).run_once(Trigger(TriggerSource.COMM, device="plc", message="TRIG,7", payload={"k": 1}))
     o = r.node_results[n.id].outputs
-    assert o == {"message": "TRIG,7", "source": "comm", "device": "plc", "payload": {"k": 1},
+    assert o == {"trigger": True,                       # 接到采集节点上用的那一路声明
+                 "message": "TRIG,7", "source": "comm", "device": "plc", "payload": {"k": 1},
                  "request_id": 0, "fields": {}, "value": None, "peer": ""}
     # 通信层接受请求时冻结的那一份参数：请求编号、来源对端、解析出来的字段
     g2 = Graph(); n2 = g2.add_node(reg.create("source.trigger", values={"field": "model"}))

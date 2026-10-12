@@ -371,8 +371,8 @@ class NodeItem(QGraphicsItem):
         if hover != self._trig_hover:
             self._trig_hover = hover
             self.setCursor(Qt.PointingHandCursor if hover else Qt.ArrowCursor)
-            self.setToolTip(tr("Trigger this branch only: grab one frame and run down to the "
-                               "deep-learning node, where it waits for the other branches.") if hover else self._tip)
+            self.setToolTip(tr("Trigger just this path: only this path's nodes run; "
+                               "the other paths stay put.") if hover else self._tip)
             self.update()
         super().hoverMoveEvent(event)
 
