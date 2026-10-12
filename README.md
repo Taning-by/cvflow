@@ -156,8 +156,9 @@ Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用
 * "Auto-run on change" 开启时改参数立即重跑；**Run once (F5)** 手动跑一次；"Continuous" 按间隔循环。
 * **Start run mode (F9)**：连接所有通信设备、启动所有流程的工作线程，此时流程被锁定，触发来自 PLC/定时器/手动。
 * 底部 Communication 页：设备（TCP/UDP/串口/Modbus）、触发规则（触发整条流程、**触发某一路**或设变量）、发送规则（文本模板或 Modbus 寄存器写入）、报文监视与手动发送。
-* 一条流程里可以有**多条路**：「采集」分类里的**触发**节点接到相机/图像节点的 `trigger` 输入上，这一路就有了入口——
-  触发规则指定它，PLC 的一条报文就只跑那一路（别的相机不会被白取一帧）；画布上点它的触发图标可以在编辑模式下手动试跑这一路。
+* 一条流程里可以有**多条路**：「采集」分类里的**触发**节点（只管触发、不带数据）接到相机/图像节点的 `trigger` 输入上，
+  这一路就有了入口——触发规则的动作选「触发节点」并指到它，PLC 的一条报文就只跑那一路（别的相机不会被白取一帧）；
+  画布上点它的触发图标可以在编辑模式下手动试跑这一路。请求参数用「解析报文」节点（来源＝触发）取。
 
 ## 相机采集
 
@@ -426,7 +427,7 @@ class MyDefectNet(Node):
 | **触发规则** | 报文：`any / startswith / equals / contains / regex`；数据点：`rising / falling / changed / equals / not_equals / greater / less / in_range`。动作三种：**触发流程**（整条跑一次）、**触发节点**（只跑指定「触发」节点那一路，忙时策略也只看这一路）、写入全局变量。两种触发都可带解析出来的参数与请求编号。忙时策略：拒绝 / 丢弃 / 有界排队 |
 | **发送规则** | 流程结束时按条件(always/ok/ng/error)发送。三种载荷可并存，顺序是：写数据点 → 写寄存器（裸地址，老方案）→ 发报文（格式化规则或文本模板）。目标可选**回复请求来源** / 设备默认 / 广播 |
 | **检测握手** | 把设备与流程绑成闭环：Ready/Busy/Done/OK-NG/ErrorCode/请求编号/完成编号/确认位，见上面的「PLC 联动」 |
-| **通信节点** | `Comm Receive`（从收件箱取报文）、`Comm Send`、`Parse Message`、`Format Result`、`Read Data Point`、`Write Data Point`、`Comm Status`；采集分类里的 `Trigger`（触发）节点既是**路径入口**（`trigger` 输出接到采集节点上，可被触发规则按路径触发），也输出请求编号与本次请求冻结的参数 |
+| **通信节点** | `Comm Receive`（从收件箱取报文）、`Comm Send`、`Parse Message`、`Format Result`、`Read Data Point`、`Write Data Point`、`Comm Status`。本次请求**冻结**的参数（请求编号、解析出的字段）由 `Parse Message` 给出：来源选 `trigger`、解析规则留空即可——排队时也不会串，这是它和「读数据点/读变量」（最新值）的区别。采集分类里的 `Trigger`（触发）节点只管触发：`trigger` 输出接到采集节点上就是一条**路径入口**，可被触发规则按节点触发 |
 
 文本模板的取值范围是固定的几个命名空间，**不做表达式求值**（模板里写不出可执行代码）：
 `{status} {ok} {ng} {run_id} {flow} {duration_ms:.1f} {error} {request_id}`、

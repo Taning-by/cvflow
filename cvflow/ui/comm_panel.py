@@ -904,8 +904,13 @@ class CommPanel(QWidget):
                     pattern += f" {rule.value:g}"
                 elif rule.match == "in_range":
                     pattern += f" [{rule.value:g}, {rule.value2:g}]"
+            missing_node = False
             if rule.action == "trigger_node":
-                target = f"{rule.flow} / {self.mgr.node_label(rule.flow, rule.node)}"
+                hit = self.mgr.find_node(rule.flow, rule.node)
+                missing_node = hit is None
+                # 节点被删掉时别只显示一串 id，直接说找不到（整行也会标红）
+                target = f"{rule.flow} / " + (hit.name if hit is not None
+                                              else f"{rule.node or '未选节点'}（找不到）")
             elif rule.action == "trigger_flow":
                 target = rule.flow
             else:
@@ -916,7 +921,8 @@ class CommPanel(QWidget):
                      ACTION_LABELS.get(rule.action, rule.action), target,
                      rule.busy_policy if rule.action in TRIGGER_ACTIONS else ""]
             self._fill_row(self.rx_table, r, cells, rule.enabled,
-                           dangling=bool(rule.device) and self.mgr.resolve(rule.device) is None)
+                           dangling=missing_node
+                           or (bool(rule.device) and self.mgr.resolve(rule.device) is None))
         self.tx_table.setRowCount(len(self.mgr.send_rules))
         for r, rule in enumerate(self.mgr.send_rules):
             payload = []

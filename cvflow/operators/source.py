@@ -1,8 +1,8 @@
 """采集类节点：图像文件、文件夹、相机、常量，以及路径入口「触发」节点。
 
-「触发」节点（``source.trigger``）既是本次触发的数据来源，也是**一条路的入口**：
-它的 ``trigger`` 输出接到采集节点上，这一路就可以被单独触发（通信面板的触发规则指定节点，
-或者在画布上点它的触发图标），别的路不动。详见 ``TriggerNode`` 的说明。
+「触发」节点（``source.trigger``）是**一条路的入口**，只管触发：它的 ``trigger`` 输出接到
+采集节点上，这一路就可以被单独触发（通信面板的触发规则指定节点，或者在画布上点它的触发图标），
+别的路不动。本次请求的参数去「解析报文」节点取（来源选「触发」）。详见 ``TriggerNode``。
 """
 from __future__ import annotations
 
@@ -227,19 +227,19 @@ class Constant(Node):
 
 @register
 class TriggerNode(Node):
-    """路径入口：一条"路"从哪里开始、由谁触发，同时把本次触发的参数取出来。
+    """路径入口：一条"路"从哪里开始、由谁触发。**只管触发，不带数据。**
 
-    两种用法，一个节点全包：
+    把 ``trigger`` 输出接到采集节点（相机 / 图像文件 / 图像文件夹）的 ``trigger`` 输入上，
+    这条路就被声明出来了：
 
-    * **当路径入口**：把 ``trigger`` 输出接到采集节点（相机 / 图像文件 / 图像文件夹）的
-      ``trigger`` 输入上。这条路就被声明出来了——通信面板的触发规则里把动作选成
-      「触发节点」并指到这个节点，PLC 的一条报文（或一个寄存器位）就只跑这一路：
-      它下游的采集、算法、输出都跑，**别的路一动不动**（相机不会被白取一帧）。
-      画布上它自带触发图标，点一下就在编辑模式下手动跑一次这一路，接线前就能验证。
-    * **当触发数据**：不接下游时它就只是把触发信息取出来（和老方案里的"触发数据"完全一样），
-      不切分流程。
+    * 通信面板「触发」页里把动作选成「触发节点」、再指到这个节点，PLC 的一条报文
+      （或一个寄存器位）就**只跑这一路**——它下游的采集、算法、输出都跑，别的路一动不动
+      （那些相机不会被白取一帧）。
+    * 画布上它自带触发图标，点一下就在编辑模式下手动跑一次这一路，接线对不对当场看得出来。
 
-    ``fields`` 是**接受请求时冻结**的那一份参数，所以同一条流程并发排队也不会串。
+    本次请求的参数（请求编号、解析出的字段、来源对端）**不在这里取**：
+    用通信分类的「解析报文」节点，来源选「触发」——那里拿到的是接受请求时冻结的那一份，
+    同一条流程并发排队也不会串；回传报文直接在模板里写 ``{request_id}`` / ``{field.名字}``。
     """
 
     type_id = "source.trigger"
@@ -247,32 +247,12 @@ class TriggerNode(Node):
     label = "Trigger"
     triggerable = True        # 画布上带触发图标：点一下只跑这一路
     is_trigger_entry = True   # trigger 输出接了下游时，"它和它的下游"就是一路
-    description = ("Entry point of one path: wire 'trigger' into an acquisition node so a PLC rule can "
-                   "run just that path, and read the request id / frozen parameters of this trigger.")
+    description = ("Entry point of one path: wire 'trigger' into an acquisition node, then a PLC rule "
+                   "(action: trigger node) runs just that path. Request parameters come from Parse Message.")
     color = "#2e7d32"
     outputs = [Port(TRIGGER_PORT, DataType.ANY,
                     description="接到「采集」类节点的 trigger 输入上，表示那一路由本节点触发"
-                                "（值恒为 True，只用来声明路径和执行顺序）"),
-               Port("message", DataType.STRING), Port("source", DataType.STRING),
-               Port("device", DataType.STRING), Port("payload", DataType.DICT),
-               Port("request_id", DataType.INT), Port("fields", DataType.DICT),
-               Port("value", DataType.ANY), Port("peer", DataType.STRING)]
-    params = [Param("field", "", "string", description="要单独输出到 value 端口的字段名"),
-              Param("required", False, "bool", description="字段不存在时报错")]
+                                "（值恒为 True，只用来声明路径和执行顺序）")]
 
     def process(self, ctx, inputs):
-        t = ctx.trigger
-        payload = dict(getattr(t, "payload", None) or {})
-        fields = dict(payload.get("fields") or {})
-        name = str(self.get("field") or "")
-        if name and self.get("required") and name not in fields:
-            raise NodeError(f"本次触发没有字段 {name!r}（有：{'、'.join(fields) or '无'}）")
-        return {TRIGGER_PORT: True,
-                "message": getattr(t, "message", "") or "",
-                "source": getattr(getattr(t, "source", None), "value", "manual"),
-                "device": getattr(t, "device", "") or "",
-                "payload": payload,
-                "request_id": int(payload.get("request_id") or 0),
-                "fields": fields,
-                "value": fields.get(name) if name else None,
-                "peer": str(payload.get("peer") or "")}
+        return {TRIGGER_PORT: True}

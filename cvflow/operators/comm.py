@@ -4,9 +4,13 @@
 设备名）取设备。后台监听线程是唯一读套接字的一方，收到的报文复制进各个收件箱，
 ``Comm Receive`` 从自己的收件箱取——所以节点和监听线程不会抢读同一个连接。
 
-本次触发的请求编号、来源对端和解析出来的字段，在握手接受请求的瞬间就冻结进了触发载荷，
-采集分类里的「触发」节点（``source.trigger``）把它们取出来，因此同一条流程并发排队时也不会串——
-所以这里没有单独的"触发数据"节点。那个节点同时还是**一条路的入口**（见 ``operators.source``）。
+本次触发的请求编号、来源对端和解析出来的字段，在握手接受请求的瞬间就冻结进了触发载荷。
+要在流程里用这些参数，用 ``Parse Message``（解析报文）节点，来源选 ``trigger``：
+配了解析规则就按规则再解一遍报文，**留空**就直接给出冻结的那一份（含请求编号）。
+同一条流程并发排队也不会串——这是它和「读数据点」「读变量」的区别，那两个拿的是此刻的最新值。
+
+采集分类里的「触发」节点（``source.trigger``）只管触发，不带数据：它声明一条路的入口，
+由通信面板的触发规则按节点触发（见 ``operators.source``）。
 """
 from __future__ import annotations
 
@@ -143,46 +147,64 @@ class ParseMessage(Node):
     type_id = "comm.parse"
     category = "Communication"
     label = "Parse Message"
-    description = "Split a message into named fields with a parse rule from the Communication panel."
+    description = ("Split a message into named fields with a parse rule; with source=trigger and no rule "
+                   "it hands out this request's frozen parameters (request id, parsed fields).")
     color = _COLOR
     inputs = [Port("text", DataType.ANY, optional=True)]
     outputs = [Port("fields", DataType.DICT), Port("value", DataType.ANY),
                Port("ok", DataType.BOOL), Port("error", DataType.STRING)]
-    params = [Param("rule", "", "choice", options="comm.parse_rules", description="解析规则（通信面板里配置）"),
+    params = [Param("rule", "", "choice", options="comm.parse_rules",
+                    description="解析规则（通信面板里配置）。来源是「触发」、只想取本次请求已经"
+                                "解析好的参数时留空即可"),
               Param("field", "", "string", description="要单独输出到 value 端口的字段名"),
               Param("source", "trigger", "enum", choices=["trigger", "input"],
-                    description="trigger 解析触发本次运行的报文；input 解析输入端口的文本"),
+                    description="trigger 取触发本次运行的那条请求（留空规则＝直接用接受请求时"
+                                "冻结的参数，含请求编号）；input 解析输入端口的文本"),
               Param("on_error", "error", "enum", choices=["error", "empty"],
-                    description="解析失败：报错（判为异常）/ 输出空并置 ok=False")]
+                    description="解析失败 / 本次不是通信触发：报错（判为异常）/ 输出空并置 ok=False")]
 
     def process(self, ctx, inputs):
+        """来源是「触发」时优先用**冻结**的那份参数。
+
+        这份参数是握手接受请求的瞬间存进触发载荷的，所以同一条流程并发排队也不会串——
+        这正是它和「读数据点」「读变量」的区别：那两个拿到的是**此刻**的最新值，
+        请求一排队就可能读到下一件的参数。
+        """
         from ..comm.parsing import ParseError
-        mgr = _manager()
-        rule = mgr.parse_rules.get(str(self.get("rule") or ""))
-        if rule is None:
-            known = "、".join(mgr.parse_rules) or "（没有配置解析规则）"
-            raise NodeError(f"找不到解析规则 {self.get('rule')!r}。已配置：{known}")
+        rule_name = str(self.get("rule") or "")
+        name = str(self.get("field") or "")
         if self.get("source") == "trigger":
             payload = ctx.payload or {}
             data = payload.get("raw") or b""
-            if not data and payload.get("fields"):
-                fields = dict(payload["fields"])      # 触发时已经解析过，直接用冻结的那份
-                return {"fields": fields, "value": fields.get(str(self.get("field") or ""), None),
+            fields = dict(payload.get("fields") or {})
+            if fields and (not rule_name or not data):
+                # 触发时已经解析好了（报文按解析规则解的，寄存器触发则是数据点值与请求编号）
+                return {"fields": fields, "value": fields.get(name) if name else None,
                         "ok": True, "error": ""}
             if not data:
-                raise NodeError("本次运行不是由通信报文触发的，没有可解析的报文")
+                if self.get("on_error") == "empty":
+                    return {"fields": {}, "value": None, "ok": False, "error": "本次运行不是由通信触发的"}
+                raise NodeError("本次运行不是由通信触发的，没有请求参数可取"
+                                "（手动运行时把「解析失败」设成 empty 就会跳过而不是报错）")
         else:
             raw = inputs.get("text")
             if raw is None:
                 raise NodeError("输入端口没有文本")
             data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8")
+        mgr = _manager()
+        rule = mgr.parse_rules.get(rule_name) if rule_name else None
+        if rule is None:
+            known = "、".join(mgr.parse_rules) or "（没有配置解析规则）"
+            if not rule_name:
+                raise NodeError(f"没有选择解析规则。本次触发的报文还没有解析过，"
+                                f"请在通信面板「解析/格式」页配一条规则再选上。已配置：{known}")
+            raise NodeError(f"找不到解析规则 {rule_name!r}。已配置：{known}")
         try:
             fields = rule.parse(bytes(data))
         except ParseError as e:
             if self.get("on_error") == "empty":
                 return {"fields": {}, "value": None, "ok": False, "error": str(e)}
             raise NodeError(f"解析失败：{e}") from None
-        name = str(self.get("field") or "")
         return {"fields": fields, "value": fields.get(name) if name else None,
                 "ok": True, "error": ""}
 

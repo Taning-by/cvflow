@@ -1,6 +1,6 @@
 # 通信功能黑盒测试报告
 
-生成时间：2026-10-11 19:14　环境：Python 3.10.12, pymodbus 3.15.0, python-snap7 3.2.0, Linux 5.15.0-117-generic
+生成时间：2026-10-11 20:05　环境：Python 3.10.12, pymodbus 3.15.0, python-snap7 3.2.0, Linux 5.15.0-117-generic
 
 测试方式：把通信层当作整体，只从对端观察。对端使用真实 TCP/UDP 套接字、Linux 伪终端串口、第三方的 pymodbus 主站/从站与 snap7 服务器，以及按协议手册手工拼出的报文（三菱 MC 3E 帧、Modbus 异常响应）做字节级核对；观察点是事件总线上的事件、被触发的流程与统计、写回到对端的数据、持久化文件，以及无界面生产模式的子进程。分帧与字节序这类纯逻辑按**实际字节**核对，不只看往返一致（往返一致掩盖得了字节序写错）。
 
@@ -60,7 +60,7 @@
 | Modbus TCP 从站（对端：第三方 pymodbus 主站） | function codes and exceptions | ✅ 通过 | 0.5 |  |
 | Modbus TCP 从站（对端：第三方 pymodbus 主站） | unit id filter | ✅ 通过 | 1.5 |  |
 | Modbus TCP 从站（对端：第三方 pymodbus 主站） | modbus server rising edge and result | ✅ 通过 | 0.5 |  |
-| Modbus TCP 主站（对端：第三方 pymodbus 从站） | against third party server | ✅ 通过 | 0.3 |  |
+| Modbus TCP 主站（对端：第三方 pymodbus 从站） | against third party server | ✅ 通过 | 0.4 |  |
 | Modbus TCP 主站（对端：第三方 pymodbus 从站） | modbus client polls server | ✅ 通过 | 0.5 |  |
 | 三菱 MC 协议（字节级核对 + 模拟 PLC） | request frames match specification | ✅ 通过 | 0.0 |  |
 | 三菱 MC 协议（字节级核对 + 模拟 PLC） | end code error is reported | ✅ 通过 | 0.0 |  |
@@ -73,7 +73,7 @@
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[contains-AB-xxABxx\n-1] | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-^T\\d{2}$-T42\n-1] | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-^T\\d{2}$-T4\n-0] | ✅ 通过 | 0.5 |  |
-| 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[any--whatever\n-1] | ✅ 通过 | 0.5 |  |
+| 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[any--whatever\n-1] | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-(-x\n-0] | ✅ 通过 | 0.5 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | device filter disabled and flow not running | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | register match kinds | ✅ 通过 | 0.5 |  |
@@ -87,7 +87,7 @@
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rtu expected frame length[3-\x01\x03--1] | ✅ 通过 | 0.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rtu expected frame length[64-\x01@--2] | ✅ 通过 | 0.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rtu pdu limits are enforced | ✅ 通过 | 0.0 |  |
-| 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rtu client roundtrip over pty | ✅ 通过 | 2.0 |  |
+| 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rtu client roundtrip over pty | ✅ 通过 | 4.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rule triggers one path only | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rule pointing at a wrong node is reported | ✅ 通过 | 0.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | rule trigger node without downstream is flagged | ✅ 通过 | 0.0 |  |
@@ -101,7 +101,7 @@
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake busy is rejected not queued | ✅ 通过 | 1.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake duplicate request resends last result | ✅ 通过 | 0.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake not running flow is reported | ✅ 通过 | 0.5 |  |
-| 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake timeout reports once without retrigger | ✅ 通过 | 2.5 |  |
+| 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake timeout reports once without retrigger | ✅ 通过 | 2.0 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake discards result of disconnected request | ✅ 通过 | 1.8 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | register handshake full cycle with ack | ✅ 通过 | 0.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | register handshake writes results before done | ✅ 通过 | 0.5 |  |
@@ -122,7 +122,7 @@
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node format renders current run | ✅ 通过 | 0.0 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node data point read write | ✅ 通过 | 0.5 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node read point marks stale after disconnect | ✅ 通过 | 0.5 |  |
-| 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node trigger data exposes frozen request | ✅ 通过 | 0.0 |  |
+| 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node parse without a rule gives the frozen request | ✅ 通过 | 0.0 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node comm status | ✅ 通过 | 0.5 |  |
 | 统一设备管理（稳定 id、改名、复制、启用禁用、引用查找、资源释放） | device ids are stable across rename | ✅ 通过 | 0.0 |  |
 | 统一设备管理（稳定 id、改名、复制、启用禁用、引用查找、资源释放） | rename rewrites legacy name references | ✅ 通过 | 0.0 |  |
@@ -147,7 +147,7 @@
 | 示例方案端到端（TCP 握手、Modbus 主站、Modbus 从站） | example c interoperates with third party master | ✅ 通过 | 0.5 |  |
 | 示例方案端到端（TCP 握手、Modbus 主站、Modbus 从站） | example c rejects second request while busy or unacked | ✅ 通过 | 0.5 |  |
 | 无界面生产模式端到端（cvflow serve） | serve modbus end to end | ✅ 通过 | 0.8 |  |
-| 无界面生产模式端到端（cvflow serve） | example a runs under cvflow serve | ✅ 通过 | 0.7 |  |
+| 无界面生产模式端到端（cvflow serve） | example a runs under cvflow serve | ✅ 通过 | 0.8 |  |
 | 无界面生产模式端到端（cvflow serve） | example c slave serves external master | ✅ 通过 | 0.5 |  |
 
 ## 说明

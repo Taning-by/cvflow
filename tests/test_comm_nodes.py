@@ -217,16 +217,27 @@ def test_node_read_point_marks_stale_after_disconnect(h):
     assert r.node_results[rd.id].outputs["valid"] is False
 
 
-def test_node_trigger_data_exposes_frozen_request(h):
-    """已有的 source.trigger 节点被扩展成也输出请求编号、冻结参数与来源对端。"""
-    t = node(h, "source.trigger", "t", field="model", required=True)
+def test_node_parse_without_a_rule_gives_the_frozen_request(h):
+    """本次请求的参数从「解析报文」节点取：来源＝触发、解析规则留空，直接给冻结的那一份。
+
+    这是原来「触发数据」节点那几个输出的去处——触发节点现在只管触发。
+    """
+    p = node(h, "comm.parse", "参数", source="trigger", field="model")
     r = h.run({"request_id": 1001, "peer": "1.2.3.4:5", "device": "plc",
                "fields": {"model": "A1", "request_id": 1001}})
-    out = r.node_results[t.id].outputs
-    assert out["request_id"] == 1001 and out["value"] == "A1" and out["peer"] == "1.2.3.4:5"
-    assert out["source"] == "comm"
-    r = h.run({"fields": {}})
-    assert "没有字段" in r.node_results[t.id].error
+    out = r.node_results[p.id].outputs
+    assert out["ok"] is True and out["value"] == "A1"
+    assert out["fields"] == {"model": "A1", "request_id": 1001}   # 请求编号也在这份里
+    # 不是通信触发的那一次（比如手动运行）：按"解析失败"的设置处理
+    r = h.run()
+    assert r.node_results[p.id].status.value == "error" and "不是由通信触发" in r.node_results[p.id].error
+    p.set("on_error", "empty")
+    r = h.run()
+    assert r.node_results[p.id].outputs["ok"] is False and r.node_results[p.id].status.value == "ok"
+    # 寄存器触发没有报文，冻结的那份就是数据点的值与请求编号
+    p.set("field", "trigger")
+    r = h.run({"request_id": 7, "fields": {"trigger": 1, "request_id": 7}})
+    assert r.node_results[p.id].outputs["value"] == 1
 
 
 def test_node_comm_status(h):

@@ -197,6 +197,24 @@ def test_trigger_node_path_survives_a_renamed_node(reg, images_dir):
     assert g.trigger_path(t1.id) == {t1.id, a.id, pub.id}
 
 
+def test_graph_drops_links_whose_ports_are_gone(reg, caplog):
+    """老方案里连到已经不存在的端口上的线：丢掉那根线继续打开，而不是整个方案打不开。
+
+    节点的端口会随版本变（比如「触发」节点收掉了那几个数据输出），为此让 Solution.load
+    整个失败太重——用户会以为方案文件坏了。
+    """
+    doc = {"name": "old", "nodes": [
+        {"id": "t1", "type": "source.trigger", "name": "触发", "values": {}},
+        {"id": "p1", "type": "output.publish", "name": "发布", "values": {}}],
+        "links": [{"src": ["t1", "request_id"], "dst": ["p1", "a"]},      # 端口没了
+                  {"src": ["t1", "trigger"], "dst": ["p1", "b"]}]}        # 这根还在
+    with caplog.at_level("WARNING", logger="cvflow.graph"):
+        g = Graph.from_dict(doc, reg)
+    assert set(g.nodes) == {"t1", "p1"}
+    assert [l.src_port for l in g.links] == ["trigger"]
+    assert any("已失效" in r.getMessage() for r in caplog.records)
+
+
 def test_event_bus_wildcard():
     bus = EventBus()
     got = []

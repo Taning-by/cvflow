@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,6 +12,8 @@ from .types import types_compatible
 
 if TYPE_CHECKING:  # pragma: no cover
     from .registry import NodeRegistry
+
+log = logging.getLogger("cvflow.graph")
 
 
 class GraphError(Exception):
@@ -167,9 +170,9 @@ class Graph:
     def trigger_entries(self) -> list[str]:
         """定义了"一路"的触发节点 id。
 
-        只算**真的往下游连了**的触发节点：``trigger`` 输出接到采集节点上，才说明用户是拿它
-        当路径入口用的。没接下游的触发节点只是在读本次触发的参数（老方案里的"触发数据"），
-        它不切分流程，照旧跟着整条流程跑。
+        只算**真的往下游连了**的触发节点：``trigger`` 输出接到采集节点上，才说明这条路的
+        入口在哪儿。还没接线的触发节点不切分流程（整条流程照常跑），这样"先摆节点后接线"
+        的中间状态不会让别的路莫名其妙地不跑。
         """
         return [nid for nid, node in self.nodes.items()
                 if getattr(node, "is_trigger_entry", False) and self.output_links(nid, TRIGGER_PORT)]
@@ -260,13 +263,22 @@ class Graph:
 
     @classmethod
     def from_dict(cls, d: dict, registry: "NodeRegistry") -> "Graph":
+        """读回一条流程。端口已经不存在的连线会被丢掉，而不是让整个方案打不开。
+
+        节点的端口会随版本变（参数改了端口数、某个输出被去掉），老方案里那根线就无处可接。
+        为这个让 `Solution.load` 整个失败太重了——用户会以为方案文件坏了。丢掉那根线并写一条
+        警告，其余部分照常打开；流程里缺了输入的节点在「检查流程」里本来就看得见。
+        """
         g = cls(d.get("name", "main"))
         g.description = d.get("description", "")
         for nd in d.get("nodes", []):
             g.add_node(registry.node_from_dict(nd))
         for ld in d.get("links", []):
             link = Link.from_dict(ld)
-            g.add_link(link.src_node, link.src_port, link.dst_node, link.dst_port)
+            try:
+                g.add_link(link.src_node, link.src_port, link.dst_node, link.dst_port)
+            except GraphError as e:
+                log.warning("流程 %s：连线 %s 已失效，已丢弃（%s）", g.name, link.id, e)
         return g
 
     def save(self, path: str | Path) -> None:
