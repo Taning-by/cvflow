@@ -162,6 +162,8 @@ QPushButton:checked {{ background: {C['accent_bg']}; border-color: {C['accent']}
 QPushButton:flat {{ background: transparent; border: none; color: {C['accent']}; padding: 3px 4px; }}
 QPushButton#primary {{ background: {C['accent']}; border-color: {C['accent']}; color: #FFFFFF; font-weight: 600; }}
 QPushButton#primary:hover {{ background: {C['accent2']}; border-color: {C['accent2']}; }}
+/* 禁用的主按钮必须看起来就是禁用的：满色的"应用"按钮会让人以为还有东西可提交 */
+QPushButton#primary:disabled {{ background: {C['panel3']}; color: {C['faint']}; border-color: {C['border']}; }}
 QPushButton#danger {{ background: {C['ng_bg']}; border-color: {C['ng']}; color: {C['ng']}; }}
 QPushButton#compact {{ padding: 4px 8px; }}
 QPushButton#linklike {{ background: transparent; border: none; color: {C['accent']}; padding: 2px 6px;
@@ -399,6 +401,14 @@ def make_icon(name: str, color: str | None = None, size: int = 18) -> QIcon:
         for (x, y, dx, dy) in ((m, m, 1, 1), (s - m, m, -1, 1), (m, s - m, 1, -1), (s - m, s - m, -1, -1)):
             p.drawLine(QPointF(x, y), QPointF(x + dx * s * 0.18, y))
             p.drawLine(QPointF(x, y), QPointF(x, y + dy * s * 0.18))
+    elif name == "close":
+        p.drawLine(QPointF(m + 1, m + 1), QPointF(s - m - 1, s - m - 1))
+        p.drawLine(QPointF(s - m - 1, m + 1), QPointF(m + 1, s - m - 1))
+    elif name == "code":                      # 两个尖括号：代码 / 脚本
+        p.drawLine(QPointF(s * 0.42, m + 1), QPointF(m + 1, s / 2))
+        p.drawLine(QPointF(m + 1, s / 2), QPointF(s * 0.42, s - m - 1))
+        p.drawLine(QPointF(s * 0.58, m + 1), QPointF(s - m - 1, s / 2))
+        p.drawLine(QPointF(s - m - 1, s / 2), QPointF(s * 0.58, s - m - 1))
     p.end()
     return QIcon(pm)
 

@@ -20,8 +20,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
 from ..core.graph import Graph
 from ..core.node import Node, NodeStatus, Param
 from ..core.types import to_jsonable
+from .code_editor import CodeEditor
 from .i18n import tr
-from .theme import C, M, STATUS_COLORS, STATUS_GLYPH, STATUS_TEXT, mono_font, soft_chip_style, tabular, ui_font
+from .theme import (C, M, STATUS_COLORS, STATUS_GLYPH, STATUS_TEXT, make_icon, mono_font, soft_chip_style,
+                    tabular, ui_font)
 
 # 参数名后缀 → 单位。单位只写在控件后面，不改参数标签本身。
 _UNITS = {"_ms": "ms", "_s": "s", "_us": "µs", "_px": "px", "_pct": "%", "_deg": "°", "_mm": "mm"}
@@ -122,6 +124,7 @@ class ParamPanel(QScrollArea):
     node_enabled_changed = Signal(str, bool)
     roi_edit_requested = Signal(str, str)         # node_id, param name
     roi_show_requested = Signal(str, str)         # node_id, param name (preview on image)
+    code_edit_requested = Signal(str, str)        # node_id, param name（拿到中央的脚本区去编辑）
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -591,15 +594,24 @@ class ParamPanel(QScrollArea):
         return w
 
     def _text_widget(self, p: Param, value: Any, is_json: bool) -> QWidget:
+        """多行文本参数：JSON 用普通编辑框，代码用带行号与着色的编辑器。
+
+        面板很窄，所以代码这边还有一个"放大编辑"：把同一个参数搬到中央的脚本工作区去写
+        （布局宽得多，而且流程图和图像还在旁边看得见）。
+        """
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(M["gap_s"])
-        ed = QPlainTextEdit()
-        ed.setFont(mono_font(12))
-        ed.setMinimumHeight(60 if is_json else 160)
+        if is_json:
+            ed = QPlainTextEdit()
+            ed.setFont(mono_font(12))
+            ed.setMinimumHeight(60)
+            ed.setPlainText(json.dumps(value, indent=1, ensure_ascii=False))
+        else:
+            ed = CodeEditor(str(value or ""), font_size=12)
+            ed.setMinimumHeight(160)
         ed.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        ed.setPlainText(json.dumps(value, indent=1, ensure_ascii=False) if is_json else str(value or ""))
         row = QHBoxLayout()
         row.setSpacing(M["gap"])
         apply_btn = QPushButton(tr("Apply"))
@@ -627,6 +639,15 @@ class ParamPanel(QScrollArea):
             self._emit(p, val)
         apply_btn.clicked.connect(apply)
         row.addWidget(apply_btn)
+        if not is_json:
+            ed.apply_requested.connect(apply)          # Ctrl+Enter 也能应用，手不用离开键盘
+            big = QPushButton(tr("Edit in centre"))
+            big.setIcon(make_icon("expand", C["muted"], 14))
+            big.setFixedHeight(M["ctl_h"])
+            big.setToolTip(tr("Open this code in the central script area (more room, flow still visible)"))
+            big.clicked.connect(lambda: self._node is not None
+                                and self.code_edit_requested.emit(self._node.id, p.name))
+            row.addWidget(big)
         row.addWidget(status, 1)
         lay.addWidget(ed)
         lay.addLayout(row)

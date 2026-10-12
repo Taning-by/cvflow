@@ -47,6 +47,27 @@ UI = {
     "state:": "状态：", "not set": "未设置", "Draw": "绘制", "Show": "显示",
     "Drag a rectangle on the image": "在图像上拖出矩形", "Apply": "应用",
     "JSON error: {msg} (line {line})": "JSON 错误：{msg}（第 {line} 行）",
+    "Edit in centre": "放大编辑",
+    "Open this code in the central script area (more room, flow still visible)":
+        "把这段代码放到中央的脚本工作区去写（地方大得多，流程图还看得见）",
+    # 中央的脚本工作区
+    "Script": "脚本", "Node and parameter being edited": "正在编辑的节点与参数",
+    "Apply the code to the node (Ctrl+Enter)": "把代码应用到节点（Ctrl+Enter）",
+    "Script changes were applied before saving.": "保存前已把脚本的修改应用到节点。",
+    "Revert": "还原", "Go back to the code the node is running": "回到节点当前正在用的代码",
+    "Maximise the script area": "最大化脚本工作区", "Close the script area": "关闭脚本工作区",
+    "Script editor in the centre": "脚本编辑区（中央）",
+    "Edit the selected script node's code in the central area": "在中央工作区编辑选中脚本节点的代码",
+    "{name} has no script parameter.": "{name} 没有脚本参数。",
+    "This flow has no script node yet (add one from the Nodes panel).":
+        "当前流程里还没有脚本节点（可从左侧节点库添加 Python 脚本）。",
+    "Script not applied": "脚本尚未应用",
+    "Apply the script changes to '{name}'?": "把脚本的修改应用到「{name}」吗？",
+    "Script changes were discarded.": "脚本的修改已丢弃。",
+    "edited – press Ctrl+Enter to apply": "已修改，按 Ctrl+Enter 应用",
+    "applied": "已应用", "same as the node's code": "与节点当前代码一致",
+    "read-only in run mode": "运行模式下只读（退出运行模式才能改脚本）",
+    "line": "行", "col": "列",
     # results panel
     "no run yet": "尚未运行", "Value": "值", "Status / ms": "状态 / 毫秒", "Published": "发布的结果",
     "{status}  ·  run {id}  ·  {ms:.1f} ms": "{status}  ·  第 {id} 次  ·  {ms:.1f} ms",

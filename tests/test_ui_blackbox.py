@@ -1,6 +1,6 @@
 """界面黑盒测试：通过用户可见的操作（菜单、工具栏、鼠标、键盘、对话框、表格编辑）驱动界面，
 检查用户可见的结果。测试函数命名 test_ui_<功能区>_<场景>，报告脚本据此归类。
-功能区：startup file flow palette editor params run image results variables log comm camera plugins help
+功能区：startup file flow palette editor params script run image results variables log comm camera plugins help
 """
 from __future__ import annotations
 
@@ -194,8 +194,10 @@ def test_ui_startup_layout_and_title(win):
     assert "demo_holes.json" in win.windowTitle()
     titles = {d.windowTitle() for d in win.findChildren(__import__("PySide6.QtWidgets", fromlist=["QDockWidget"]).QDockWidget)}
     assert {"节点库", "参数", "输出"} <= titles                      # 左 / 右 / 底 三个停靠面板
-    assert win.center.count() == 2                                  # 中央：图像与流程两个主工作区
+    assert win.center.count() == 3                                  # 中央：图像、流程、脚本三个工作区
     assert win.center.widget(0) is win.image_pane and win.center.widget(1) is win.flow_pane
+    assert win.center.widget(2) is win.code_pane and win.code_pane.isHidden()   # 脚本区按需出现
+    assert win._visible_panes() == [0, 1]
     assert win.image_view.isVisible() and win.view.isVisible()
     assert [win.bottom_tabs.tabText(i) for i in range(win.bottom_tabs.count())] == ["结果", "通信", "变量", "日志"]
     assert win.flow_combo.currentText() == "main" and win.flow_combo.count() == 2
@@ -540,6 +542,180 @@ def test_ui_params_disabling_a_model_node_unloads_its_weights(win, app, tmp_path
         pump(app, 50)
     assert active_sessions() == before + 1                           # 重新启用后又加载回来
     node.teardown()
+
+
+# =============================================================== 脚本编辑区（中央）
+def add_script_node(win, app, code: str | None = None):
+    node = win.scene.add_node("script.python", QPointF(0, 520))
+    if code is not None:
+        win._on_param_changed(node.id, "code", code)
+    win.scene.select_node(node.id)
+    pump(app)
+    return node
+
+
+def test_ui_script_opens_in_the_centre_from_the_param_panel(win, app):
+    """参数面板里的"放大编辑"把代码搬到中央工作区：地方大得多，流程图还在旁边。"""
+    node = add_script_node(win, app)
+    assert win.code_pane.isHidden()                      # 平时不占地方
+    button(win.param_panel.widget(), "放大编辑").click(); pump(app)
+    assert not win.code_pane.isHidden() and win._visible_panes() == [0, 1, 2]
+    assert win.code_edit.toPlainText() == node.get("code")
+    assert node.name in win.code_title.text()
+    sizes = win.center.sizes()
+    assert sizes[2] > 200 and min(sizes) > 0             # 中央真的分到了一大块
+    assert win.code_status.text() == "与节点当前代码一致"
+
+
+def test_ui_script_edit_and_apply_takes_effect_on_the_next_run(win, app):
+    """在中央改完按 Ctrl+S，节点立刻用新代码跑。"""
+    node = add_script_node(win, app)
+    assert win.open_code_editor(node.id)
+    win.code_edit.setPlainText("def process(ctx, inputs, params, state):\n    return {'out1': 123}\n")
+    pump(app)
+    assert win.code_status.text().startswith("已修改") and win.btn_code_apply.isEnabled()
+    win.code_edit.setFocus(); pump(app)
+    QTest.keyClick(win.code_edit, Qt.Key_Return, Qt.ControlModifier); pump(app)
+    assert win.code_status.text() == "已应用" and not win.btn_code_apply.isEnabled()
+    assert "123" in node.get("code")
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    row = win.results_panel.tree.findItems("Python 脚本", Qt.MatchExactly, 0)[0]
+    assert any(row.child(i).text(0) == "out1" and row.child(i).text(1) == "123" for i in range(row.childCount()))
+
+
+def dblclick_node(win, app, node) -> None:
+    """在画布上双击某个节点。
+
+    先把它移到视野中间（离屏窗口的视口很小），再挑一个**只命中它**的位置——
+    演示方案里的节点卡片挨得很近，正中心常常被相邻节点盖住。
+    """
+    item = win.scene.node_items[node.id]
+    win.view.centerOn(item); pump(app)
+    rect = item.sceneBoundingRect()
+    for dx, dy in ((0.5, 0.5), (0.5, 0.12), (0.2, 0.12), (0.8, 0.12), (0.2, 0.88), (0.8, 0.88)):
+        pos = view_pos(win.view, QPointF(rect.left() + rect.width() * dx, rect.top() + rect.height() * dy))
+        if win.view.itemAt(pos) is item:
+            # 真实的双击是"按下—抬起—双击—抬起"。少了抬手，场景会一直把鼠标抓在这个图元上，
+            # 后面点别处也还算在它身上（这正是只发 DblClick 时测出来的假象）。
+            mouse(app, win.view.viewport(), QEvent.MouseButtonPress, pos)
+            mouse(app, win.view.viewport(), QEvent.MouseButtonRelease, pos)
+            mouse(app, win.view.viewport(), QEvent.MouseButtonDblClick, pos)
+            mouse(app, win.view.viewport(), QEvent.MouseButtonRelease, pos)
+            pump(app)
+            return
+    raise AssertionError(f"画布上找不到只命中「{node.name}」的位置")
+
+
+def test_ui_script_double_click_on_the_node_opens_the_editor(win, app):
+    """双击脚本节点＝打开中央编辑区；双击别的节点不该弹出来。"""
+    node = add_script_node(win, app)
+    dblclick_node(win, app, node)
+    assert not win.code_pane.isHidden() and win._code_target[1] == node.id
+    win._close_code_pane(ask=False); pump(app)
+    dblclick_node(win, app, node_by_name(win, "孔"))
+    assert win.code_pane.isHidden()
+
+
+def test_ui_script_maximise_and_restore(win, app):
+    """脚本区可以独占中央，再点一次回到原比例（和图像/流程的最大化是同一套行为）。"""
+    node = add_script_node(win, app)
+    win.open_code_editor(node.id); pump(app)
+    shared = win.center.sizes()
+    win.btn_expand_code.click(); pump(app)
+    assert win.center.sizes()[2] == sum(shared) and win.btn_expand_code.isChecked()
+    win.btn_expand_code.click(); pump(app)
+    assert min(win.center.sizes()) > 0 and not win.btn_expand_code.isChecked()
+
+
+def test_ui_script_closing_with_unapplied_changes_asks_first(win, app, modal):
+    """关掉编辑区时还有没应用的改动：要问一句，别把人写的代码悄悄丢掉。"""
+    from PySide6.QtWidgets import QMessageBox
+    node = add_script_node(win, app)
+    win.open_code_editor(node.id); pump(app)
+    win.code_edit.setPlainText("def process(ctx, inputs, params, state):\n    return {'out1': 7}\n")
+    pump(app)
+    modal.answers["question"] = QMessageBox.Cancel
+    win._close_code_pane(); pump(app)
+    assert not win.code_pane.isHidden()                  # 取消：留在编辑区继续改
+    modal.answers["question"] = QMessageBox.Apply
+    win._close_code_pane(); pump(app)
+    assert win.code_pane.isHidden() and "out1': 7" in node.get("code")
+    assert any("应用到" in t for t in modal.texts("question"))
+
+
+def test_ui_script_close_button_asks_too(win, app, modal):
+    """标题栏上的"关闭"按钮走的是同一条路：有未应用的改动也要先问（回归）。
+
+    Qt 的 clicked 信号带一个 bool，直接把它接到 _close_code_pane 上会把"要不要问"
+    变成 False，按一下就把人刚写的代码丢了。
+    """
+    from PySide6.QtWidgets import QMessageBox, QToolButton
+    node = add_script_node(win, app)
+    win.open_code_editor(node.id); pump(app)
+    win.code_edit.setPlainText("def process(ctx, inputs, params, state):\n    return {'out1': 9}\n")
+    pump(app)
+    close = next(b for b in win.code_pane.findChildren(QToolButton)
+                 if b.toolTip() == "关闭脚本工作区")
+    modal.answers["question"] = QMessageBox.Cancel
+    close.click(); pump(app)
+    assert not win.code_pane.isHidden()                  # 问过了，而且用户取消了
+    modal.answers["question"] = QMessageBox.Apply
+    close.click(); pump(app)
+    assert win.code_pane.isHidden() and "out1': 9" in node.get("code")
+
+
+def test_ui_script_saving_the_solution_applies_pending_code(win, app, tmp_path):
+    """按 Ctrl+S 保存方案时，脚本区里没应用的代码要先落到节点上，不能存了个旧版本。"""
+    node = add_script_node(win, app)
+    win.open_code_editor(node.id); pump(app)
+    win.code_edit.setPlainText("def process(ctx, inputs, params, state):\n    return {'out1': 5}\n")
+    pump(app)
+    out = tmp_path / "saved.json"
+    assert win.save_solution(str(out))
+    assert "out1': 5" in node.get("code") and not win._code_dirty()
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    codes = [n["values"].get("code", "") for f in saved["flows"] for n in f["nodes"]]
+    assert any("out1': 5" in c for c in codes)         # 写进文件里的是新代码
+
+
+def test_ui_script_pane_follows_the_node(win, app):
+    """切流程 / 删节点之后编辑区自己收起来，不会停在一个已经不存在的节点上。"""
+    node = add_script_node(win, app)
+    win.open_code_editor(node.id); pump(app)
+    win.flow_combo.setCurrentText("learning"); pump(app)
+    assert win.code_pane.isHidden() and win._code_target is None
+    win.flow_combo.setCurrentText("main"); pump(app)
+    win.open_code_editor(node.id); pump(app)
+    win.scene.select_node(node.id)
+    win.scene.remove_selected(); pump(app)
+    assert win.code_pane.isHidden() and win._code_target is None
+
+
+def test_ui_script_is_read_only_in_run_mode(win, app):
+    """运行模式下参数面板整体锁住，脚本也一样：产线在跑，不能边跑边改算法。"""
+    node = add_script_node(win, app)
+    win.open_code_editor(node.id); pump(app)
+    win.toggle_run_mode(True); pump(app)
+    assert win.code_edit.isReadOnly() and not win.btn_code_apply.isEnabled()
+    assert "只读" in win.code_status.text()
+    win.toggle_run_mode(False); pump(app)
+    assert not win.code_edit.isReadOnly()
+
+
+def test_ui_script_editor_indents_like_python(win, app):
+    """编辑器按 Python 的习惯缩进：Tab 四个空格、冒号换行多缩一级、Shift+Tab 退一级。"""
+    node = add_script_node(win, app, code="x = 1\n")
+    win.open_code_editor(node.id); pump(app)
+    ed = win.code_edit
+    ed.selectAll()
+    QTest.keyClicks(ed, "def f():")
+    QTest.keyClick(ed, Qt.Key_Return)
+    QTest.keyClicks(ed, "pass")
+    assert ed.toPlainText() == "def f():\n    pass"          # 冒号之后自动缩进
+    QTest.keyClick(ed, Qt.Key_Backtab)
+    assert ed.toPlainText() == "def f():\npass"
+    QTest.keyClick(ed, Qt.Key_Tab)
+    assert ed.toPlainText() == "def f():\n    pass"
 
 
 # =============================================================== 运行控制

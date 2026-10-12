@@ -20,6 +20,7 @@ from ..core.events import EventBus
 from ..core.types import Image, Overlay, Rect
 from .bridge import EventBridge
 from .camera_dialog import CameraDialog
+from .code_editor import CodeEditor
 from .comm_panel import CommPanel
 from .i18n import tr
 from .image_view import ImageView
@@ -38,6 +39,9 @@ OUTPUT_PICK = "__output__"      # 图像选择框里代表"节点输出"的标�
 class MainWindow(QMainWindow):
     preload_message = Signal(str)        # 后台预加载线程 → 状态栏（跨线程只能走信号）
 
+    #: 中央三个工作区（图像、流程、脚本）均分时的相对权重。脚本要写代码，给得和图像一样宽。
+    CENTER_WEIGHTS = (3.0, 2.0, 3.0)
+
     def __init__(self, solution_path: str | None = None) -> None:
         super().__init__()
         self.setWindowTitle("CVFlow")
@@ -55,6 +59,9 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._pending_result: RunResult | None = None
         self._center_sizes: list[int] = []
+        self._center_shape: tuple[int, ...] = ()   # 上面那组尺寸属于哪一种可见组合
+        self._code_target: tuple[str, str, str] | None = None   # 脚本区在编辑 (流程, 节点, 参数)
+        self._code_applied = ""                    # 已应用的脚本原文，用来判断"有没有改动"
         self._default_docks = False
         self._preloading: set[str] = set()      # 正在后台加载模型的节点，避免重复开线程
 
@@ -102,6 +109,7 @@ class MainWindow(QMainWindow):
         self.scene = NodeScene(self)
         self.view = NodeView(self.scene)
         self.scene.node_selected.connect(self._on_node_selected)
+        self.scene.node_double_clicked.connect(self._on_node_double_clicked)
         self.scene.node_enabled_changed.connect(self._on_node_enabled_changed)
         self.scene.graph_changed.connect(self._on_graph_changed)
         self.scene.trigger_requested.connect(self._on_trigger_requested)
@@ -109,18 +117,20 @@ class MainWindow(QMainWindow):
         self.scene.branch_busy = lambda nid: bool(self.runner and self.runner.branch_busy(nid))
         self.scene.message.connect(lambda m: self.statusBar().showMessage(m, 4000))
 
-        # ---- 中央：图像与流程两个主工作区 ----
+        # ---- 中央：图像、流程、脚本三个主工作区（脚本按需出现）----
         self.image_pane = self._build_image_pane()
         self.flow_pane = self._build_flow_pane()
+        self.code_pane = self._build_code_pane()
         self.center = QSplitter(Qt.Horizontal)
         self.center.setObjectName("center_splitter")
         self.center.setHandleWidth(6)
-        self.center.addWidget(self.image_pane)
-        self.center.addWidget(self.flow_pane)
-        self.center.setStretchFactor(0, 3)
-        self.center.setStretchFactor(1, 2)
-        self.center.setCollapsible(0, True)
-        self.center.setCollapsible(1, True)
+        self.center_panes = [self.image_pane, self.flow_pane, self.code_pane]
+        self.center_buttons = [self.btn_expand_image, self.btn_expand_flow, self.btn_expand_code]
+        for i, pane in enumerate(self.center_panes):
+            self.center.addWidget(pane)
+            self.center.setStretchFactor(i, int(self.CENTER_WEIGHTS[i]))
+            self.center.setCollapsible(i, True)
+        self.code_pane.hide()                   # 写脚本时才出现，平时不占地方
         self.center.splitterMoved.connect(lambda *_: self._sync_expand_buttons())
         host = QWidget()
         hl = QVBoxLayout(host)
@@ -141,6 +151,7 @@ class MainWindow(QMainWindow):
         self.param_panel.node_enabled_changed.connect(self.scene.set_node_enabled)
         self.param_panel.roi_edit_requested.connect(self._begin_roi_edit)
         self.param_panel.roi_show_requested.connect(self._show_roi)
+        self.param_panel.code_edit_requested.connect(self.open_code_editor)
         self.dock_params = self._dock(tr("Parameters"), self.param_panel, Qt.RightDockWidgetArea, "dock_params")
         self.dock_params.setMinimumWidth(260)
 
@@ -297,6 +308,203 @@ class MainWindow(QMainWindow):
         body.addWidget(self.view, 1)
         return pane
 
+    def _build_code_pane(self) -> QWidget:
+        """脚本工作区：Python 脚本节点的代码在这里写。
+
+        放在中央而不是弹窗里，是因为写脚本时要**一边看流程和图像**：节点还选着、运行结果还在，
+        改完按 Ctrl+Enter 应用就能立刻看到这一帧的变化。参数面板里那个小框留着改一两行用。
+        """
+        pane, hl, body = self._pane()
+        self.code_title = ElidedLabel(tr("Script"), Qt.ElideMiddle)
+        self.code_title.setFont(ui_font(M["font_title"], True))
+        self.code_title.setMinimumWidth(56)
+        self.code_title.setToolTip(tr("Node and parameter being edited"))
+        self.code_edit = CodeEditor(font_size=M["font"])
+        self.code_edit.apply_requested.connect(self._apply_code)
+        self.code_edit.textChanged.connect(self._sync_code_state)
+        self.code_edit.cursorPositionChanged.connect(self._sync_code_state)
+        self.btn_code_apply = QPushButton(tr("Apply"))
+        self.btn_code_apply.setObjectName("primary")
+        self.btn_code_apply.setFixedHeight(26)
+        self.btn_code_apply.setToolTip(tr("Apply the code to the node (Ctrl+Enter)"))
+        self.btn_code_apply.clicked.connect(self._apply_code)
+        self.btn_code_revert = QPushButton(tr("Revert"))
+        self.btn_code_revert.setFixedHeight(26)
+        self.btn_code_revert.setToolTip(tr("Go back to the code the node is running"))
+        self.btn_code_revert.clicked.connect(self._revert_code)
+        self.btn_expand_code = self._tool_button("expand", tr("Maximise the script area"),
+                                                 lambda: self._toggle_expand(2), checkable=True)
+        # 注意包一层 lambda：clicked 会带一个 bool，直连过去会变成 ask=False，
+        # 于是"关闭"按钮会把没应用的代码悄悄丢掉。
+        close = self._tool_button("close", tr("Close the script area"), lambda: self._close_code_pane())
+        self.code_header_sep = self._separator()
+        hl.addWidget(self.code_title, 1)
+        hl.addWidget(self.code_header_sep)
+        hl.addWidget(self.btn_code_revert)
+        hl.addWidget(self.btn_code_apply)
+        hl.addWidget(self.btn_expand_code)
+        hl.addWidget(close)
+        self.code_header = hl.parentWidget()
+        body.addWidget(self.code_edit, 1)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(M["gap_l"], 3, M["gap_l"], 3)
+        self.code_status = ElidedLabel("")
+        self.code_status.setObjectName("muted")
+        self.code_status.setFont(ui_font(M["font_s"]))
+        self.code_pos = QLabel("")
+        self.code_pos.setObjectName("muted")
+        self.code_pos.setFont(tabular(ui_font(M["font_s"])))
+        foot.addWidget(self.code_status, 1)
+        foot.addWidget(self.code_pos)
+        foot_w = QFrame()
+        foot_w.setObjectName("paneFooter")
+        foot_w.setStyleSheet(f"QFrame#paneFooter {{ background: {C['panel']}; border-top: 1px solid {C['border']}; }}")
+        foot_w.setLayout(foot)
+        body.addWidget(foot_w)
+        return pane
+
+    # ---- 脚本工作区 ----
+    def _code_params(self, node: Node) -> list[str]:
+        """节点上可以放到中央编辑的参数（``code`` 类型，实际上就是 Python 脚本）。"""
+        return [p.name for p in node.params if p.kind == "code"]
+
+    def _code_node(self) -> Node | None:
+        """脚本区正在编辑的节点；流程被切走或节点被删掉时返回 None。"""
+        if self._code_target is None or self.solution is None:
+            return None
+        flow, node_id, _ = self._code_target
+        graph = self.solution.flows.get(flow)
+        return graph.nodes.get(node_id) if graph else None
+
+    def _code_dirty(self) -> bool:
+        return self._code_target is not None and self.code_edit.toPlainText() != self._code_applied
+
+    def open_code_editor(self, node_id: str, param: str = "") -> bool:
+        """在中央的脚本区打开某个节点的代码参数。"""
+        g = self.graph
+        node = g.nodes.get(node_id) if g else None
+        if node is None:
+            return False
+        params = self._code_params(node)
+        if not params:
+            self.statusBar().showMessage(tr("{name} has no script parameter.").format(name=node.name), 4000)
+            return False
+        param = param if param in params else params[0]
+        if self._code_target != (self.current_flow, node_id, param) and not self._flush_code_pane():
+            return False                       # 上一份改动还没处理完，用户选择了取消
+        self._code_target = (self.current_flow, node_id, param)
+        self._code_applied = str(node.get(param) or "")
+        self.code_edit.setPlainText(self._code_applied)
+        self.code_title.setText(f"{node.name} · {tr(node.param_def(param).label)}")
+        self.code_title.setToolTip(f"{node.name} [{node.type_id}] · {param}")
+        if self.code_pane.isHidden():
+            self.code_pane.show()
+            self._center_shape = ()            # 可见组合变了：按权重重新分，别沿用两栏的比例
+            self._share_center()
+        self.code_edit.setFocus()
+        self._sync_code_state()
+        return True
+
+    def _apply_code(self) -> None:
+        """把编辑区的代码写回节点（和参数面板里按"应用"是同一条路径）。"""
+        node = self._code_node()
+        if node is None or self._code_target is None:
+            self._close_code_pane(ask=False)
+            return
+        flow, node_id, param = self._code_target
+        self._on_param_changed(node_id, param, self.code_edit.toPlainText())
+        self._code_applied = str(node.get(param) or "")
+        if self.selected_node == node_id and self.graph is not None:
+            self.param_panel.set_node(node, self.graph)   # 面板里那个小框也跟着更新
+            self.param_panel.set_result(self._node_result(node_id))
+        self._sync_code_state(applied=True)
+
+    def _revert_code(self) -> None:
+        node = self._code_node()
+        if node is None or self._code_target is None:
+            return
+        self.code_edit.setPlainText(self._code_applied)
+        self._sync_code_state()
+
+    def _flush_code_pane(self) -> bool:
+        """关闭 / 切换前处理未应用的改动。返回 False 表示用户选择了取消。"""
+        node = self._code_node()
+        if node is None or not self._code_dirty():
+            return True
+        r = QMessageBox.question(self, tr("Script not applied"),
+                                 tr("Apply the script changes to '{name}'?").format(name=node.name),
+                                 QMessageBox.Apply | QMessageBox.Discard | QMessageBox.Cancel)
+        if r == QMessageBox.Cancel:
+            return False
+        if r == QMessageBox.Apply:
+            self._apply_code()
+        return True
+
+    def _close_code_pane(self, ask: bool = True) -> None:
+        if ask and not self._flush_code_pane():
+            return
+        if self._code_dirty():
+            self.statusBar().showMessage(tr("Script changes were discarded."), 4000)
+        self._code_target = None
+        self._code_applied = ""
+        self.code_edit.setPlainText("")
+        if not self.code_pane.isHidden():
+            self.code_pane.hide()
+            self._center_shape = ()
+            self._share_center()
+
+    def _sync_code_from_node(self) -> None:
+        """同一个参数在别处被改了（参数面板里那个小框）：脚本区跟上，但不覆盖未应用的改动。"""
+        node = self._code_node()
+        if node is None or self._code_target is None:
+            return
+        text = str(node.get(self._code_target[2]) or "")
+        if text == self._code_applied:
+            return
+        was_dirty = self._code_dirty()
+        self._code_applied = text
+        if not was_dirty:
+            self.code_edit.set_text_keeping_view(text)
+        self._sync_code_state()
+
+    def _sync_code_state(self, applied: bool = False) -> None:
+        """底栏：改了没应用 / 已应用 / 光标位置。改动没应用时"应用"按钮是主色，提醒还差一步。"""
+        if self._code_target is None:
+            return
+        line, col = self.code_edit.cursor_position()
+        self.code_pos.setText(f"{tr('line')} {line}, {tr('col')} {col}")
+        dirty = self._code_dirty()
+        self.code_edit.setReadOnly(self.run_mode)
+        self.btn_code_apply.setEnabled(dirty and not self.run_mode)
+        self.btn_code_revert.setEnabled(dirty)
+        if self.run_mode:
+            # 运行模式下参数面板整体锁住，脚本也一样：产线正在跑，不该边跑边改算法
+            self.code_status.setText(tr("read-only in run mode"))
+            self.code_status.setStyleSheet(f"color:{C['muted']}")
+        elif dirty:
+            self.code_status.setText(tr("edited – press Ctrl+Enter to apply"))
+            self.code_status.setStyleSheet(f"color:{C['warn']}")
+        else:
+            self.code_status.setText(tr("applied") if applied else tr("same as the node's code"))
+            self.code_status.setStyleSheet(f"color:{C['ok'] if applied else C['muted']}")
+
+    def _edit_selected_script(self) -> None:
+        """菜单项：打开（或关掉）脚本区。没选中脚本节点时，拿当前流程里第一个来编辑。"""
+        if self._code_target is not None:
+            self._close_code_pane()
+            return
+        g = self.graph
+        if g is None:
+            return
+        node = g.nodes.get(self.selected_node) if self.selected_node else None
+        if node is None or not self._code_params(node):
+            node = next((n for n in g.nodes.values() if self._code_params(n)), None)
+        if node is None:
+            self.statusBar().showMessage(tr("This flow has no script node yet (add one from the Nodes panel)."), 5000)
+            return
+        self.scene.select_node(node.id)
+        self.open_code_editor(node.id)
+
     def eventFilter(self, obj, event):
         """窗格标题栏变窄时按优先级收起次要控件：先收分隔线和 1:1，再收说明文字。
 
@@ -314,6 +522,10 @@ class MainWindow(QMainWindow):
                 self.flow_header_sep.setVisible(w >= 360)
                 self.flow_zoom_label.setVisible(w >= 360)
                 self.flow_info.setVisible(w >= 250)
+            elif obj is getattr(self, "code_header", None):
+                w = obj.width()
+                self.code_header_sep.setVisible(w >= 340)
+                self.btn_code_revert.setVisible(w >= 300)
         return super().eventFilter(obj, event)
 
     @staticmethod
@@ -325,22 +537,48 @@ class MainWindow(QMainWindow):
         return f
 
     # ---- 中央区域的比例 / 排列 / 展开 ----
-    def _toggle_expand(self, index: int) -> None:
-        sizes = self.center.sizes()
-        total = sum(sizes) or 1
-        if min(sizes) <= 2:                       # 已经展开了某一侧 → 还原成记忆中的比例
-            self.center.setSizes(self._center_sizes or [int(total * 0.55), int(total * 0.45)])
+    def _visible_panes(self) -> list[int]:
+        """当前露出来的工作区序号。脚本区是按需出现的，所有比例都只在可见的之间分。"""
+        return [i for i, pane in enumerate(self.center_panes) if not pane.isHidden()]
+
+    def _share_center(self, remembered: bool = False) -> None:
+        """把中央区域分给可见的工作区：``remembered`` 时优先用上次手调的比例，否则按权重。"""
+        vis = self._visible_panes()
+        total = sum(self.center.sizes()) or max(600, self.center.width() or 1200)
+        if remembered and self._center_shape == tuple(vis) and len(self._center_sizes) == len(self.center_panes):
+            self.center.setSizes([self._center_sizes[i] if i in vis else 0
+                                  for i in range(len(self.center_panes))])
         else:
-            self._center_sizes = sizes
-            self.center.setSizes([total, 0] if index == 0 else [0, total])
+            weight = sum(self.CENTER_WEIGHTS[i] for i in vis) or 1.0
+            self.center.setSizes([int(total * self.CENTER_WEIGHTS[i] / weight) if i in vis else 0
+                                  for i in range(len(self.center_panes))])
+        self._sync_expand_buttons()
+
+    def _expanded_pane(self) -> int | None:
+        """某一个工作区独占时返回它的序号，否则 None。"""
+        vis = self._visible_panes()
+        if len(vis) < 2:
+            return None
+        sizes = self.center.sizes()
+        big = [i for i in vis if sizes[i] > 2]
+        return big[0] if len(big) == 1 else None
+
+    def _toggle_expand(self, index: int) -> None:
+        if self._expanded_pane() is not None:     # 已经有独占的 → 还原成记忆中的比例
+            self._share_center(remembered=True)
+            return
+        total = sum(self.center.sizes()) or 1
+        self.center.setSizes([total if i == index else 0 for i in range(len(self.center_panes))])
         self._sync_expand_buttons()
 
     def _sync_expand_buttons(self) -> None:
+        expanded = self._expanded_pane()
+        for i, btn in enumerate(self.center_buttons):
+            btn.setChecked(expanded == i)
+        vis = self._visible_panes()
         sizes = self.center.sizes()
-        self.btn_expand_image.setChecked(len(sizes) > 1 and sizes[1] <= 2)
-        self.btn_expand_flow.setChecked(len(sizes) > 1 and sizes[0] <= 2)
-        if min(sizes or [1]) > 2:
-            self._center_sizes = sizes
+        if len(vis) > 1 and min(sizes[i] for i in vis) > 2:
+            self._center_sizes, self._center_shape = list(sizes), tuple(vis)
 
     def _toggle_orientation(self) -> None:
         vertical = self.center.orientation() == Qt.Horizontal
@@ -353,9 +591,8 @@ class MainWindow(QMainWindow):
         tip = tr("Stack image above flow") if horizontal else tr("Place image left of flow")
         self.btn_orient.setToolTip(tip)
         self.btn_orient.setAccessibleName(tip)
-        total = sum(self.center.sizes()) or 1000
-        self.center.setSizes([int(total * 0.55), int(total * 0.45)])
-        self._center_sizes = self.center.sizes()
+        self._center_shape = ()                   # 换了排列方向，上次的比例不再适用
+        self._share_center()
 
     def _restore_center_layout(self, s: QSettings) -> None:
         """恢复上次的图像/流程排列与比例；没有记录时用默认的左右 55:45。"""
@@ -365,10 +602,11 @@ class MainWindow(QMainWindow):
             sizes = [int(x) for x in sizes] if sizes else []
         except (TypeError, ValueError):
             sizes = []
-        if len(sizes) == 2 and min(sizes) > 2:
-            self.center.setSizes(sizes)
-            self._center_sizes = sizes
-        self._sync_expand_buttons()
+        # 老版本只存了两个值（没有脚本区）：补一个 0 当脚本区的尺寸，照样能用
+        sizes = sizes + [0] * (len(self.center_panes) - len(sizes))
+        if len(sizes) == len(self.center_panes) and min(sizes[:2]) > 2:
+            self._center_sizes, self._center_shape = sizes, (0, 1)
+        self._share_center(remembered=True)
 
     def _reset_layout(self) -> None:
         for d in (self.dock_palette, self.dock_params, self.dock_bottom):
@@ -546,6 +784,11 @@ class MainWindow(QMainWindow):
             act.setText(d.windowTitle())
             v.addAction(act)
         v.addSeparator()
+        self.act_script_pane = QAction(tr("Script editor in the centre"), self, shortcut="Ctrl+E",
+                                       triggered=self._edit_selected_script)
+        self.act_script_pane.setToolTip(tr("Edit the selected script node's code in the central area"))
+        v.addAction(self.act_script_pane)
+        v.addSeparator()
         v.addAction(QAction(tr("Image left of flow"), self, triggered=lambda: self.set_center_orientation(Qt.Horizontal)))
         v.addAction(QAction(tr("Image above flow"), self, triggered=lambda: self.set_center_orientation(Qt.Vertical)))
         v.addSeparator()
@@ -581,6 +824,7 @@ class MainWindow(QMainWindow):
         self.runners = {}
 
     def _bind_solution(self, sol: Solution) -> None:
+        self._close_code_pane(ask=False)
         self._teardown_current()
         self.solution = sol
         self.bridge = EventBridge(sol.bus, self)
@@ -639,6 +883,11 @@ class MainWindow(QMainWindow):
 
     def save_solution(self, path: str | None = None) -> bool:
         assert self.solution is not None
+        if self._code_dirty():
+            # Ctrl+S 在主窗口里是"保存方案"，用户按下它就是想把写的东西存住，
+            # 所以先把脚本区里没应用的代码应用到节点上，再写文件。
+            self._apply_code()
+            self.statusBar().showMessage(tr("Script changes were applied before saving."), 4000)
         path = path or (str(self.solution.path) if self.solution.path else None)
         if not path:
             return self._save_as_dialog()
@@ -671,6 +920,8 @@ class MainWindow(QMainWindow):
         return self.save_solution(path)
 
     def _confirm_discard(self) -> bool:
+        if not self._flush_code_pane():        # 脚本改了还没应用：先问清楚，别悄悄丢掉
+            return False
         if not self._dirty:
             return True
         r = QMessageBox.question(self, tr("Unsaved changes"), tr("Save changes to the current solution?"),
@@ -714,6 +965,8 @@ class MainWindow(QMainWindow):
     def _set_current_flow(self, name: str) -> None:
         if not self.solution or not name or name not in self.solution.flows:
             return
+        if self._code_target is not None and self._code_target[0] != name:
+            self._close_code_pane()            # 脚本区只编辑当前流程里的节点
         self.current_flow = name
         self.flow_title.setText(name)
         self.scene.set_graph(self.solution.flows[name])
@@ -780,6 +1033,8 @@ class MainWindow(QMainWindow):
         self.scene.add_node(type_id, QPointF(pos.x() - 80, pos.y() - 30))
 
     def _on_graph_changed(self) -> None:
+        if self._code_target is not None and self._code_node() is None:
+            self._close_code_pane(ask=False)   # 正在编辑的节点被删了
         self._mark_dirty()
         self._update_flow_info()
         self._schedule_autorun()
@@ -805,6 +1060,13 @@ class MainWindow(QMainWindow):
         visible = self.view.mapToScene(self.view.viewport().rect()).boundingRect()
         if not visible.contains(item.sceneBoundingRect()):
             self.view.ensureVisible(item, 60, 60)
+
+    def _on_node_double_clicked(self, node_id: str) -> None:
+        """双击节点：是脚本节点就把代码拿到中央编辑，其它节点保持原样（只选中）。"""
+        g = self.graph
+        node = g.nodes.get(node_id) if g else None
+        if node is not None and self._code_params(node):
+            self.open_code_editor(node_id)
 
     def _on_node_enabled_changed(self, node_id: str, enabled: bool) -> None:
         """重新启用的节点把模型再加载回来；禁用时节点自己已经把权重放掉了。"""
@@ -885,6 +1147,8 @@ class MainWindow(QMainWindow):
             if derived:
                 self.statusBar().showMessage("已按模型配置自动填入：" + "、".join(
                     node.param_def(k).label or k for k in derived), 6000)
+        if self._code_target == (self.current_flow, node_id, name):
+            self._sync_code_from_node()     # 同一个脚本在参数面板里被改了：中央那份跟上
         if name in getattr(node, "preload_params", ()):
             self._preload_node(node)        # 选好模型/改了后端：立刻在后台加载，别等到运行时才等
         self._mark_dirty()
@@ -1029,6 +1293,7 @@ class MainWindow(QMainWindow):
             self._apply_continuous(self.continuous.isChecked())
         self.scene.set_locked(on)
         self.param_panel.set_locked(on)
+        self._sync_code_state()
         self.palette.setEnabled(not on)
         self.flow_combo.setEnabled(not on)
         for a in (self.act_add_flow, self.act_del_flow, self.act_new, self.act_open):
