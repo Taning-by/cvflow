@@ -47,6 +47,21 @@ def roi_params(w: int = 628, h: int = 768) -> list[Param]:
     ]
 
 
+def roi_auto_enable(node: Node, name: str, value) -> None:
+    """在图上摆了一个框，就是想裁——别再要求额外去勾一个开关。
+
+    摆完框却忘了勾「固定 ROI 裁剪」，节点会原样输出整张原图，下游深度学习节点把整图缩放到
+    模型输入尺寸照样能跑出结果，只是全错；现象是"显示的是原图、轨迹不在 ROI 里"，
+    很难想到是少勾了一个勾。所以这里自动打开，用户要关随时能关。
+    """
+    if name != "roi" or not value or node.get("roi_enabled"):
+        return
+    r = Rect.from_dict(value) if isinstance(value, dict) else value
+    if r is None or r.is_empty():
+        return
+    node.values["roi_enabled"] = True
+
+
 def apply_roi(node: Node, img: Image, ctx) -> tuple[Image, Rect]:
     """按节点上的固定 ROI 裁一块，并给出这块图在原图里的位置。
 
@@ -76,7 +91,7 @@ def apply_roi(node: Node, img: Image, ctx) -> tuple[Image, Rect]:
     else:
         raise NodeError(f"ROI ({x},{y} {w}×{h}) 和图像（{img.width}×{img.height}）没有交集")
     if sx1 - x < w or sy1 - y < h:
-        ctx.log(f"ROI {w}×{h} 超出图像 {img.width}×{img.height}，缺的部分补黑", "warn")
+        ctx.log(f"ROI {w}×{h} 超出图像 {img.width}×{img.height}，缺的部分补黑", "warning")
     cropped = img.derive(out)
     cropped.meta["roi"] = [x, y, w, h]        # 下游把坐标换算回原图要用它
     return cropped, Rect(float(x), float(y), float(w), float(h))
@@ -113,6 +128,9 @@ class ImageFile(Node):
 
     def roi_reference_image(self):
         return self._full
+
+    def on_param_changed(self, name, value):
+        roi_auto_enable(self, name, value)
 
     def process(self, ctx, inputs):
         path = paths.resolve(self.get("path"))
@@ -160,6 +178,9 @@ class ImageFolder(Node):
 
     def roi_reference_image(self):
         return self._full
+
+    def on_param_changed(self, name, value):
+        roi_auto_enable(self, name, value)
 
     def _scan(self):
         d = paths.resolve(self.get("directory"))
@@ -244,6 +265,9 @@ class CameraSource(Node):
 
     def roi_reference_image(self):
         return self._full
+
+    def on_param_changed(self, name, value):
+        roi_auto_enable(self, name, value)
 
     def _config(self):
         src = self.get("source")

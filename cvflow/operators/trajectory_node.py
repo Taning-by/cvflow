@@ -101,6 +101,7 @@ class OnnxTrajectory(_OnnxBase):
         w, h = int(self.get("width")), int(self.get("height"))
         r = self.rect("roi")
         data = as_bgr(img)
+        warn = ""
         # 上游（相机 / 图像节点）已经按固定 ROI 裁过了：这里就不能再裁一次，
         # 但点要换算回**原图**坐标，所以把上游裁剪的原点接上。
         up = img.meta.get("roi")
@@ -137,10 +138,14 @@ class OnnxTrajectory(_OnnxBase):
                                 "图像 %d×%d 与模型输入 %d×%d 不一致，已整图缩放后推理（内容不丢，但与训练时的尺度不同，精度会下降）"
                                 + ("；长宽比也变了" if abs(rw / max(1, rh) - w / max(1, h)) > 0.01 else ""),
                                 rw, rh, w, h)
+                # 这条每次运行都要说。整图硬缩到模型输入尺寸，结果一定是错的，而且错得很像
+                # "模型没读到 ROI"——只在日志里提醒一次的话，人翻不到，排查半天。
+                warn = (f"图像 {rw}×{rh} 与模型输入 {w}×{h} 不一致，已整图缩放后推理，结果不可用。"
+                        f"请在上游采集节点打开「固定 ROI 裁剪」并把 ROI 宽/高填成 {w}/{h}")
         if data.shape[1] != w or data.shape[0] != h:
             data = cv2.resize(data, (w, h), interpolation=cv2.INTER_AREA if w < rw else cv2.INTER_LINEAR)
         meta = {"scale": (w / max(1, rw), h / max(1, rh)), "pad": (0, 0), "orig": (img.width, img.height),
-                "roi": (x0, y0, rw, rh), "origin": (0, 0)}      # 上游没裁，图就是原图
+                "roi": (x0, y0, rw, rh), "origin": (0, 0), "warn": warn}   # 上游没裁，图就是原图
         return data, meta
 
     def _preprocess_key(self) -> tuple:
@@ -150,6 +155,8 @@ class OnnxTrajectory(_OnnxBase):
     def decode(self, ctx, outs, meta, img):
         if not outs:
             raise NodeError("模型没有输出")
+        if meta.get("warn"):
+            ctx.log(meta["warn"], "warning")       # 每次运行都报，这种错配不该只在日志里出现一次
         pts = np.asarray(outs[0], dtype=np.float32)
         pts = pts.reshape(-1, pts.shape[-1]) if pts.ndim >= 2 else pts.reshape(-1, 2)
         n = int(self.get("num_points"))
