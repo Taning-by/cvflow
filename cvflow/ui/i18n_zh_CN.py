@@ -44,6 +44,7 @@ UI = {
         "拖动改 ROI 位置；方向键微调（Shift 十倍），回车结束，Esc 还原",
     "Drag the fixed-size box on the image": "在图像上拖动这个固定尺寸的框（只改位置）",
     "Place": "放置", "(centred)": "（未放置，先按画面正中取）",
+    "Done": "完成", "Cancel": "取消", "Placing ROI {w}×{h}": "正在摆放 {w}×{h} 的 ROI",
     "Size comes from": "尺寸来自参数",
     "Set the ROI width/height first": "先把 ROI 宽/高填上",
     # parameter panel

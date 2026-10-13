@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._center_sizes: list[int] = []
         self._center_shape: tuple[int, ...] = ()   # 上面那组尺寸属于哪一种可见组合
         self._code_target: tuple[str, str, str] | None = None   # 脚本区在编辑 (流程, 节点, 参数)
+        self._roi_target: tuple[str, str] = ("", "")            # 正在摆框的 (节点, 参数)
         self._code_applied = ""                    # 已应用的脚本原文，用来判断"有没有改动"
         self._default_docks = False
         self._preloading: set[str] = set()      # 正在后台加载模型的节点，避免重复开线程
@@ -151,6 +152,7 @@ class MainWindow(QMainWindow):
         self.param_panel.node_enabled_changed.connect(self.scene.set_node_enabled)
         self.param_panel.roi_edit_requested.connect(self._begin_roi_edit)
         self.param_panel.roi_show_requested.connect(self._show_roi)
+        self.image_view.roi_edit_ended.connect(lambda: self._update_image())   # 摆完框把图像面板还回去
         self.param_panel.code_edit_requested.connect(self.open_code_editor)
         self.dock_params = self._dock(tr("Parameters"), self.param_panel, Qt.RightDockWidgetArea, "dock_params")
         self.dock_params.setMinimumWidth(260)
@@ -969,6 +971,7 @@ class MainWindow(QMainWindow):
             self._close_code_pane()            # 脚本区只编辑当前流程里的节点
         self.current_flow = name
         self.flow_title.setText(name)
+        self.image_view.cancel_roi_edit()      # 换流程了，上一个流程的框别留在这儿
         self.scene.set_graph(self.solution.flows[name])
         self.scene.set_locked(self.run_mode)
         self.view.fit_all()
@@ -1035,11 +1038,15 @@ class MainWindow(QMainWindow):
     def _on_graph_changed(self) -> None:
         if self._code_target is not None and self._code_node() is None:
             self._close_code_pane(ask=False)   # 正在编辑的节点被删了
+        if self.image_view.roi_editing and not self._roi_target_alive():
+            self.image_view.cancel_roi_edit()  # 正在摆框的节点被删了
         self._mark_dirty()
         self._update_flow_info()
         self._schedule_autorun()
 
     def _on_node_selected(self, node_id) -> None:
+        if self.image_view.roi_editing and node_id != self._roi_target[0]:
+            self.image_view.cancel_roi_edit()  # 选去别的节点了，这次摆框就此结束
         self.selected_node = node_id
         g = self.graph
         node = g.nodes.get(node_id) if (g and node_id) else None
@@ -1216,10 +1223,23 @@ class MainWindow(QMainWindow):
         self.input_pick.setVisible(len(inputs) > 1 and len(entries) > 1)
         return self.input_pick.currentData() if entries else None
 
+    def _roi_target_alive(self) -> bool:
+        """正在摆的那个框，它的节点和参数还在不在。不在就说明这次摆框已经没有意义了。"""
+        nid, pname = self._roi_target
+        g = self.graph
+        if g is None or not nid or nid not in g.nodes:
+            return False
+        try:
+            g.nodes[nid].param_def(pname)
+        except (KeyError, ValueError):
+            return False
+        return True
+
     def _begin_roi_edit(self, node_id: str, param: str) -> None:
         g = self.graph
         if g is None or node_id not in g.nodes:
             return
+        self._roi_target = (node_id, param)
         node = g.nodes[node_id]
         r = self.runner
         res = r.last_result if r else None
@@ -1378,6 +1398,10 @@ class MainWindow(QMainWindow):
         r = self.runner
         result = result or (r.last_result if r else None)
         g = self.graph
+        # 摆框时让出图像面板，否则运行结果会把正在摆框的那张图冲掉。但只在**框还有主人**时让：
+        # 节点被删了还一直让位的话，图像面板就永久空白了（删光节点重建也救不回来）。
+        if self.image_view.roi_editing and not self._roi_target_alive():
+            self.image_view.cancel_roi_edit()
         if result is None or g is None or self.image_view.roi_editing:
             if result is None:
                 self.image_view.clear()
