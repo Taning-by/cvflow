@@ -112,8 +112,13 @@ class OnnxTrajectory(_OnnxBase):
                                 "把采集节点的 ROI 宽/高改成和模型一致才是对的",
                                 data.shape[1], data.shape[0], w, h)
                 data = cv2.resize(data, (w, h), interpolation=cv2.INTER_AREA if w < data.shape[1] else cv2.INTER_LINEAR)
-            return data, {"scale": (w / max(1, up[2]), h / max(1, up[3])), "pad": (0, 0),
-                          "orig": (img.width, img.height), "roi": (ux, uy, int(up[2]), int(up[3]))}
+            # roi 是"在**送进来的这张图**里裁了哪一块"——上游已经裁好了，这里一块没再裁，所以是 (0,0)。
+            # 叠加层要画在送进来的这张图上，用的就是它。上游裁掉的那个原点单独记在 origin 里，
+            # 只在最后换算输出坐标时加回去。两者混成一个的话，叠加层会整体偏移上游的裁剪量，
+            # 画到图外面去，看着就像"模型拿到的是原图"。
+            return data, {"scale": (w / max(1, img.width), h / max(1, img.height)), "pad": (0, 0),
+                          "orig": (img.width, img.height), "roi": (0, 0, img.width, img.height),
+                          "origin": (ux, uy)}
         # ROI 配成"整图"时不做裁剪：画面多大就整张送进去，再统一缩放到输入尺寸。
         # 这样换了分辨率更大的相机也不会被悄悄切掉一角——只是分辨率变了，内容一点不少。
         if r is not None and not r.is_empty() and not self._roi_is_full():
@@ -134,7 +139,8 @@ class OnnxTrajectory(_OnnxBase):
                                 rw, rh, w, h)
         if data.shape[1] != w or data.shape[0] != h:
             data = cv2.resize(data, (w, h), interpolation=cv2.INTER_AREA if w < rw else cv2.INTER_LINEAR)
-        meta = {"scale": (w / max(1, rw), h / max(1, rh)), "pad": (0, 0), "orig": (img.width, img.height), "roi": (x0, y0, rw, rh)}
+        meta = {"scale": (w / max(1, rw), h / max(1, rh)), "pad": (0, 0), "orig": (img.width, img.height),
+                "roi": (x0, y0, rw, rh), "origin": (0, 0)}      # 上游没裁，图就是原图
         return data, meta
 
     def _preprocess_key(self) -> tuple:
@@ -154,29 +160,35 @@ class OnnxTrajectory(_OnnxBase):
         prob = float(np.asarray(outs[2]).reshape(-1)[0]) if len(outs) > 2 else 1.0
         sx, sy = meta["scale"]
         x0, y0 = meta["roi"][0], meta["roi"][1]
-        full = np.empty_like(pts)
-        full[:, 0] = pts[:, 0] / sx + x0
-        full[:, 1] = pts[:, 1] / sy + y0
+        ox, oy = meta.get("origin", (0, 0))
+        # disp = 在"送进本节点的那张图"里的坐标 → 叠加层画在它上面才对得齐
+        # full = 原图坐标（再加上上游裁掉的原点）→ 这才是输出给下游和 PLC 的
+        disp = np.empty_like(pts)
+        disp[:, 0] = pts[:, 0] / sx + x0
+        disp[:, 1] = pts[:, 1] / sy + y0
+        full = disp + np.array([ox, oy], np.float32)
+        aux_disp = np.empty_like(aux)
         aux_full = np.empty_like(aux)
         if len(aux):
-            aux_full[:, 0] = aux[:, 0] / sx + x0
-            aux_full[:, 1] = aux[:, 1] / sy + y0
+            aux_disp[:, 0] = aux[:, 0] / sx + x0
+            aux_disp[:, 1] = aux[:, 1] / sy + y0
+            aux_full = aux_disp + np.array([ox, oy], np.float32)
         valid = prob >= float(self.get("conf"))
         length = float(np.linalg.norm(np.diff(full, axis=0), axis=1).sum())
         # 只画点和连线：轨迹点本来就密，压上序号或状态文字会把点本身盖住。
         # 状态和置信度从 valid / score 两个输出口取，不往图上写。
         for i in range(n - 1):
-            ctx.add_overlay(Overlay.line(Line(float(full[i, 0]), float(full[i, 1]),
-                                              float(full[i + 1, 0]), float(full[i + 1, 1])),
+            ctx.add_overlay(Overlay.line(Line(float(disp[i, 0]), float(disp[i, 1]),
+                                              float(disp[i + 1, 0]), float(disp[i + 1, 1])),
                                          "#ff1744" if valid else "#9e9e9e"))
         if valid:
-            ctx.add_overlay(Overlay.points(full[1:-1], "#ffffff"))      # 中间点
-            ctx.add_overlay(Overlay.points(full[:1], "#76ff03"))        # 第 0 点：进刀侧
-            ctx.add_overlay(Overlay.points(full[-1:], "#00b0ff"))       # 末点：出刀侧
+            ctx.add_overlay(Overlay.points(disp[1:-1], "#ffffff"))      # 中间点
+            ctx.add_overlay(Overlay.points(disp[:1], "#76ff03"))        # 第 0 点：进刀侧
+            ctx.add_overlay(Overlay.points(disp[-1:], "#00b0ff"))       # 末点：出刀侧
         else:
-            ctx.add_overlay(Overlay.points(full, "#bdbdbd"))
-        if self.get("draw_aux") and len(aux_full):
-            ctx.add_overlay(Overlay.points(aux_full, "#ffeb3b"))
+            ctx.add_overlay(Overlay.points(disp, "#bdbdbd"))
+        if self.get("draw_aux") and len(aux_disp):
+            ctx.add_overlay(Overlay.points(aux_disp, "#ffeb3b"))
         if self.get("judge"):
             ctx.judge(valid, "轨迹不可执行（空夹具/遮挡/刀已插入）")
         return {"points": [[float(x), float(y)] for x, y in full], "valid": bool(valid), "score": prob,
