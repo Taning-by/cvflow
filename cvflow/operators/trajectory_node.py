@@ -76,6 +76,12 @@ class OnnxTrajectory(_OnnxBase):
         r = self.get("roi")
         log.info("按 %s 配置：输入 %sx%s，ROI %s", os.path.basename(side), self.get("width"), self.get("height"),
                  "整张图（不裁剪）" if self._roi_is_full() else f"x{r['x']:.0f} y{r['y']:.0f} w{r['w']:.0f} h{r['h']:.0f}")
+        st = d.get("station_rois") or {}
+        if st:
+            log.info("这个模型是按工位固定 ROI 训的：%s。裁剪请在相机/图像节点上开「固定 ROI 裁剪」"
+                     "（ROI 宽高填 %s×%s，位置按工位填），本节点就不再裁了",
+                     "  ".join(f"{c}:({v[0]},{v[1]})" for c, v in sorted(st.items())),
+                     self.get("width"), self.get("height"))
 
     def _roi_is_full(self) -> bool:
         """ROI 左上角在原点、尺寸又等于网络输入时，裁剪与缩放都是空操作——就是"整张图直接送进去"。"""
@@ -95,6 +101,19 @@ class OnnxTrajectory(_OnnxBase):
         w, h = int(self.get("width")), int(self.get("height"))
         r = self.rect("roi")
         data = as_bgr(img)
+        # 上游（相机 / 图像节点）已经按固定 ROI 裁过了：这里就不能再裁一次，
+        # 但点要换算回**原图**坐标，所以把上游裁剪的原点接上。
+        up = img.meta.get("roi")
+        if up and len(up) >= 4:
+            ux, uy = int(up[0]), int(up[1])
+            if (data.shape[1], data.shape[0]) != (w, h):
+                self._warn_once(f"up_size:{data.shape[1]}x{data.shape[0]}",
+                                "上游已裁成 %d×%d，但模型输入是 %d×%d，只能再缩放一次；"
+                                "把采集节点的 ROI 宽/高改成和模型一致才是对的",
+                                data.shape[1], data.shape[0], w, h)
+                data = cv2.resize(data, (w, h), interpolation=cv2.INTER_AREA if w < data.shape[1] else cv2.INTER_LINEAR)
+            return data, {"scale": (w / max(1, up[2]), h / max(1, up[3])), "pad": (0, 0),
+                          "orig": (img.width, img.height), "roi": (ux, uy, int(up[2]), int(up[3]))}
         # ROI 配成"整图"时不做裁剪：画面多大就整张送进去，再统一缩放到输入尺寸。
         # 这样换了分辨率更大的相机也不会被悄悄切掉一角——只是分辨率变了，内容一点不少。
         if r is not None and not r.is_empty() and not self._roi_is_full():

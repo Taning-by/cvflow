@@ -86,6 +86,9 @@ class Param:
     description: str = ""
     advanced: bool = False
     filter: str = ""  # file-dialog filter for kind == "file"
+    #: kind == "rect" 时，框的尺寸由另外两个 int 参数决定，写成 ``"宽参数名,高参数名"``。
+    #: 界面上这种框只能拖位置、不能拉大小——尺寸是喂给模型的张量尺寸，随手拖出来的尺寸就是事故。
+    locked_size: str = ""
     #: kind == "choice" 时的候选来源名（见 ``cvflow.ui.param_options``）。
     #: 候选是**运行时才知道**的——配了哪些通信设备、哪些数据点、哪些流程——所以不能像 enum
     #: 那样写死在 choices 里。界面渲染成可编辑下拉框：能从列表里挑，也能手填（配置顺序不限）。
@@ -100,6 +103,11 @@ class Param:
             raise ValueError(f"参数 {self.name!r}：enum 类型需要 choices")
         if self.kind == "choice" and not self.options:
             raise ValueError(f"参数 {self.name!r}：choice 类型需要 options（候选来源名）")
+        if self.locked_size:
+            if self.kind != "rect":
+                raise ValueError(f"参数 {self.name!r}：locked_size 只能用在 rect 上")
+            if len(self.locked_size.split(",")) != 2:
+                raise ValueError(f"参数 {self.name!r}：locked_size 要写成 '宽参数名,高参数名'")
         self.default = self.coerce(self.default)
 
     def coerce(self, value: Any) -> Any:
@@ -145,7 +153,8 @@ class Param:
     def to_dict(self) -> dict:
         return {"name": self.name, "kind": self.kind, "label": self.label, "default": self.default,
                 "min": self.min, "max": self.max, "step": self.step, "choices": list(self.choices),
-                "options": self.options, "description": self.description, "advanced": self.advanced}
+                "options": self.options, "locked_size": self.locked_size,
+                "description": self.description, "advanced": self.advanced}
 
 
 class Node:
@@ -217,6 +226,14 @@ class Node:
 
     def rect(self, name: str) -> Rect | None:
         return Rect.from_dict(self.values.get(name))
+
+    def roi_reference_image(self):
+        """在哪张图上摆这个节点的 ROI 框。
+
+        采集类节点开了裁剪之后，输出的已经是裁好的小图，在那上面再拖框是没有意义的——
+        这里返回**裁剪之前**的整帧，界面拖框时用它。返回 None 表示按常规（用节点的输入图）。
+        """
+        return None
 
     def on_param_changed(self, name: str, value: Any) -> None:  # noqa: B027
         """Hook for nodes that cache derived data (e.g. reload a template image)."""

@@ -553,7 +553,11 @@ class ParamPanel(QScrollArea):
         return w
 
     def _rect_widget(self, node: Node, p: Param) -> QWidget:
-        """ROI 行：按钮一行，矩形数值单独一行，窄面板里数值也不会被挤没。"""
+        """ROI 行：按钮一行，矩形数值单独一行，窄面板里数值也不会被挤没。
+
+        ``locked_size`` 的框（尺寸由另外两个参数决定）只给拖位置，按钮也改叫"放置"——
+        那个尺寸是送进模型的张量尺寸，在图上拖是拖不准的。
+        """
         w = QWidget()
         outer = QVBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -563,14 +567,26 @@ class ParamPanel(QScrollArea):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(M["gap_s"])
         r = node.get(p.name)
-        txt = f"x {r['x']:.0f}  y {r['y']:.0f}  {r['w']:.0f}×{r['h']:.0f}" if r else tr("not set")
+        locked = p.locked_size.split(",") if p.locked_size else []
+        size_txt = ""
+        if locked:
+            try:
+                size_txt = f"{int(node.get(locked[0]))}×{int(node.get(locked[1]))}"
+            except (KeyError, TypeError, ValueError):
+                size_txt = ""
+            txt = (f"x {r['x']:.0f}  y {r['y']:.0f}  {size_txt}" if r
+                   else f"{tr('not set')}　{size_txt}　" + tr("(centred)"))
+        else:
+            txt = f"x {r['x']:.0f}  y {r['y']:.0f}  {r['w']:.0f}×{r['h']:.0f}" if r else tr("not set")
         lbl = QLabel(txt)
         lbl.setFont(tabular(ui_font(M["font_s"])))
         lbl.setStyleSheet(f"color:{C['text'] if r else C['faint']}; font-size:{M['font_s']}px")
-        lbl.setToolTip(f"{txt}　{tr('ROI in image pixels')}")
-        draw = QPushButton(tr("Draw"))
+        lbl.setToolTip(f"{txt}　{tr('ROI in image pixels')}"
+                       + (f"　{tr('Size comes from')} {locked[0]} / {locked[1]}" if locked else ""))
+        draw = QPushButton(tr("Place") if locked else tr("Draw"))
         draw.setObjectName("compact")
-        draw.setToolTip(tr("Drag a rectangle on the image"))
+        draw.setToolTip(tr("Drag the fixed-size box on the image") if locked
+                        else tr("Drag a rectangle on the image"))
         draw.setFixedHeight(M["ctl_h"])
         draw.clicked.connect(lambda: self.roi_edit_requested.emit(node.id, p.name))
         show = QPushButton(tr("Show"))

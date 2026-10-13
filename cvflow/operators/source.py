@@ -10,16 +10,76 @@ import os
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from ..camera import camera_manager, CAMERA_KINDS
 from ..core import paths
 from ..core.node import TRIGGER_PORT, Node, NodeError, Param, Port
 from ..core.registry import register
-from ..core.types import DataType, Image
+from ..core.types import DataType, Image, Rect
 from ._util import odd  # noqa: F401  (re-export convenience)
 
 _IMG_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
 _EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+# ---------------------------------------------------------------- 固定 ROI 裁剪
+#
+# 取图之后立刻裁出固定尺寸的一块，直接喂给深度学习节点。和"下游再裁"相比有两个实际好处：
+# 传给后面的数据少（628×768 只有 1280×1024 的 18%），以及尺寸在源头就定死了——
+# 换相机、换分辨率都不会悄悄改变送进网络的张量尺寸。
+#
+# 尺寸由 roi_w / roi_h 两个参数定，框只能拖位置（Param 的 locked_size）。每个工位一个位置，
+# 标定一次填进去就不动了；位置可以在图像上拖，也可以直接把训练导出的 rois.json 里的数填进来。
+def roi_params(w: int = 628, h: int = 768) -> list[Param]:
+    return [
+        Param("roi_enabled", False, "bool", label="固定 ROI 裁剪",
+              description="打开后本节点直接输出裁好的小图（尺寸就是下面的 ROI 宽/高），"
+                          "下游深度学习节点拿到的就是定尺寸输入。关掉则输出整张原图。"
+                          "裁剪位置会记在图像上，下游把坐标换算回原图时自动带上"),
+        Param("roi_w", w, "int", min=8, max=20000, label="ROI 宽",
+              description="要和模型的输入宽度一致（看导出的 sidecar json 里的 width）"),
+        Param("roi_h", h, "int", min=8, max=20000, label="ROI 高",
+              description="要和模型的输入高度一致（看导出的 sidecar json 里的 height）"),
+        Param("roi", None, "rect", label="ROI 位置", locked_size="roi_w,roi_h",
+              description="在图像上拖这个框定位置，尺寸只能用上面的宽/高改。不设就取画面正中。"
+                          "多工位时每个工位各填各的（训练侧 make_rois.py 会把每个工位的位置算好）"),
+    ]
+
+
+def apply_roi(node: Node, img: Image, ctx) -> tuple[Image, Rect]:
+    """按节点上的固定 ROI 裁一块，并给出这块图在原图里的位置。
+
+    裁出来的尺寸**严格**等于 ROI 宽/高：这是要送进网络的张量尺寸，差一个像素模型就得重导。
+    所以框超出画面时是补黑边，而不是像普通 ROI 那样取交集缩小。
+
+    没开裁剪时返回整幅的矩形——``roi`` 这个输出口的含义始终是"输出的图对应原图的哪一块"，
+    下游不用分情况讨论。只有真裁了才在图上记 ``meta["roi"]``，老流程的行为一点不变。
+    """
+    if not node.get("roi_enabled"):
+        return img, Rect(0.0, 0.0, float(img.width), float(img.height))
+    w, h = int(node.get("roi_w")), int(node.get("roi_h"))
+    if w <= 0 or h <= 0:
+        raise NodeError("ROI 宽/高必须为正")
+    r = node.rect("roi")
+    if r is None or r.is_empty():
+        x, y = (img.width - w) // 2, (img.height - h) // 2        # 还没摆过框：先取正中，拖一下就定下来
+    else:
+        x, y = int(round(r.cx - w / 2)), int(round(r.cy - h / 2))  # 尺寸以参数为准，中心保持不动
+    x = min(max(0, x), max(0, img.width - w))
+    y = min(max(0, y), max(0, img.height - h))
+    data = img.data
+    out = np.zeros((h, w) + data.shape[2:], data.dtype)
+    sx1, sy1 = min(data.shape[1], x + w), min(data.shape[0], y + h)
+    if sx1 > x and sy1 > y:
+        out[:sy1 - y, :sx1 - x] = data[y:sy1, x:sx1]
+    else:
+        raise NodeError(f"ROI ({x},{y} {w}×{h}) 和图像（{img.width}×{img.height}）没有交集")
+    if sx1 - x < w or sy1 - y < h:
+        ctx.log(f"ROI {w}×{h} 超出图像 {img.width}×{img.height}，缺的部分补黑", "warn")
+    cropped = img.derive(out)
+    cropped.meta["roi"] = [x, y, w, h]        # 下游把坐标换算回原图要用它
+    return cropped, Rect(float(x), float(y), float(w), float(h))
 
 
 def trigger_input() -> Port:
@@ -41,13 +101,18 @@ class ImageFile(Node):
     description = "Load a single image from disk (cached until the file changes)."
     color = "#2e7d32"
     inputs = [trigger_input()]
-    outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING)]
+    outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING),
+               Port("roi", DataType.RECT, description="输出的图对应原图的哪一块；没开裁剪时就是整幅")]
     params = [Param("path", "", "file", label="Path", filter=_IMG_FILTER),
-              Param("grayscale", False, "bool")]
+              Param("grayscale", False, "bool")] + roi_params()
 
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._cache: tuple[str, float, bool, Image] | None = None
+        self._full: Image | None = None          # 裁剪前的整帧，界面上拖 ROI 框时用
+
+    def roi_reference_image(self):
+        return self._full
 
     def process(self, ctx, inputs):
         path = paths.resolve(self.get("path"))
@@ -65,7 +130,9 @@ class ImageFile(Node):
                 raise NodeError(f"无法解码 {path}")
             img = Image(data=data, source=path)
             self._cache = (path, mtime, gray, img)
-        return {"image": Image(img.data, frame_id=ctx.run_id, source=path), "path": path}
+        self._full = Image(img.data, frame_id=ctx.run_id, source=path)
+        out, rect = apply_roi(self, self._full, ctx)
+        return {"image": out, "path": path, "roi": rect}
 
 
 @register
@@ -77,17 +144,22 @@ class ImageFolder(Node):
     description = "Iterate over the images of a folder, one per run (simulated production)."
     color = "#2e7d32"
     inputs = [trigger_input()]
-    outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING), Port("index", DataType.INT)]
+    outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING), Port("index", DataType.INT),
+               Port("roi", DataType.RECT, description="输出的图对应原图的哪一块；没开裁剪时就是整幅")]
     params = [Param("directory", "", "dir"),
               Param("mode", "next", "enum", choices=["next", "fixed", "random"]),
               Param("index", 0, "int", min=0, description="Image index for 'fixed' mode"),
               Param("loop", True, "bool"),
-              Param("grayscale", False, "bool")]
+              Param("grayscale", False, "bool")] + roi_params()
 
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._files: list[str] = []
         self._dir_key = None
+        self._full: Image | None = None          # 裁剪前的整帧，界面上拖 ROI 框时用
+
+    def roi_reference_image(self):
+        return self._full
 
     def _scan(self):
         d = paths.resolve(self.get("directory"))
@@ -121,7 +193,9 @@ class ImageFolder(Node):
         if data is None:
             raise NodeError(f"无法解码 {path}")
         ctx.log(f"{os.path.basename(path)} ({i + 1}/{n})", "debug")
-        return {"image": Image(data, frame_id=ctx.run_id, source=path), "path": path, "index": i}
+        self._full = Image(data, frame_id=ctx.run_id, source=path)
+        out, rect = apply_roi(self, self._full, ctx)
+        return {"image": out, "path": path, "index": i, "roi": rect}
 
 
 @register
@@ -133,7 +207,8 @@ class CameraSource(Node):
     description = "Grab a frame from a named camera (folder simulator, OpenCV device/stream, GenICam)."
     color = "#2e7d32"
     inputs = [trigger_input()]
-    outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT)]
+    outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT),
+               Port("roi", DataType.RECT, description="输出的图对应原图的哪一块；没开裁剪时就是整幅")]
     params = [Param("camera", "cam0", "string", description="Shared camera name"),
               Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS),
                     description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS "
@@ -154,7 +229,7 @@ class CameraSource(Node):
               Param("exposure_us", 0.0, "float", min=0, max=10_000_000, description="0 表示沿用相机当前曝光"),
               Param("gain", -1.0, "float", min=-1, max=100, description="-1 表示沿用相机当前增益"),
               Param("timeout_s", 2.0, "float", min=0.01, max=60),
-              Param("grayscale", False, "bool"),
+              Param("grayscale", False, "bool")] + roi_params() + [
               Param("cti", "", "file", label="GenTL producer (.cti)", advanced=True),
               Param("sdk_path", "", "dir", label="Vendor SDK path", advanced=True,
                     description="厂商 SDK 的 Python 模块目录，装在非默认路径时才要填。"
@@ -162,6 +237,13 @@ class CameraSource(Node):
                                 "海康填 MvImport 目录（一般是 MVS\\Development\\Samples\\Python\\MvImport）。"
                                 "留空则按环境变量和常见安装路径找"),
               Param("features", {}, "json", label="Camera features (JSON)", advanced=True)]
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._full: Image | None = None          # 裁剪前的整帧，界面上拖 ROI 框时用
+
+    def roi_reference_image(self):
+        return self._full
 
     def _config(self):
         src = self.get("source")
@@ -200,7 +282,9 @@ class CameraSource(Node):
             raise NodeError(f"相机 {cam.name!r}：{self.get('timeout_s')} 秒内没有取到图像。{why}；"
                             f"也可能是防火墙拦了图像流（GigE 的 GVSP 走入站 UDP）、"
                             f"曝光时间超过了超时、或多台相机挤在同一条链路上带宽不够")
-        return {"image": img, "frame_id": img.frame_id}
+        self._full = img
+        out, rect = apply_roi(self, img, ctx)
+        return {"image": out, "frame_id": img.frame_id, "roi": rect}
 
 
 @register

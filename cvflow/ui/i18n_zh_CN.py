@@ -40,6 +40,12 @@ UI = {
     "ok": "OK", "ng": "NG", "error": "错误", "ERROR": "错误",
     # image view
     "Draw a rectangle on the image (Esc to cancel)": "在图像上拖出一个矩形（Esc 取消）",
+    "Drag to move the ROI; arrow keys nudge, Enter to finish, Esc to revert":
+        "拖动改 ROI 位置；方向键微调（Shift 十倍），回车结束，Esc 还原",
+    "Drag the fixed-size box on the image": "在图像上拖动这个固定尺寸的框（只改位置）",
+    "Place": "放置", "(centred)": "（未放置，先按画面正中取）",
+    "Size comes from": "尺寸来自参数",
+    "Set the ROI width/height first": "先把 ROI 宽/高填上",
     # parameter panel
     "Select a node to edit its parameters.\n\nDrag nodes from the palette, connect ports by dragging, press Delete to remove, F to fit.":
         "选中一个节点以编辑参数。\n\n从左侧节点库拖入节点，拖动端口连线，Delete 删除，F 适配视图。",

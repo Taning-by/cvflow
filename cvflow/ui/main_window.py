@@ -1217,18 +1217,39 @@ class MainWindow(QMainWindow):
         return self.input_pick.currentData() if entries else None
 
     def _begin_roi_edit(self, node_id: str, param: str) -> None:
+        g = self.graph
+        if g is None or node_id not in g.nodes:
+            return
+        node = g.nodes[node_id]
         r = self.runner
         res = r.last_result if r else None
-        img = self._input_image(node_id, res)
+        # 采集节点开了裁剪之后输出的已经是裁好的小图，得拿裁剪**之前**的整帧来摆框
+        img = node.roi_reference_image() or self._input_image(node_id, res)
         if img is None and res is None:
             self.run_once()
             res = self.runner.last_result if self.runner else None
-            img = self._input_image(node_id, res)
+            img = node.roi_reference_image() or self._input_image(node_id, res)
         if img is not None:
             self.image_view.set_image(img)
             self.image_view.set_overlays([])
-            self.image_title.setText(tr("{name} – draw {param}").format(name=self.graph.nodes[node_id].name, param=param))
-        self.image_view.begin_roi_edit(lambda rect, n=node_id, p=param: self._on_param_changed(n, p, rect))
+            self.image_title.setText(tr("{name} – draw {param}").format(name=node.name, param=param))
+
+        def apply(rect, n=node_id, p=param):
+            self._on_param_changed(n, p, rect)
+
+        pd = node.param_def(param)
+        if pd.locked_size:                      # 尺寸锁死的框：只拖位置
+            wn, hn = pd.locked_size.split(",")
+            try:
+                size = (int(node.get(wn)), int(node.get(hn)))
+            except (KeyError, TypeError, ValueError):
+                size = (0, 0)
+            if size[0] > 0 and size[1] > 0:
+                self.image_view.begin_roi_move(size, node.rect(param), apply)
+                return
+            self.statusBar().showMessage(tr("Set the ROI width/height first"), 4000)
+            return
+        self.image_view.begin_roi_edit(apply)
 
     def _show_roi(self, node_id: str, param: str) -> None:
         g = self.graph

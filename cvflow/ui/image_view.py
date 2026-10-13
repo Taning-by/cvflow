@@ -50,6 +50,9 @@ class ImageView(QGraphicsView):
         self._roi_cb: Callable[[Rect], None] | None = None
         self._roi_start: QPointF | None = None
         self._roi_item: QGraphicsRectItem | None = None
+        self._roi_move: tuple[int, int] | None = None    # 固定尺寸模式：(宽, 高)，只拖位置
+        self._roi_grab: tuple[float, float] | None = None
+        self._roi_orig: Rect | None = None               # 进入拖动模式时的框，Esc 用它还原
         self._fit_pending = True
         self._fit_mode = True          # 处于"适配"状态：窗格尺寸变化时自动重新适配
         self._rpan: QPointF | None = None
@@ -225,11 +228,66 @@ class ImageView(QGraphicsView):
     def cancel_roi_edit(self) -> None:
         self._roi_cb = None
         self._roi_start = None
+        self._roi_move = None
+        self._roi_grab = None
+        self._roi_orig = None
         if self._roi_item is not None:
             self._scene.removeItem(self._roi_item)
             self._roi_item = None
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.unsetCursor()
+
+    # ---- 固定尺寸 ROI：只拖位置 ----
+    def begin_roi_move(self, size, rect: Rect | None, callback: Callable[[Rect], None]) -> None:
+        """尺寸锁死的框：拖动改位置、方向键微调（Shift 十倍），回车结束，Esc 还原并结束。
+
+        尺寸不给拖——它是送进模型的张量尺寸，拖是拖不出一个正确数字的，只能在参数里填。
+        改动是即时生效的：松手或按一下方向键就写回参数，面板上的数值同步跟着变。
+        """
+        w, h = max(1, int(size[0])), max(1, int(size[1]))
+        self._roi_cb = callback
+        self._roi_move = (w, h)
+        self._roi_orig = rect
+        iw = self._image.width if self._image is not None else w
+        ih = self._image.height if self._image is not None else h
+        x, y = ((rect.cx - w / 2, rect.cy - h / 2) if rect is not None and not rect.is_empty()
+                else ((iw - w) / 2, (ih - h) / 2))
+        self._roi_item = QGraphicsRectItem(QRectF(x, y, w, h))
+        pen = QPen(QColor(C["roi"]), 1.8)
+        pen.setCosmetic(True)
+        self._roi_item.setPen(pen)
+        self._roi_item.setZValue(20)
+        self._scene.addItem(self._roi_item)
+        self._move_roi_to(x, y)
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.setCursor(Qt.SizeAllCursor)
+        self.setFocus(Qt.OtherFocusReason)
+        self.pixel_info.emit(tr("Drag to move the ROI; arrow keys nudge, Enter to finish, Esc to revert"))
+
+    def _move_roi_to(self, x: float, y: float) -> None:
+        if self._roi_item is None or self._roi_move is None:
+            return
+        w, h = self._roi_move
+        if self._image is not None:                       # 框不许出图：出了图就是在喂黑边
+            x = min(max(0.0, x), max(0.0, self._image.width - w))
+            y = min(max(0.0, y), max(0.0, self._image.height - h))
+        self._roi_item.setRect(QRectF(round(x), round(y), w, h))
+        self.pixel_info.emit(f"ROI  x {round(x):.0f}  y {round(y):.0f}  {w} × {h}")
+
+    def _commit_roi_move(self) -> None:
+        if self._roi_item is None or self._roi_cb is None:
+            return
+        r = self._roi_item.rect()
+        rect = Rect(round(r.x(), 1), round(r.y(), 1), round(r.width(), 1), round(r.height(), 1))
+        self.roi_drawn.emit(rect)
+        self._roi_cb(rect)
+
+    def _nudge_roi(self, dx: float, dy: float) -> None:
+        if self._roi_item is None:
+            return
+        r = self._roi_item.rect()
+        self._move_roi_to(r.x() + dx, r.y() + dy)
+        self._commit_roi_move()
 
     @property
     def roi_editing(self) -> bool:
@@ -258,6 +316,14 @@ class ImageView(QGraphicsView):
             self._rpan = event.position()
             self.setCursor(Qt.ClosedHandCursor)
             return
+        if self._roi_move is not None and event.button() == Qt.LeftButton:
+            p = self.mapToScene(event.position().toPoint())
+            r = self._roi_item.rect() if self._roi_item is not None else QRectF()
+            if not r.contains(p):                          # 按在框外：把框挪到鼠标下，再接着拖
+                self._move_roi_to(p.x() - r.width() / 2, p.y() - r.height() / 2)
+                r = self._roi_item.rect()
+            self._roi_grab = (p.x() - r.x(), p.y() - r.y())
+            return
         if self._roi_cb is not None and event.button() == Qt.LeftButton:
             self._roi_start = self.mapToScene(event.position().toPoint())
             self._roi_item = QGraphicsRectItem(QRectF(self._roi_start, self._roi_start))
@@ -277,6 +343,9 @@ class ImageView(QGraphicsView):
             self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y()))
             return
         pos = self.mapToScene(event.position().toPoint())
+        if self._roi_grab is not None:
+            self._move_roi_to(pos.x() - self._roi_grab[0], pos.y() - self._roi_grab[1])
+            return
         if self._roi_start is not None and self._roi_item is not None:
             r = QRectF(self._roi_start, pos).normalized()
             self._roi_item.setRect(r)
@@ -295,6 +364,10 @@ class ImageView(QGraphicsView):
             self._rpan = None
             self.unsetCursor()
             return
+        if self._roi_grab is not None and event.button() == Qt.LeftButton:
+            self._roi_grab = None
+            self._commit_roi_move()                        # 松手即生效，但不退出：还能接着微调
+            return
         if self._roi_start is not None and self._roi_item is not None and event.button() == Qt.LeftButton:
             r = self._roi_item.rect()
             cb = self._roi_cb
@@ -308,6 +381,22 @@ class ImageView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if self._roi_move is not None:
+            step = 10 if event.modifiers() & Qt.ShiftModifier else 1
+            d = {Qt.Key_Left: (-step, 0), Qt.Key_Right: (step, 0),
+                 Qt.Key_Up: (0, -step), Qt.Key_Down: (0, step)}.get(event.key())
+            if d is not None:
+                self._nudge_roi(*d)
+                return
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.cancel_roi_edit()                     # 已经即时生效了，这里只是退出拖动
+                return
+            if event.key() == Qt.Key_Escape:
+                orig, cb = self._roi_orig, self._roi_cb
+                self.cancel_roi_edit()
+                if cb is not None:
+                    cb(orig)                               # 还原成进入拖动前的位置（原本就没有则清空）
+                return
         if event.key() == Qt.Key_Escape and self._roi_cb is not None:
             self.cancel_roi_edit()
             return
