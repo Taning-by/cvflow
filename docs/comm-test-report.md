@@ -1,10 +1,10 @@
 # 通信功能黑盒测试报告
 
-生成时间：2026-10-11 20:05　环境：Python 3.10.12, pymodbus 3.15.0, python-snap7 3.2.0, Linux 5.15.0-117-generic
+生成时间：2026-10-16 00:11　环境：Python 3.10.12, pymodbus 3.15.0, python-snap7 3.2.0, Linux 5.15.0-117-generic
 
 测试方式：把通信层当作整体，只从对端观察。对端使用真实 TCP/UDP 套接字、Linux 伪终端串口、第三方的 pymodbus 主站/从站与 snap7 服务器，以及按协议手册手工拼出的报文（三菱 MC 3E 帧、Modbus 异常响应）做字节级核对；观察点是事件总线上的事件、被触发的流程与统计、写回到对端的数据、持久化文件，以及无界面生产模式的子进程。分帧与字节序这类纯逻辑按**实际字节**核对，不只看往返一致（往返一致掩盖得了字节序写错）。
 
-**合计 141 个用例：通过 141，失败 0，跳过 0。**
+**合计 147 个用例：通过 147，失败 0，跳过 0。**
 
 | 功能区 | 场景 | 结果 | 耗时(s) | 说明 |
 |---|---|---|---|---|
@@ -33,21 +33,25 @@
 | 结果格式化（文本、JSON、二进制、取值来源受限） | format resolve source is restricted | ✅ 通过 | 0.0 |  |
 | 结果格式化（文本、JSON、二进制、取值来源受限） | pack unpack scalars clamp | ✅ 通过 | 0.0 |  |
 | 结果格式化（文本、JSON、二进制、取值来源受限） | format template | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | reference address conversion both ways | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout actual bytes for 32bit[ABCD-12 34 56 78] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout actual bytes for 32bit[BADC-34 12 78 56] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout actual bytes for 32bit[CDAB-56 78 12 34] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout actual bytes for 32bit[DCBA-78 56 34 12] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout 16bit only byte swap applies[ABCD-12 34] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout 16bit only byte swap applies[CDAB-12 34] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout 16bit only byte swap applies[BADC-34 12] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | layout 16bit only byte swap applies[DCBA-34 12] | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | float32 and string and words for | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | datapoint validation rejects bad configurations | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | datapoint scale applies both ways | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | datapoint table dedups and merges read blocks | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | read blocks respect protocol limits | ✅ 通过 | 0.0 |  |
-| Modbus 数据点映射（地址换算、数据类型、字节序与字序） | register conversions | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | reference address conversion both ways | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout actual bytes for 32bit[ABCD-12 34 56 78] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout actual bytes for 32bit[BADC-34 12 78 56] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout actual bytes for 32bit[CDAB-56 78 12 34] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout actual bytes for 32bit[DCBA-78 56 34 12] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout 16bit only byte swap applies[ABCD-12 34] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout 16bit only byte swap applies[CDAB-12 34] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout 16bit only byte swap applies[BADC-34 12] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | layout 16bit only byte swap applies[DCBA-34 12] | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | float32 and string and words for | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | datapoint validation rejects bad configurations | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | flatten numbers takes nested text and arrays | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | float32 array of 40 roundtrips and keeps per value byte order | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | array point requires the right count and scales each value | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | array length is free and string count is rejected | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | datapoint scale applies both ways | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | datapoint table dedups and merges read blocks | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | read blocks respect protocol limits | ✅ 通过 | 0.0 |  |
+| Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序） | register conversions | ✅ 通过 | 0.0 |  |
 | TCP 服务端（对端：真实套接字客户端） | routing framing and multiple clients | ✅ 通过 | 2.2 |  |
 | TCP 服务端（对端：真实套接字客户端） | terminator variants encoding and raw | ✅ 通过 | 1.2 |  |
 | TCP 服务端（对端：真实套接字客户端） | tcp server trigger and reply | ✅ 通过 | 0.5 |  |
@@ -62,6 +66,7 @@
 | Modbus TCP 从站（对端：第三方 pymodbus 主站） | modbus server rising edge and result | ✅ 通过 | 0.5 |  |
 | Modbus TCP 主站（对端：第三方 pymodbus 从站） | against third party server | ✅ 通过 | 0.4 |  |
 | Modbus TCP 主站（对端：第三方 pymodbus 从站） | modbus client polls server | ✅ 通过 | 0.5 |  |
+| Modbus TCP 主站（对端：第三方 pymodbus 从站） | modbus client float32 array point and chunked requests | ✅ 通过 | 0.5 |  |
 | 三菱 MC 协议（字节级核对 + 模拟 PLC） | request frames match specification | ✅ 通过 | 0.0 |  |
 | 三菱 MC 协议（字节级核对 + 模拟 PLC） | end code error is reported | ✅ 通过 | 0.0 |  |
 | 三菱 MC 协议（字节级核对 + 模拟 PLC） | simulator end to end | ✅ 通过 | 0.5 |  |
@@ -71,7 +76,7 @@
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[equals-GO-GO\n-1] | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[equals-GO-GO1\n-0] | ✅ 通过 | 0.5 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[contains-AB-xxABxx\n-1] | ✅ 通过 | 1.0 |  |
-| 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-^T\\d{2}$-T42\n-1] | ✅ 通过 | 1.0 |  |
+| 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-^T\\d{2}$-T42\n-1] | ✅ 通过 | 0.5 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-^T\\d{2}$-T4\n-0] | ✅ 通过 | 0.5 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[any--whatever\n-1] | ✅ 通过 | 1.0 |  |
 | 触发规则（文本匹配、数据点条件、设备过滤、流程状态）与发送条件 | text match kinds[regex-(-x\n-0] | ✅ 通过 | 0.5 |  |
@@ -101,7 +106,7 @@
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake busy is rejected not queued | ✅ 通过 | 1.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake duplicate request resends last result | ✅ 通过 | 0.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake not running flow is reported | ✅ 通过 | 0.5 |  |
-| 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake timeout reports once without retrigger | ✅ 通过 | 2.0 |  |
+| 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake timeout reports once without retrigger | ✅ 通过 | 2.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | text handshake discards result of disconnected request | ✅ 通过 | 1.8 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | register handshake full cycle with ack | ✅ 通过 | 0.5 |  |
 | 检测握手（Ready/Busy/Done、请求编号、确认、忙时、超时、断线隔离） | register handshake writes results before done | ✅ 通过 | 0.5 |  |
@@ -121,6 +126,7 @@
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node parse error modes | ✅ 通过 | 0.0 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node format renders current run | ✅ 通过 | 0.0 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node data point read write | ✅ 通过 | 0.5 |  |
+| 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node writes a 40 float trajectory into one point | ✅ 通过 | 0.5 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node read point marks stale after disconnect | ✅ 通过 | 0.5 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node parse without a rule gives the frozen request | ✅ 通过 | 0.0 |  |
 | 通信节点（收发、解析、格式化、数据点读写、触发数据、状态） | node comm status | ✅ 通过 | 0.5 |  |

@@ -13,7 +13,8 @@ import pytest
 from cvflow.comm.framing import (Framer, FramingConfig, FramingError, build_length_prefixed,
                                  decode_text, frame_for_send, parse_hex, to_hex, unescape)
 from cvflow.comm.modbus_map import (AREA_INFO, DataPoint, DataPointTable, MapError, decode_value,
-                                    encode_value, layout_example, parse_reference,
+                                    encode_value, fit_numbers, flatten_numbers,
+                                    layout_example, parse_reference,
                                     reference_address, reference_text, words_for)
 from cvflow.comm.parsing import (FormatField, FormatRule, ParseError, ParseField, ParseRule,
                                  pack_scalar, resolve_source, unpack_scalar)
@@ -312,6 +313,63 @@ def test_datapoint_validation_rejects_bad_configurations():
         DataPoint(name="a", area="nowhere")
     ok = DataPoint(name="x", area="holding", address=10, dtype="float32", layout="CDAB")
     assert ok.words == 2 and ok.reads and not ok.writes and "40011" in ok.reference
+
+
+def test_flatten_numbers_takes_nested_text_and_arrays():
+    assert flatten_numbers(3) == [3.0]
+    assert flatten_numbers([[1, 2], [3, 4]]) == [1.0, 2.0, 3.0, 4.0]        # 轨迹点列的形状
+    assert flatten_numbers((1.5,)) == [1.5]
+    assert flatten_numbers("1.5, 2.5") == [1.5, 2.5]
+    assert flatten_numbers("[[1,2],[3,4]]") == [1.0, 2.0, 3.0, 4.0]
+    assert flatten_numbers(None) == []
+    np = pytest.importorskip("numpy")
+    assert flatten_numbers(np.array([[1.0, 2.0], [3.0, 4.0]])) == [1.0, 2.0, 3.0, 4.0]
+    assert flatten_numbers(np.float32(2.5)) == [2.5]
+    with pytest.raises(MapError):
+        flatten_numbers("abc")
+    with pytest.raises(MapError):
+        flatten_numbers({"x": 1})
+
+
+def test_float32_array_of_40_roundtrips_and_keeps_per_value_byte_order():
+    p = DataPoint(name="traj", area="holding", address=10, dtype="float32", count=40,
+                  layout="CDAB", direction="read_write")
+    assert p.words == 80                                   # 40 个浮点 = 80 个寄存器
+    traj = [[i * 0.5, -i * 0.25] for i in range(20)]       # 20 个点，摊平是 40 个值
+    flat = [v for xy in traj for v in xy]
+    words = p.encode(traj)
+    assert len(words) == 80
+    assert p.decode(words) == pytest.approx(flat)
+    one_by_one: list[int] = []
+    for v in flat:                                         # 字节序对每个值单独生效
+        one_by_one += encode_value(v, "float32", "CDAB")
+    assert words == one_by_one
+    assert decode_value(words, "float32", "CDAB", count=40) == pytest.approx(flat)
+
+
+def test_array_point_requires_the_right_count_and_scales_each_value():
+    p = DataPoint(name="a", area="holding", address=0, dtype="int16", count=3, scale=0.1,
+                  direction="read_write")
+    assert p.encode([1.0, 2.0, 3.0]) == [10, 20, 30]       # 写：逐个除以系数
+    assert p.decode([10, 20, 30]) == pytest.approx([1.0, 2.0, 3.0])
+    with pytest.raises(MapError) as e:
+        p.encode([1.0, 2.0])
+    assert "要写 3 个" in str(e.value)
+    with pytest.raises(MapError):
+        p.decode([10, 20])                                 # 寄存器不够
+    assert fit_numbers([1.0, 2.0], 3) == [1.0, 2.0, 0.0]
+    assert fit_numbers([1.0, 2.0, 3.0, 4.0], 3) == [1.0, 2.0, 3.0]
+
+
+def test_array_length_is_free_and_string_count_is_rejected():
+    for n, words in ((1, 2), (20, 40), (40, 80), (61, 122), (200, 400)):
+        assert DataPoint(name="t", area="holding", address=0, dtype="float32", count=n).words == words
+    assert DataPoint(name="t", area="holding", address=0, dtype="int32", count=10).words == 20
+    assert DataPoint(name="t", area="holding", address=0, dtype="int16", count=10).words == 10
+    with pytest.raises(MapError):                          # 字符串的长度用字节数表示，不是数量
+        DataPoint(name="s", area="holding", dtype="string", length=8, count=2)
+    with pytest.raises(MapError):                          # 占到的最后一个寄存器也要在范围内
+        DataPoint(name="t", area="holding", address=65500, dtype="float32", count=40)
 
 
 def test_datapoint_scale_applies_both_ways():

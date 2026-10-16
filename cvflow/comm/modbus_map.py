@@ -119,7 +119,10 @@ def _check_area(area: str) -> str:
 
 # ----------------------------------------------------------------- 字节序
 def words_for(dtype: str, count: int = 1, length: int = 0) -> int:
-    """一个数据点占几个寄存器（位数据区按"几个位"算）。"""
+    """一个数据点占几个寄存器（位数据区按"几个位"算）。
+
+    数值类型的 ``count`` 是**数组长度**：``float32×40`` 占 80 个寄存器。
+    """
     if dtype == "bool":
         return max(1, int(count))
     if dtype == "string":
@@ -144,9 +147,81 @@ def _apply_layout(words: list[int], layout: str, swap_words: bool) -> list[int]:
     return out
 
 
+def flatten_numbers(value: Any, _depth: int = 0) -> list[float]:
+    """任意形状的数值输入 → 一维浮点列表。
+
+    接受单个数字、列表/元组、numpy 数组、``[[x, y], …]`` 这种嵌套序列（轨迹节点给出的
+    20 个点摊平之后正好是 40 个值），以及 ``"1.2, 3.4"`` / ``"[[1,2],[3,4]]"`` 这类文本。
+    文本只是顺手支持，**写浮点数组不要用 string 数据类型**——那是把数字的 ASCII 字节
+    铺进寄存器，PLC 按 REAL 解出来必然是乱码。
+    """
+    if _depth > 8:
+        raise MapError("数值嵌套超过 8 层，解不开")
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return [1.0 if value else 0.0]
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, (str, bytes, bytearray)):
+        text = value if isinstance(value, str) else bytes(value).decode("utf-8", "replace")
+        out: list[float] = []
+        for part in re.split(r"[,;\s]+", re.sub(r"[\[\](){}]", " ", text).strip()):
+            if not part:
+                continue
+            try:
+                out.append(float(part))
+            except ValueError:
+                raise MapError(f"{part!r} 不是数字") from None
+        return out
+    to_list = getattr(value, "tolist", None)              # numpy 数组 / numpy 标量
+    if callable(to_list):
+        return flatten_numbers(to_list(), _depth + 1)
+    if isinstance(value, dict):
+        raise MapError("字典不能当数值序列写进寄存器")
+    try:
+        items = list(value)
+    except TypeError:
+        raise MapError(f"{value!r} 既不是数字，也不是数字序列") from None
+    out = []
+    for item in items:
+        out.extend(flatten_numbers(item, _depth + 1))
+    return out
+
+
+def fit_numbers(values: list[float], count: int, fill: float = 0.0) -> list[float]:
+    """把数值列表凑成正好 ``count`` 个：多的截掉，少的用 ``fill`` 补。"""
+    n = max(1, int(count))
+    out = [float(v) for v in values[:n]]
+    out.extend([float(fill)] * (n - len(out)))
+    return out
+
+
+def _encode_scalar(value: Any, dtype: str, layout: str) -> list[int]:
+    if dtype == "float32":
+        packed = struct.pack(_STRUCT[dtype], float(value))
+    else:
+        v = int(round(float(value)))
+        lo, hi = _int_limits(dtype)
+        packed = struct.pack(_STRUCT[dtype], max(lo, min(hi, v)))
+    words = list(struct.unpack(f">{len(packed) // 2}H", packed))
+    return _apply_layout(words, layout, swap_words=True)
+
+
+def _decode_scalar(regs: list[int], dtype: str, layout: str) -> Any:
+    need = WORD_DTYPES[dtype]
+    out = _apply_layout([int(w) for w in regs[:need]], layout, swap_words=True)
+    raw = struct.pack(f">{need}H", *[w & 0xFFFF for w in out])
+    return struct.unpack(_STRUCT[dtype], raw)[0]
+
+
 def encode_value(value: Any, dtype: str, layout: str = "ABCD", length: int = 0,
-                 encoding: str = "ascii") -> list[int]:
-    """一个值 → 寄存器列表（``bool`` 返回 ``[0]`` 或 ``[1]``，由调用方决定走线圈还是寄存器）。"""
+                 encoding: str = "ascii", count: int = 1) -> list[int]:
+    """一个值 → 寄存器列表（``bool`` 返回 ``[0]`` 或 ``[1]``，由调用方决定走线圈还是寄存器）。
+
+    ``count`` 大于 1 时是**数组**：按顺序把 count 个数值铺进寄存器，字节序对每个值单独生效
+    （``float32×40`` → 80 个寄存器）。值的个数摊平之后必须正好是 count。
+    """
     if dtype == "bool":
         return [1 if _truthy(value) else 0]
     if dtype == "string":
@@ -160,31 +235,40 @@ def encode_value(value: Any, dtype: str, layout: str = "ABCD", length: int = 0,
         return _apply_layout(words, layout, swap_words=False)
     if dtype not in _STRUCT:
         raise MapError(f"未知的数据类型 {dtype!r}")
-    if dtype == "float32":
-        packed = struct.pack(_STRUCT[dtype], float(value))
+    n = max(1, int(count))
+    if n > 1 or not isinstance(value, (int, float)):
+        vals: list[Any] = flatten_numbers(value)
+        if len(vals) != n:
+            raise MapError(f"{dtype}×{n} 要 {n} 个值，收到 {len(vals)} 个")
     else:
-        v = int(round(float(value)))
-        lo, hi = _int_limits(dtype)
-        packed = struct.pack(_STRUCT[dtype], max(lo, min(hi, v)))
-    words = list(struct.unpack(f">{len(packed) // 2}H", packed))
-    return _apply_layout(words, layout, swap_words=True)
+        vals = [value]
+    words = []
+    for v in vals:
+        words.extend(_encode_scalar(v, dtype, layout))
+    return words
 
 
 def decode_value(words: list[int], dtype: str, layout: str = "ABCD", length: int = 0,
-                 encoding: str = "ascii") -> Any:
-    """寄存器列表 → 值。``words`` 必须正好是 ``words_for`` 个寄存器。"""
+                 encoding: str = "ascii", count: int = 1) -> Any:
+    """寄存器列表 → 值。``words`` 必须正好是 ``words_for`` 个寄存器。
+
+    ``count`` 大于 1 时返回长度为 count 的列表（数组数据点）。
+    """
     if dtype == "bool":
         return bool(words and words[0])
-    regs = _apply_layout(list(words), layout, swap_words=(dtype != "string"))
     if dtype == "string":
+        regs = _apply_layout(list(words), layout, swap_words=False)
         raw = struct.pack(f">{len(regs)}H", *[w & 0xFFFF for w in regs])
         n = int(length or len(raw))
         return decode_text(raw[:n], encoding).split("\x00", 1)[0]
+    if dtype not in _STRUCT:
+        raise MapError(f"未知的数据类型 {dtype!r}")
     need = WORD_DTYPES[dtype]
-    if len(regs) < need:
-        raise MapError(f"{dtype} 需要 {need} 个寄存器，只有 {len(regs)} 个")
-    raw = struct.pack(f">{need}H", *[w & 0xFFFF for w in regs[:need]])
-    return struct.unpack(_STRUCT[dtype], raw)[0]
+    n = max(1, int(count))
+    if len(words) < need * n:
+        raise MapError(f"{dtype}×{n} 需要 {need * n} 个寄存器，只有 {len(words)} 个")
+    vals = [_decode_scalar(list(words[i * need:(i + 1) * need]), dtype, layout) for i in range(n)]
+    return vals if n > 1 else vals[0]
 
 
 def layout_example(dtype: str, layout: str) -> str:
@@ -223,7 +307,7 @@ class DataPoint:
     area: str = "holding"
     address: int = 0
     dtype: str = "int16"
-    count: int = 1                  # bool 可以是连续多个位；其它类型 1
+    count: int = 1                  # 数组长度：连续放几个同类型值（位区是几个位），1 = 单个值
     length: int = 0                 # string 的字节数
     direction: str = "read"
     poll_ms: int = 0                # 0 = 不轮询（只在被读写时访问）
@@ -259,6 +343,9 @@ class DataPoint:
             raise MapError(f"数据点 {self.name!r}：寄存器区的布尔值数量只能是 1")
         if self.dtype == "string" and int(self.length) <= 0:
             raise MapError(f"数据点 {self.name!r}：字符串必须指定字节数")
+        if self.dtype == "string" and int(self.count) != 1:
+            raise MapError(f"数据点 {self.name!r}：字符串的数量只能是 1，"
+                           f"长度请用「字符串字节数」设置")
         if self.writes and not AREA_INFO[self.area]["writable"]:
             raise MapError(f"数据点 {self.name!r}：{AREA_INFO[self.area]['label']}"
                            f"按 Modbus 协议不可写，只能把方向设为“读”")
@@ -294,23 +381,39 @@ class DataPoint:
 
     # ---- 值换算 ----
     def decode(self, words: list[int] | list[bool]) -> Any:
+        """寄存器 → 值。数组数据点（``count`` > 1）给出长度为 count 的列表。"""
         if self.bits:
             vals = [bool(w) for w in words[:max(1, int(self.count))]]
             return vals[0] if int(self.count) == 1 else vals
-        v = decode_value([int(w) for w in words], self.dtype, self.layout, self.length, self.encoding)
-        if self.dtype in ("int16", "uint16", "int32", "uint32", "float32") and self.scale not in (1.0, 0):
-            return v * float(self.scale)
+        v = decode_value([int(w) for w in words], self.dtype, self.layout, self.length,
+                         self.encoding, count=max(1, int(self.count)))
+        if self.dtype in WORD_DTYPES and self.scale not in (1.0, 0):
+            k = float(self.scale)
+            return [x * k for x in v] if isinstance(v, list) else v * k
         return v
 
     def encode(self, value: Any) -> list[int]:
+        """值 → 寄存器。数组数据点要正好 ``count`` 个值（嵌套序列会先摊平）。"""
         if self.bits:
             if isinstance(value, (list, tuple)):
                 return [1 if _truthy(v) else 0 for v in value]
             return [1 if _truthy(value) else 0]
-        v = value
-        if self.dtype in ("int16", "uint16", "int32", "uint32", "float32") and self.scale not in (1.0, 0):
-            v = float(value) / float(self.scale)
-        return encode_value(v, self.dtype, self.layout, self.length, self.encoding)
+        if self.dtype == "string":
+            return encode_value(value, self.dtype, self.layout, self.length, self.encoding)
+        n = max(1, int(self.count))
+        vals = flatten_numbers(value)
+        if len(vals) != n:
+            hint = ("（「写数据点」节点把「数量不符」设成「自动补齐」就会多的截掉、少的补 0）"
+                    if n > 1 else "")
+            raise MapError(f"数据点 {self.name!r} 要写 {n} 个 {self.dtype} 值，"
+                           f"收到 {len(vals)} 个{hint}")
+        if self.scale not in (1.0, 0):
+            k = float(self.scale)
+            vals = [v / k for v in vals]
+        words: list[int] = []
+        for v in vals:
+            words.extend(encode_value(v, self.dtype, self.layout, self.length, self.encoding))
+        return words
 
     def to_dict(self) -> dict:
         return asdict(self)

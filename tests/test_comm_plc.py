@@ -54,6 +54,36 @@ def test_connection_tests_for_text_and_modbus_devices():
     mgr.shutdown()
 
 
+def test_modbus_client_float32_array_point_and_chunked_requests():
+    """40 个浮点一次写完：主站一条功能码 16 请求，从站按同一张点表解回 40 个值。"""
+    mgr = CommManager(EventBus())
+    points = [{"name": "traj", "area": "holding", "address": 10, "dtype": "float32", "count": 40,
+               "layout": "CDAB", "direction": "read_write"}]
+    srv = mgr.add_device("plc", "modbus_tcp_server",
+                         {"host": "127.0.0.1", "port": 0, "register_count": 512}, points=points)
+    srv.connect()
+    cli = mgr.add_device("cli", "modbus_tcp_client",
+                         {"host": "127.0.0.1", "port": srv.bound_port, "poll_ms": 0}, points=points)
+    traj = [[i * 0.5, -i * 0.25] for i in range(20)]
+    flat = [v for xy in traj for v in xy]
+    c = cli._client_or_open()
+    before = c.requests
+    cli.write_point("traj", traj)                       # 嵌套的点列直接写
+    assert c.requests - before == 1                     # 80 个寄存器＝一条请求，PLC 看到的是整块
+    assert srv.read_point("traj") == pytest.approx(flat)
+    assert cli.read_point("traj") == pytest.approx(flat)
+    assert len(srv.read_registers(10, 80)) == 80
+
+    # 超过单次协议上限会自动拆：写 200 个寄存器＝两条 FC16，读 200 个＝两条 FC3
+    before = c.requests
+    cli.write_registers(100, list(range(300, 500)))
+    assert c.requests - before == 2
+    before = c.requests
+    assert cli.read_registers(100, 200) == list(range(300, 500))
+    assert c.requests - before == 2
+    mgr.shutdown()
+
+
 def test_modbus_handshake_busy_and_trigger_reset(reg):
     pytest.importorskip("pymodbus")
     from pymodbus.client import ModbusTcpClient

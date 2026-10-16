@@ -24,7 +24,7 @@ AREAS = OrderedDict([
     ("framing", "报文分帧（半包、粘包、多帧、畸形、超限、超时）"),
     ("parse", "报文解析（分隔符、正则、JSON、定长切片）"),
     ("format", "结果格式化（文本、JSON、二进制、取值来源受限）"),
-    ("map", "Modbus 数据点映射（地址换算、数据类型、字节序与字序）"),
+    ("map", "Modbus 数据点映射（地址换算、数据类型、数组、字节序与字序）"),
     ("tcpserver", "TCP 服务端（对端：真实套接字客户端）"),
     ("tcpclient", "TCP 客户端（对端：真实套接字服务端）"),
     ("udp", "UDP"), ("serial", "串口（Linux 伪终端回环）"),
@@ -51,7 +51,8 @@ NAME_RULES = [
     (r"^test_framing_|^test_encoding_helpers", "framing"),
     (r"^test_parse_", "parse"),
     (r"^test_format_|^test_pack_unpack", "format"),
-    (r"^test_reference_address|^test_layout_|^test_float32_and_string|^test_datapoint_|^test_read_blocks_", "map"),
+    (r"^test_reference_address|^test_layout_|^test_float32_and_string|^test_datapoint_|^test_read_blocks_"
+     r"|^test_flatten_numbers|^test_array_|^test_float32_array_of_", "map"),
     (r"^test_text_handshake_|^test_register_handshake_|^test_register_trigger_|^test_master_handshake_", "handshake"),
     (r"^test_node_", "nodes"),
     (r"^test_device_|^test_rename_|^test_manual_disconnect|^test_references_|^test_validate_"

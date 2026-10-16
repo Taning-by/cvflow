@@ -22,7 +22,8 @@ from ..comm.manager import (ACTION_LABELS, DATA_MATCH_LABELS, DEVICE_KIND_LABELS
                             RULE_SOURCE_LABELS, SEND_TARGET_LABELS, TEXT_MATCH_LABELS,
                             TRIGGER_ACTIONS, WHEN_LABELS, ReceiveRule, SendRule)
 from ..comm.modbus_map import (AREA_INFO, DIRECTION_LABELS, DTYPE_LABELS, LAYOUT_LABELS,
-                               DataPoint, MapError, layout_example, reference_text)
+                               WORD_DTYPES, DataPoint, MapError, layout_example,
+                               reference_address, reference_text, words_for)
 from ..comm.parsing import (FORMAT_LABELS, PARSE_LABELS, SOURCE_SPECIALS, FormatField, FormatRule,
                             ParseField, ParseRule, SCALAR_FORMATS, VALUE_TYPES)
 from .i18n import tr
@@ -247,6 +248,7 @@ class DataPointDialog(_BaseDialog):
         self.dtype.setCurrentIndex(max(0, self.dtype.findData(p.dtype)))
         self.count = QSpinBox(); self.count.setRange(1, 2000); self.count.setValue(int(p.count))
         self.length = QSpinBox(); self.length.setRange(0, 250); self.length.setValue(int(p.length))
+        self.span = _hint("")
         self.direction = QComboBox()
         for key, label in DIRECTION_LABELS.items():
             self.direction.addItem(label, key)
@@ -267,7 +269,8 @@ class DataPointDialog(_BaseDialog):
         self.enabled = QCheckBox(tr("启用")); self.enabled.setChecked(bool(p.enabled))
 
         rows = [("名称", self.name), ("数据区", self.area), ("地址（协议地址，从 0 开始）", self.address),
-                ("参考地址", self.ref), ("数据类型", self.dtype), ("数量", self.count),
+                ("参考地址", self.ref), ("数据类型", self.dtype),
+                ("数量（数组长度）", self.count), ("占用", self.span),
                 ("字符串字节数", self.length), ("读写方向", self.direction),
                 ("轮询周期（毫秒，0=不轮询）", self.poll_ms), ("缩放系数", self.scale),
                 ("字节序 / 字序", self.layout_box), ("字节示例", self.layout_hint),
@@ -278,7 +281,10 @@ class DataPointDialog(_BaseDialog):
         form.addRow(_hint("内部一律使用协议地址（报文里那个数，从 0 开始）；参考地址是 40001 那一套写法。"
                           "32 位数据占两个寄存器：ABCD 不交换、CDAB 交换寄存器顺序、"
                           "BADC 交换寄存器内两个字节、DCBA 两者都交换。"))
-        for w in (self.area, self.address, self.dtype, self.layout_box):
+        form.addRow(_hint("「数量」大于 1 就是数组：一个名字下连续放这么多个同类型值，流程里用一个"
+                          "「写数据点」节点一次写完（float32×40 占 80 个寄存器）。想一次原子写入，"
+                          "就把数组控制在 123 个寄存器以内（float32 最多 61 个）；再多会拆成几条请求。"))
+        for w in (self.area, self.address, self.dtype, self.layout_box, self.count, self.length):
             sig = w.valueChanged if isinstance(w, QSpinBox) else w.currentIndexChanged
             sig.connect(lambda *_: self._refresh())
         self._refresh()
@@ -289,11 +295,25 @@ class DataPointDialog(_BaseDialog):
             self.ref.setText(reference_text(area, addr))
         except MapError as e:
             self.ref.setText(str(e))
-        self.layout_hint.setText(layout_example(self.dtype.currentData(), self.layout_box.currentData()))
+        dtype = self.dtype.currentData()
+        self.layout_hint.setText(layout_example(dtype, self.layout_box.currentData()))
         bits = AREA_INFO.get(area, {}).get("bits", False)
-        self.count.setEnabled(bits)
-        self.length.setEnabled(self.dtype.currentData() == "string")
+        # 位区的「数量」是连续几个位；数值类型的「数量」是数组长度。字符串用字节数表示长度
+        self.count.setEnabled(bool(bits) or dtype in WORD_DTYPES)
+        self.length.setEnabled(dtype == "string")
         self.layout_box.setEnabled(not bits)
+        self.span.setText(self._span_text(area, addr, dtype, bits))
+
+    def _span_text(self, area: str, addr: int, dtype: str, bits: bool) -> str:
+        """这个点占多少个寄存器 / 位，从哪到哪。"""
+        try:
+            n = words_for(dtype, self.count.value(), self.length.value())
+            last = addr + n - 1
+            unit = "个位" if bits else "个寄存器"
+            return (f"{n} {unit}：协议地址 {addr}…{last}"
+                    f"（参考地址 {reference_address(area, addr)}…{reference_address(area, last)}）")
+        except MapError as e:
+            return str(e)
 
     def validate(self) -> str:
         if self.name.text().strip() in self._used:

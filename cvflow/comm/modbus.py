@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from .base import CommDevice, CommError, Peer
 from .modbus_client import (ModbusClient, ModbusException, RtuTransport, TcpTransport,
-                            MAX_READ_BITS, MAX_READ_WORDS)
+                            MAX_READ_BITS, MAX_READ_WORDS, MAX_WRITE_BITS, MAX_WRITE_WORDS)
 from .modbus_map import (AREA_INFO, DataPoint, DataPointTable, MapError, PointValue,
                          decode_value, encode_value)
 
@@ -590,19 +590,43 @@ class _ModbusClientBase(CommDevice, _RegisterWatcher, _PointHost):
 
     # ---- 读写 ----
     def read_area(self, area: str, address: int, count: int = 1) -> list:
+        """读一段数据区。超过单次协议上限（寄存器 125 个、位 2000 个）会自动拆成多次请求。"""
         c = self._client_or_open()
-        if AREA_INFO[area]["bits"]:
-            return c.read_bits(area, int(address), int(count))
-        return c.read_words(area, int(address), int(count))
+        bits = AREA_INFO[area]["bits"]
+        limit = MAX_READ_BITS if bits else MAX_READ_WORDS
+        addr, left, out = int(address), int(count), []
+        if left <= 0:
+            return out
+        while left > 0:
+            n = min(left, limit)
+            out.extend(c.read_bits(area, addr, n) if bits else c.read_words(area, addr, n))
+            addr += n
+            left -= n
+        return out
 
     def write_area(self, area: str, address: int, values: list) -> None:
+        """写一段数据区。
+
+        超过单次协议上限（功能码 16 为 123 个寄存器、功能码 15 为 1968 个位）会自动拆成多次
+        请求——**拆开之后就不是一次原子写入**，PLC 可能先看到前半段。要求整块同时生效的话，
+        把数组控制在 123 个寄存器以内（``float32`` 最多 61 个），再用一个单独的"数据就绪"位
+        告诉 PLC 这批数据可以取了。
+        """
         if not AREA_INFO[area]["writable"]:
             raise CommError(f"{AREA_INFO[area]['label']} 按 Modbus 协议不可写")
         c = self._client_or_open()
-        if AREA_INFO[area]["bits"]:
-            c.write_coils(int(address), [bool(v) for v in values])
-        else:
-            c.write_registers(int(address), [int(v) & 0xFFFF for v in values])
+        bits = AREA_INFO[area]["bits"]
+        vals = [bool(v) for v in values] if bits else [int(v) & 0xFFFF for v in values]
+        if not vals:
+            return
+        limit = MAX_WRITE_BITS if bits else MAX_WRITE_WORDS
+        addr = int(address)
+        for i in range(0, len(vals), limit):
+            chunk = vals[i:i + limit]
+            if bits:
+                c.write_coils(addr + i, chunk)
+            else:
+                c.write_registers(addr + i, chunk)
         self.stats["tx"] += 1
         self.last_tx = time.time()
 

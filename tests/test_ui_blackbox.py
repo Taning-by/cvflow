@@ -988,6 +988,12 @@ def test_ui_comm_data_points_add_edit_and_manual_readwrite(win, modal, monkeypat
         self.direction.setCurrentIndex(self.direction.findData("read_write"))
         assert "40021" in self.ref.text()            # 参考地址换算显示给用户
         assert "56 78 12 34" in self.layout_hint.text()   # 字节序的实际字节示例
+        assert "2 个寄存器" in self.span.text()
+        # 「数量」就是数组长度，数值类型下可以改，占用范围跟着变
+        assert self.count.isEnabled()
+        self.count.setValue(40)
+        assert "80 个寄存器" in self.span.text() and "40021…40100" in self.span.text()
+        self.count.setValue(1)
         return QDialog.Accepted
     monkeypatch.setattr(cd.DataPointDialog, "exec", add_point)
     button(panel.point_table.parent(), "添加").click(); pump(app)
@@ -1005,6 +1011,14 @@ def test_ui_comm_data_points_add_edit_and_manual_readwrite(win, modal, monkeypat
     dlg2.area.setCurrentIndex(dlg2.area.findData("input"))
     dlg2.direction.setCurrentIndex(dlg2.direction.findData("write"))
     assert "不可写" in dlg2.validate()
+    # 字符串的长度用字节数表示，所以「数量」对它是锁住的；位区的「数量」是连续几个位
+    dlg3 = cd.DataPointDialog(panel, None, [], [])
+    dlg3.dtype.setCurrentIndex(dlg3.dtype.findData("string"))
+    assert not dlg3.count.isEnabled() and dlg3.length.isEnabled()
+    dlg3.area.setCurrentIndex(dlg3.area.findData("coil"))
+    dlg3.dtype.setCurrentIndex(dlg3.dtype.findData("bool"))
+    dlg3.count.setValue(8)
+    assert dlg3.count.isEnabled() and "8 个位" in dlg3.span.text()
 
     # 调试区手动读写这个数据点
     mb.connect(); pump(app, 200)
@@ -1019,6 +1033,22 @@ def test_ui_comm_data_points_add_edit_and_manual_readwrite(win, modal, monkeypat
     panel.mb_value.setText("abc")
     button(panel.log_table.parent(), "写入").click(); pump(app)
     assert "不是数字" in panel.mb_result.text()
+
+    # 数组数据点：调试区直接填一串数，个数不对会被挡下来
+    from cvflow.comm.modbus_map import DataPoint
+    mb.points.add(DataPoint(name="traj", area="holding", address=40, dtype="float32", count=4,
+                            layout="CDAB", direction="read_write"))
+    panel._sync_mb_points(); pump(app)
+    panel.mb_point.setCurrentText("traj")
+    panel.mb_value.setText("1.5, 2.5, 3.5, 4.5")
+    button(panel.log_table.parent(), "写入").click(); pump(app)
+    assert "4 个值" in panel.mb_result.text()
+    assert mb.read_point("traj") == pytest.approx([1.5, 2.5, 3.5, 4.5])
+    button(panel.log_table.parent(), "读取").click(); pump(app)
+    assert "1.5" in panel.mb_result.text()
+    panel.mb_value.setText("1.5, 2.5")
+    button(panel.log_table.parent(), "写入").click(); pump(app)
+    assert "要写 4 个" in panel.mb_result.text()
     mb.disconnect()
 
 

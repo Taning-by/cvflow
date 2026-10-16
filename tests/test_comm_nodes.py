@@ -202,6 +202,46 @@ def test_node_data_point_read_write(h):
     assert r.node_results[w.id].outputs["ok"] is False
 
 
+def test_node_writes_a_40_float_trajectory_into_one_point(h):
+    """一个「写数据点」节点把 20 个轨迹点（40 个浮点）一次写进 float32×40 的数据点。"""
+    dev = h.mgr.add_device("plc", "modbus_tcp_server",
+                           {"host": "127.0.0.1", "port": 0, "register_count": 256}, points=[
+        {"name": "traj", "area": "holding", "address": 10, "dtype": "float32", "count": 40,
+         "layout": "CDAB", "direction": "read_write"}])
+    h.mgr.connect_all()
+    code = ("def process(ctx, inputs, params, state):\n"
+            "    return {'out1': [[i * 0.5, -i * 0.25] for i in range(%d)]}\n")
+    s = node(h, "script.python", "s", code=code % 20)
+    w = node(h, "comm.write_point", "w", device=dev.id, point="traj")
+    rd = node(h, "comm.read_point", "r", device=dev.id, point="traj", mode="fresh")
+    h.flow.add_link(s.id, "out1", w.id, "value")
+    h.flow.add_link(w.id, "ok", rd.id, "after")
+    r = h.run()
+    assert r.node_results[w.id].outputs == {"ok": True, "count": 40, "error": ""}
+    flat = [v for i in range(20) for v in (i * 0.5, -i * 0.25)]
+    assert r.node_results[rd.id].outputs["value"] == pytest.approx(flat)
+    assert r.node_results[rd.id].outputs["count"] == 40
+    assert dev.read_point("traj") == pytest.approx(flat)
+
+    # 系数逐个乘
+    w.set("scale", 10.0)
+    h.run()
+    assert dev.read_point("traj") == pytest.approx([v * 10 for v in flat])
+    w.set("scale", 1.0)
+
+    # 个数不符：默认报错，设成「自动补齐」就多的截掉、少的补 0
+    s.set("code", code % 19)
+    r = h.run()
+    assert "要 40 个值" in r.node_results[w.id].error and "38 个" in r.node_results[w.id].error
+    w.set("on_length", "fit")
+    r = h.run()
+    assert r.node_results[w.id].outputs["ok"] is True
+    assert dev.read_point("traj")[-2:] == [0.0, 0.0]
+    s.set("code", code % 25)
+    assert h.run().node_results[w.id].outputs["ok"] is True
+    assert dev.read_point("traj") == pytest.approx(flat)          # 多的 10 个被截掉
+
+
 def test_node_read_point_marks_stale_after_disconnect(h):
     dev = h.mgr.add_device("plc", "modbus_tcp_server", {"host": "127.0.0.1", "port": 0}, points=[
         {"name": "v", "area": "holding", "address": 0, "dtype": "int16", "direction": "read_write"}])

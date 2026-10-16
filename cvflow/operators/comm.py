@@ -31,6 +31,11 @@ def _manager():
     return mgr
 
 
+def _value_count(value) -> int:
+    """数组数据点读出来是列表，给出里面有几个值；单个值算 1。"""
+    return len(value) if isinstance(value, (list, tuple)) else (0 if value is None else 1)
+
+
 def _device(mgr, ref: str):
     dev = mgr.resolve(ref)
     if dev is None:
@@ -276,7 +281,7 @@ class ReadDataPoint(Node):
     color = _COLOR
     inputs = [Port("after", DataType.ANY, optional=True)]
     outputs = [Port("value", DataType.ANY), Port("valid", DataType.BOOL),
-               Port("error", DataType.STRING)]
+               Port("count", DataType.INT, label="几个值"), Port("error", DataType.STRING)]
     params = [Param("device", "", "choice", options="comm.register_devices", description="支持数据点的设备"),
               Param("point", "", "choice", options="comm.points", description="数据点"),
               Param("mode", "cached", "enum", choices=["cached", "fresh"],
@@ -292,44 +297,77 @@ class ReadDataPoint(Node):
             if self.get("mode") == "cached":
                 pv = dev.point_value(name)        # type: ignore[attr-defined]
                 if pv.valid and not pv.stale:
-                    return {"value": pv.value, "valid": True, "error": ""}
+                    return {"value": pv.value, "valid": True, "count": _value_count(pv.value),
+                            "error": ""}
                 if pv.valid and pv.stale:
                     if self.get("on_error") == "invalid":
-                        return {"value": pv.value, "valid": False, "error": pv.error or "数据已过期"}
+                        return {"value": pv.value, "valid": False, "count": _value_count(pv.value),
+                                "error": pv.error or "数据已过期"}
                     raise NodeError(f"数据点 {name!r} 的值已过期：{pv.error or '连接断开'}")
             value = mgr.read_point(dev.id, name)
         except NodeError:
             raise
         except Exception as e:
             if self.get("on_error") == "invalid":
-                return {"value": None, "valid": False, "error": str(e)}
+                return {"value": None, "valid": False, "count": 0, "error": str(e)}
             raise NodeError(f"读数据点 {name!r} 失败：{e}") from None
-        return {"value": value, "valid": True, "error": ""}
+        return {"value": value, "valid": True, "count": _value_count(value), "error": ""}
 
 
 @register
 class WriteDataPoint(Node):
+    """写一个数据点。单个值和**数组**走的是同一个节点。
+
+    数组：数据点的「数量」填几，就一次写几个值（``float32×40`` = 80 个寄存器，一条
+    功能码 16 请求写完）。输入端口接 ``[1.2, 3.4, …]``、``[[x, y], …]``（轨迹节点的点列
+    直接接上来就行）或 numpy 数组都可以——嵌套会先按行摊平成一维，再按顺序铺进寄存器。
+    """
+
     type_id = "comm.write_point"
     category = "Communication"
     label = "Write Data Point"
     runs_last = True          # 汇报结论：等判定与叠加层齐了再执行
-    description = "Write a value into a named data point (Modbus / MC / S7)."
+    description = ("Write a value — or an array of values — into a named data point "
+                   "(Modbus / MC / S7).")
     color = _COLOR
     inputs = [Port("value", DataType.ANY)]
-    outputs = [Port("ok", DataType.BOOL), Port("error", DataType.STRING)]
+    outputs = [Port("ok", DataType.BOOL), Port("count", DataType.INT, label="写了几个"),
+               Port("error", DataType.STRING)]
     params = [Param("device", "", "choice", options="comm.register_devices", description="支持数据点的设备"),
               Param("point", "", "choice", options="comm.points", description="数据点"),
-              Param("scale", 1.0, "float", description="写之前先乘这个系数"),
+              Param("scale", 1.0, "float", description="写之前先乘这个系数（数组里每个值都乘）"),
+              Param("on_length", "error", "enum", choices=["error", "fit"],
+                    description="数组长度和数据点「数量」不符时：报错 / 自动补齐"
+                                "（多的截掉，少的补 0）"),
               Param("on_error", "error", "enum", choices=["error", "false"],
                     description="写失败：报错 / 输出 ok=False")]
 
     def process(self, ctx, inputs):
+        from ..comm.modbus_map import MapError, fit_numbers, flatten_numbers
         mgr = _manager()
         dev = _device(mgr, self.get("device"))
         name = str(self.get("point") or "")
         value = inputs["value"]
         scale = float(self.get("scale") or 1.0)
-        if scale != 1.0:
+        point = self._point(dev, name)
+        count = max(1, int(point.count)) if point is not None else 1
+        array = point is not None and not point.bits and point.dtype != "string" and count > 1
+        written = 1
+        if array or isinstance(value, (list, tuple)) or hasattr(value, "tolist"):
+            # 数组：摊平 → 乘系数 → 按数据点的「数量」对齐
+            try:
+                vals = flatten_numbers(value)
+            except MapError as e:
+                raise NodeError(f"写数据点 {name!r}：{e}") from None
+            if scale != 1.0:
+                vals = [v * scale for v in vals]
+            if array and len(vals) != count:
+                if self.get("on_length") != "fit":
+                    raise NodeError(f"写数据点 {name!r}：这个点要 {count} 个值，输入给了 {len(vals)} 个"
+                                    f"（把「数量不符」设成「自动补齐」就多的截掉、少的补 0）")
+                vals = fit_numbers(vals, count)
+            value, written = vals, len(vals)
+        elif scale != 1.0:
             try:
                 value = float(value) * scale
             except (TypeError, ValueError):
@@ -338,9 +376,20 @@ class WriteDataPoint(Node):
             dev.write_point(name, value)          # type: ignore[attr-defined]
         except Exception as e:
             if self.get("on_error") == "false":
-                return {"ok": False, "error": str(e)}
+                return {"ok": False, "count": 0, "error": str(e)}
             raise NodeError(f"写数据点 {name!r} 失败：{e}") from None
-        return {"ok": True, "error": ""}
+        return {"ok": True, "count": written, "error": ""}
+
+    @staticmethod
+    def _point(dev, name: str):
+        """取数据点定义（为了知道数组长度）。不支持数据点表的设备给 None。"""
+        getter = getattr(dev, "points", None)
+        if getter is None:
+            return None
+        try:
+            return getter.get(name)
+        except Exception:
+            return None
 
 
 @register

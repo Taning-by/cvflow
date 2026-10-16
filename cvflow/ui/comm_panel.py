@@ -21,7 +21,7 @@ from ..comm.manager import (ACTION_LABELS, DATA_MATCH_LABELS, LOG_DIRECTIONS, RU
                             SEND_TARGET_LABELS, TEXT_MATCH_LABELS, TRIGGER_ACTIONS, WHEN_LABELS,
                             CommManager, ReceiveRule, SendRule)
 from ..comm.modbus import _PointHost
-from ..comm.modbus_map import AREA_INFO, DIRECTION_LABELS
+from ..comm.modbus_map import AREA_INFO, DIRECTION_LABELS, MapError, flatten_numbers
 from .comm_dialogs import (DataPointDialog, DeviceDialog, FormatRuleDialog, HandshakeDialog,
                            ParseRuleDialog, ReceiveRuleDialog, SendRuleDialog)
 from .i18n import tr
@@ -681,22 +681,34 @@ class CommPanel(QWidget):
         point = dev.points.get(name)
         value: object = raw
         if point is not None and point.dtype != "string":
-            try:
-                value = float(raw) if "." in raw else int(raw, 0)
-            except ValueError:
-                if point.dtype == "bool":
-                    value = raw.lower() in ("1", "true", "on", "ok")
-                else:
-                    self.mb_result.setText(f"{raw!r} 不是数字")
+            array = not point.bits and int(point.count) > 1
+            if array or "," in raw or ";" in raw:
+                # 数组数据点：这里就填一串「1.2, 3.4, …」，个数要和数据点的「数量」一致
+                try:
+                    value = flatten_numbers(raw)
+                except MapError as e:
+                    self.mb_result.setText(str(e))
                     self.mb_result.setStyleSheet(f"color:{C['ng']}")
                     return
+            else:
+                try:
+                    value = float(raw) if "." in raw else int(raw, 0)
+                except ValueError:
+                    if point.dtype == "bool":
+                        value = raw.lower() in ("1", "true", "on", "ok")
+                    else:
+                        self.mb_result.setText(f"{raw!r} 不是数字")
+                        self.mb_result.setStyleSheet(f"color:{C['ng']}")
+                        return
         try:
             dev.write_point(name, value)
         except Exception as e:
             self.mb_result.setText(f"写入失败：{e}")
             self.mb_result.setStyleSheet(f"color:{C['ng']}")
             return
-        self.mb_result.setText(f"已写入 {name} = {value}")
+        shown = (f"{len(value)} 个值（{', '.join(f'{v:g}' for v in value[:4])}{'…' if len(value) > 4 else ''}）"
+                 if isinstance(value, list) else value)
+        self.mb_result.setText(f"已写入 {name} = {shown}")
         self.mb_result.setStyleSheet(f"color:{C['ok']}")
 
     def _clear_log(self) -> None:
