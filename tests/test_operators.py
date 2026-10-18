@@ -73,8 +73,7 @@ def test_caliper_subpixel(reg):
     data[:, 50:150] = 220
     img = Image(data)
     nr, _ = run_single(reg, "analysis.caliper", {"image": img},
-                       {"roi": {"x": 10, "y": 40, "w": 280, "h": 20}, "direction": "horizontal",
-                        "select": "first_last", "min_contrast": 20, "smooth": 1})
+                       {"direction": "horizontal", "select": "first_last", "min_contrast": 20, "smooth": 1})
     edges = nr.outputs["edges"]
     assert len(edges) == 2
     assert abs(edges[0] - 49.5) < 1.0 and abs(edges[1] - 149.5) < 1.0
@@ -103,7 +102,8 @@ def test_circle_fit(reg):
 
 
 def test_crop_morph_resize(reg, blob_image):
-    nr, _ = run_single(reg, "preprocess.crop", {"image": blob_image}, {"roi": {"x": 10, "y": 70, "w": 60, "h": 60}})
+    nr, _ = run_single(reg, "preprocess.crop", {"image": blob_image},
+                       {"roi_w": 60, "roi_h": 60, "roi": {"x": 10, "y": 70, "w": 60, "h": 60}})
     assert nr.outputs["image"].data.shape[:2] == (60, 60) and nr.outputs["offset"].x == 10
     nr, _ = run_single(reg, "preprocess.morphology", {"image": blob_image}, {"op": "erode", "ksize": 5})
     assert nr.outputs["image"].data.sum() < blob_image.data.sum()
@@ -114,7 +114,8 @@ def test_crop_morph_resize(reg, blob_image):
 
 
 def test_intensity_and_contours(reg, blob_image):
-    nr, _ = run_single(reg, "analysis.intensity", {"image": blob_image}, {"roi": {"x": 20, "y": 80, "w": 40, "h": 40}})
+    # 灰度统计不带 ROI：要量哪块就先裁哪块（这里直接喂裁好的那块）
+    nr, _ = run_single(reg, "analysis.intensity", {"image": Image(blob_image.data[80:120, 20:60].copy())})
     assert nr.outputs["mean"] > 250
     nr, _ = run_single(reg, "analysis.contours", {"image": blob_image}, {"min_area": 100})
     assert nr.outputs["count"] == 3

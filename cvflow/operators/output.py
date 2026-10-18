@@ -9,6 +9,7 @@ import cv2
 
 from ..core import paths
 from ..core.draw import render_overlays
+from ..core.engine import align_overlays
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import DataType, Image
@@ -50,7 +51,8 @@ class RenderOverlays(Node):
 
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
-        overlays = [ov for r in ctx.results.values() for ov in r.overlays]
+        # 各节点的叠加层画在各自输入图的坐标里；裁剪小图上画的轨迹搬到整帧（或反过来）要按原点平移
+        overlays = align_overlays(ctx.results.values(), img)
         out = render_overlays(img, overlays, int(self.get("thickness")))
         if self.get("stamp_result"):
             txt = "NG" if ctx.judgement is False else "OK" if ctx.judgement else ""

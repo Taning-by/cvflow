@@ -10,91 +10,17 @@ import os
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from ..camera import camera_manager, CAMERA_KINDS
 from ..core import paths
 from ..core.node import TRIGGER_PORT, Node, NodeError, Param, Port
 from ..core.registry import register
-from ..core.types import DataType, Image, Rect
+from ..core.types import DataType, Image
+from ._roi import apply_roi, roi_auto_enable, roi_params
 from ._util import odd  # noqa: F401  (re-export convenience)
 
 _IMG_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
 _EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
-
-
-# ---------------------------------------------------------------- 固定 ROI 裁剪
-#
-# 取图之后立刻裁出固定尺寸的一块，直接喂给深度学习节点。和"下游再裁"相比有两个实际好处：
-# 传给后面的数据少（628×768 只有 1280×1024 的 18%），以及尺寸在源头就定死了——
-# 换相机、换分辨率都不会悄悄改变送进网络的张量尺寸。
-#
-# 尺寸由 roi_w / roi_h 两个参数定，框只能拖位置（Param 的 locked_size）。每个工位一个位置，
-# 标定一次填进去就不动了；位置可以在图像上拖，也可以直接把训练导出的 rois.json 里的数填进来。
-def roi_params(w: int = 628, h: int = 768) -> list[Param]:
-    return [
-        Param("roi_enabled", False, "bool", label="固定 ROI 裁剪",
-              description="打开后本节点直接输出裁好的小图（尺寸就是下面的 ROI 宽/高），"
-                          "下游深度学习节点拿到的就是定尺寸输入。关掉则输出整张原图。"
-                          "裁剪位置会记在图像上，下游把坐标换算回原图时自动带上"),
-        Param("roi_w", w, "int", min=8, max=20000, label="ROI 宽",
-              description="要和模型的输入宽度一致（看导出的 sidecar json 里的 width）"),
-        Param("roi_h", h, "int", min=8, max=20000, label="ROI 高",
-              description="要和模型的输入高度一致（看导出的 sidecar json 里的 height）"),
-        Param("roi", None, "rect", label="ROI 位置", locked_size="roi_w,roi_h",
-              description="在图像上拖这个框定位置，尺寸只能用上面的宽/高改。不设就取画面正中。"
-                          "多工位时每个工位各填各的（训练侧 make_rois.py 会把每个工位的位置算好）"),
-    ]
-
-
-def roi_auto_enable(node: Node, name: str, value) -> None:
-    """在图上摆了一个框，就是想裁——别再要求额外去勾一个开关。
-
-    摆完框却忘了勾「固定 ROI 裁剪」，节点会原样输出整张原图，下游深度学习节点把整图缩放到
-    模型输入尺寸照样能跑出结果，只是全错；现象是"显示的是原图、轨迹不在 ROI 里"，
-    很难想到是少勾了一个勾。所以这里自动打开，用户要关随时能关。
-    """
-    if name != "roi" or not value or node.get("roi_enabled"):
-        return
-    r = Rect.from_dict(value) if isinstance(value, dict) else value
-    if r is None or r.is_empty():
-        return
-    node.values["roi_enabled"] = True
-
-
-def apply_roi(node: Node, img: Image, ctx) -> tuple[Image, Rect]:
-    """按节点上的固定 ROI 裁一块，并给出这块图在原图里的位置。
-
-    裁出来的尺寸**严格**等于 ROI 宽/高：这是要送进网络的张量尺寸，差一个像素模型就得重导。
-    所以框超出画面时是补黑边，而不是像普通 ROI 那样取交集缩小。
-
-    没开裁剪时返回整幅的矩形——``roi`` 这个输出口的含义始终是"输出的图对应原图的哪一块"，
-    下游不用分情况讨论。只有真裁了才在图上记 ``meta["roi"]``，老流程的行为一点不变。
-    """
-    if not node.get("roi_enabled"):
-        return img, Rect(0.0, 0.0, float(img.width), float(img.height))
-    w, h = int(node.get("roi_w")), int(node.get("roi_h"))
-    if w <= 0 or h <= 0:
-        raise NodeError("ROI 宽/高必须为正")
-    r = node.rect("roi")
-    if r is None or r.is_empty():
-        x, y = (img.width - w) // 2, (img.height - h) // 2        # 还没摆过框：先取正中，拖一下就定下来
-    else:
-        x, y = int(round(r.cx - w / 2)), int(round(r.cy - h / 2))  # 尺寸以参数为准，中心保持不动
-    x = min(max(0, x), max(0, img.width - w))
-    y = min(max(0, y), max(0, img.height - h))
-    data = img.data
-    out = np.zeros((h, w) + data.shape[2:], data.dtype)
-    sx1, sy1 = min(data.shape[1], x + w), min(data.shape[0], y + h)
-    if sx1 > x and sy1 > y:
-        out[:sy1 - y, :sx1 - x] = data[y:sy1, x:sx1]
-    else:
-        raise NodeError(f"ROI ({x},{y} {w}×{h}) 和图像（{img.width}×{img.height}）没有交集")
-    if sx1 - x < w or sy1 - y < h:
-        ctx.log(f"ROI {w}×{h} 超出图像 {img.width}×{img.height}，缺的部分补黑", "warning")
-    cropped = img.derive(out)
-    cropped.meta["roi"] = [x, y, w, h]        # 下游把坐标换算回原图要用它
-    return cropped, Rect(float(x), float(y), float(w), float(h))
 
 
 def trigger_input() -> Port:

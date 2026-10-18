@@ -162,15 +162,73 @@ def test_preprocess_resize_scale_and_size():
 
 
 def test_preprocess_crop_param_input_and_errors():
+    """「裁剪 ROI」节点和采集节点的固定 ROI 是同一套：尺寸由宽/高参数定，框只定位置，输出尺寸严格等于宽×高。"""
     img = squares_bgr()
-    o = run_ok(reg, "preprocess.crop", {"image": img}, {"roi": {"x": 20, "y": 80, "w": 41, "h": 41}}).outputs
+    vals = {"roi_w": 41, "roi_h": 41, "roi": {"x": 20, "y": 80, "w": 41, "h": 41}}
+    o = run_ok(reg, "preprocess.crop", {"image": img}, vals).outputs
     assert o["image"].data.shape[:2] == (41, 41) and o["image"].data.min() == 255 and o["offset"] == Point(20, 80)
-    o = run_ok(reg, "preprocess.crop", {"image": img, "roi": Rect(190, 190, 50, 50)}, {}).outputs   # 越界自动裁剪
-    assert o["image"].data.shape[:2] == (10, 10) and o["roi"].w == 10
-    nr, _, _ = run_node(reg, "preprocess.crop", {"image": img}, {})
-    assert nr.status == NodeStatus.ERROR and "ROI" in nr.error
-    nr, _, _ = run_node(reg, "preprocess.crop", {"image": img}, {"roi": {"x": 500, "y": 500, "w": 10, "h": 10}})
-    assert nr.status == NodeStatus.ERROR
+    assert o["roi"] == Rect(20, 80, 41, 41) and o["image"].meta["roi"] == [20, 80, 41, 41]   # 下游据此换算回原图
+    # 改了宽/高不用重摆框：中心不动、尺寸以参数为准
+    o = run_ok(reg, "preprocess.crop", {"image": img}, {**vals, "roi_w": 61, "roi_h": 61}).outputs
+    assert o["image"].data.shape[:2] == (61, 61) and o["roi"] == Rect(10, 70, 61, 61)
+    # 没摆过框：取画面正中，不再报错
+    o = run_ok(reg, "preprocess.crop", {"image": img}, {"roi_w": 100, "roi_h": 50}).outputs
+    assert o["image"].data.shape[:2] == (50, 100) and o["roi"] == Rect(50, 75, 100, 50)
+    # 上游接进来的框：位置和尺寸都以它为准；伸出画面时补黑，尺寸不变（这是送进网络的张量尺寸）
+    o = run_ok(reg, "preprocess.crop", {"image": img, "roi": Rect(190, 190, 50, 50)}, {}).outputs
+    assert o["image"].data.shape[:2] == (50, 50) and o["roi"] == Rect(190, 190, 50, 50)
+    assert o["image"].data[:10, :10].max() == 0 and o["image"].data[10:, 10:].max() == 0
+    nr, _, _ = run_node(reg, "preprocess.crop", {"image": img}, {"roi_w": 10, "roi_h": 10, "roi": {"x": 500, "y": 500, "w": 10, "h": 10}})
+    assert nr.status.value == "ok" and nr.outputs["roi"] == Rect(190, 190, 10, 10)   # 摆出画面的框被压回画面里
+    nr, _, _ = run_node(reg, "preprocess.crop", {"image": img, "roi": Rect(500, 500, 10, 10)}, {})
+    assert nr.status == NodeStatus.ERROR and "没有交集" in nr.error
+
+
+def test_preprocess_crop_chains_keep_original_frame_origin():
+    """采集节点裁过一次、「裁剪 ROI」再裁一次：meta 里的原点累加，始终相对最原始那帧。"""
+    full = squares_bgr()
+    first = Image(full.data[50:150, 10:110].copy(), meta={"roi": [10, 50, 100, 100]})     # 相当于采集节点裁出来的
+    o = run_ok(reg, "preprocess.crop", {"image": first}, {"roi_w": 41, "roi_h": 41, "roi": {"x": 10, "y": 30, "w": 41, "h": 41}}).outputs
+    assert o["image"].meta["roi"] == [20, 80, 41, 41] and o["roi"] == Rect(20, 80, 41, 41) and o["offset"] == Point(20, 80)
+    assert o["image"].data.min() == 255                                                   # 正好是左边那个白方块
+    assert o["image"].origin == (20, 80) and first.origin == (10, 50) and full.origin == (0, 0)
+
+
+def test_preprocess_crop_loads_old_solutions_that_only_had_a_free_box():
+    """老方案里这个节点只有一个随手拖的框、没有宽/高参数：框多大就裁多大，行为不变。"""
+    node = reg.node_from_dict({"id": "c1", "type": "preprocess.crop",
+                               "values": {"roi": {"x": 10, "y": 70, "w": 60, "h": 30}}})
+    assert (node.get("roi_w"), node.get("roi_h")) == (60, 30)
+    node = reg.node_from_dict({"id": "c2", "type": "preprocess.crop",
+                               "values": {"roi_w": 100, "roi_h": 80, "roi": {"x": 10, "y": 70, "w": 60, "h": 30}}})
+    assert (node.get("roi_w"), node.get("roi_h")) == (100, 80)                            # 新方案以宽/高参数为准
+
+
+def test_crop_overlay_origin_is_recorded_and_overlays_can_be_aligned_to_the_full_frame():
+    """各节点的叠加层画在自己输入图的坐标里；运行结果记下这张图在原始帧里的原点，合到整帧上显示时按它平移。"""
+    from cvflow.core import Graph
+    from cvflow.core.engine import Engine, align_overlays
+    from cvflow.core.draw import render_overlays
+    from nodes_helpers import _Feeder
+    full = squares_bgr()
+    g = Graph("roi")
+    feed = g.add_node(_Feeder({"image": full}))
+    crop = g.add_node(reg.create("preprocess.crop", values={"roi_w": 41, "roi_h": 41, "roi": {"x": 20, "y": 80, "w": 41, "h": 41}}))
+    blob = g.add_node(reg.create("analysis.blob", values={"min_area": 10}))
+    g.add_link(feed.id, "image", crop.id, "image")
+    g.add_link(crop.id, "image", blob.id, "image")
+    r = Engine(g).run()
+    assert r.node_results[crop.id].origin == (0, 0) and r.node_results[blob.id].origin == (20, 80)
+    rects = [ov for ov in r.node_results[blob.id].overlays if ov.kind == "rect"]
+    assert len(rects) == 1 and (rects[0].geometry["x"], rects[0].geometry["y"]) == (0, 0)   # 小图坐标：和显示的小图对得齐
+    aligned = [ov for ov in align_overlays(r.node_results.values(), full) if ov.kind == "rect" and ov.color == "#00ff00"]
+    assert (aligned[0].geometry["x"], aligned[0].geometry["y"]) == (20, 80)                   # 搬到整帧上：落在方块上
+    small = r.node_results[crop.id].outputs["image"]
+    same = [ov for ov in align_overlays(r.node_results.values(), small) if ov.kind == "rect" and ov.color == "#00ff00"]
+    assert (same[0].geometry["x"], same[0].geometry["y"]) == (0, 0)                           # 搬到小图上：原样
+    # 渲染节点把全部叠加层画到整帧上：方块的框应该画在 (20,80)，而不是左上角
+    rendered = render_overlays(full, align_overlays(r.node_results.values(), full))
+    assert tuple(rendered.data[80, 20]) == (0, 255, 0) and tuple(rendered.data[0, 0]) == (0, 0, 0)
 
 
 def test_preprocess_canny_edges_of_square():
@@ -255,14 +313,19 @@ def test_analysis_contours_count_area_approx():
     assert run_ok(reg, "analysis.contours", {"image": inner}, {"mode": "tree", "min_area": 10}).outputs["count"] == 4
 
 
-def test_analysis_template_match_position_threshold_roi_and_errors(tmp_path):
+def test_analysis_template_match_position_threshold_cropped_input_and_errors(tmp_path):
     img = squares_bgr()
     tpl = Image(img.data[70:130, 10:70].copy())
     o = run_ok(reg, "analysis.template_match", {"image": img, "template": tpl}, {"min_score": 0.9, "max_matches": 5, "overlap": 0.1}).outputs
     assert o["found"] and o["count"] == 3 and o["score"] > 0.99
     assert sorted(round(m["cx"]) for m in o["matches"]) == [40, 100, 160]
-    o = run_ok(reg, "analysis.template_match", {"image": img, "template": tpl}, {"max_matches": 1, "search_roi": {"x": 120, "y": 60, "w": 80, "h": 80}}).outputs
-    assert o["count"] == 1 and round(o["center"].x) == 160
+    # 节点不带搜索区域：要缩小范围就在前面裁。裁出的小图带着原点，输出的中心仍是整帧坐标，叠加层画在小图上
+    sub = Image(img.data[60:140, 120:200].copy(), meta={"roi": [120, 60, 80, 80]})
+    nr = run_ok(reg, "analysis.template_match", {"image": sub, "template": tpl}, {"max_matches": 1})
+    o = nr.outputs
+    assert o["count"] == 1 and round(o["center"].x) == 160 and round(o["center"].y) == 100 and round(o["rect"].x) == 130
+    drawn = [ov for ov in nr.overlays if ov.kind == "rect"]
+    assert len(drawn) == 1 and round(drawn[0].geometry["x"]) == 10 and round(drawn[0].geometry["y"]) == 10
     noise_tpl = Image(np.random.default_rng(1).integers(0, 255, (30, 30), np.uint8))
     o = run_ok(reg, "analysis.template_match", {"image": img, "template": noise_tpl}, {"min_score": 0.9}).outputs
     assert not o["found"] and o["count"] == 0
@@ -276,22 +339,28 @@ def test_analysis_template_match_position_threshold_roi_and_errors(tmp_path):
 
 def test_analysis_caliper_positions_polarity_select_direction():
     img = step_gray()
-    roi = {"x": 10, "y": 40, "w": 280, "h": 20}
-    o = run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "select": "all", "min_contrast": 20, "smooth": 1}).outputs
+    o = run_ok(reg, "analysis.caliper", {"image": img}, {"select": "all", "min_contrast": 20, "smooth": 1}).outputs
     assert o["count"] == 2 and abs(o["edges"][0] - 49.5) < 0.6 and abs(o["edges"][1] - 149.5) < 0.6 and abs(o["width"] - 100) < 1
-    assert abs(run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "polarity": "dark_to_light", "smooth": 1}).outputs["first"] - 49.5) < 0.6
-    assert abs(run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "polarity": "light_to_dark", "smooth": 1}).outputs["first"] - 149.5) < 0.6
-    assert run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "select": "first", "smooth": 1}).outputs["count"] == 1
-    assert abs(run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "select": "last", "smooth": 1}).outputs["first"] - 149.5) < 0.6
-    assert run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "select": "strongest", "smooth": 1}).outputs["count"] == 1
+    assert abs(run_ok(reg, "analysis.caliper", {"image": img}, {"polarity": "dark_to_light", "smooth": 1}).outputs["first"] - 49.5) < 0.6
+    assert abs(run_ok(reg, "analysis.caliper", {"image": img}, {"polarity": "light_to_dark", "smooth": 1}).outputs["first"] - 149.5) < 0.6
+    assert run_ok(reg, "analysis.caliper", {"image": img}, {"select": "first", "smooth": 1}).outputs["count"] == 1
+    assert abs(run_ok(reg, "analysis.caliper", {"image": img}, {"select": "last", "smooth": 1}).outputs["first"] - 149.5) < 0.6
+    assert run_ok(reg, "analysis.caliper", {"image": img}, {"select": "strongest", "smooth": 1}).outputs["count"] == 1
     vert = Image(np.ascontiguousarray(img.data.T))
-    o = run_ok(reg, "analysis.caliper", {"image": vert}, {"roi": {"x": 40, "y": 10, "w": 20, "h": 280}, "direction": "vertical", "smooth": 1}).outputs
+    o = run_ok(reg, "analysis.caliper", {"image": vert}, {"direction": "vertical", "smooth": 1}).outputs
     assert o["count"] == 2 and abs(o["edges"][0] - 49.5) < 0.6
-    assert run_ok(reg, "analysis.caliper", {"image": img}, {"roi": roi, "min_contrast": 250}).outputs["count"] == 0
-    o = run_ok(reg, "analysis.caliper", {"image": img, "roi": Rect(10, 40, 280, 20)}, {}).outputs
-    assert o["count"] == 2
-    nr, _, _ = run_node(reg, "analysis.caliper", {"image": img}, {})
-    assert nr.status == NodeStatus.ERROR
+    assert run_ok(reg, "analysis.caliper", {"image": img}, {"min_contrast": 250}).outputs["count"] == 0
+    # 卡尺不带 ROI：要量的那一条由前面的「裁剪 ROI」裁出来。裁出的小图带着原点，输出位置仍是整帧坐标，
+    # 画的线却在小图坐标里（面板上显示的就是小图）
+    strip = Image(img.data[40:60, 10:290].copy(), meta={"roi": [10, 40, 280, 20]})
+    nr = run_ok(reg, "analysis.caliper", {"image": strip}, {"select": "all", "min_contrast": 20, "smooth": 1})
+    o = nr.outputs
+    assert o["count"] == 2 and abs(o["edges"][0] - 49.5) < 0.6 and abs(o["edges"][1] - 149.5) < 0.6 and abs(o["width"] - 100) < 1
+    lines = [ov.geometry for ov in nr.overlays if ov.kind == "line"]
+    assert len(lines) == 2 and abs(lines[0]["x1"] - 39.5) < 0.6 and lines[0]["y2"] == 20
+    vstrip = Image(vert.data[10:290, 40:60].copy(), meta={"roi": [40, 10, 20, 280]})
+    o = run_ok(reg, "analysis.caliper", {"image": vstrip}, {"direction": "vertical", "smooth": 1}).outputs
+    assert o["count"] == 2 and abs(o["edges"][0] - 49.5) < 0.6
 
 
 def test_analysis_circle_fit_and_hough_accuracy():
@@ -304,18 +373,43 @@ def test_analysis_circle_fit_and_hough_accuracy():
     two = img.copy(); cv2.circle(two.data, (160, 160), 20, 255, -1)
     o = run_ok(reg, "analysis.circle", {"image": two}, {"method": "contour_fit", "min_radius": 10, "max_radius": 100, "max_count": 5}).outputs
     assert o["count"] == 2 and abs(o["radius"] - 40) < 1     # 最大轮廓优先
-    o = run_ok(reg, "analysis.circle", {"image": two}, {"method": "contour_fit", "min_radius": 10, "max_radius": 100, "roi": {"x": 130, "y": 130, "w": 60, "h": 60}}).outputs
-    assert o["count"] == 1 and abs(o["cx"] - 160) < 1
+    # 不带 ROI：要找哪块就先裁哪块。裁出的小图带着原点，圆心输出仍是整帧坐标，叠加层画在小图上
+    sub = Image(two.data[130:190, 130:190].copy(), meta={"roi": [130, 130, 60, 60]})
+    nr = run_ok(reg, "analysis.circle", {"image": sub}, {"method": "contour_fit", "min_radius": 10, "max_radius": 100})
+    o = nr.outputs
+    assert o["count"] == 1 and abs(o["cx"] - 160) < 1 and abs(o["cy"] - 160) < 1 and abs(o["circle"].cx - 160) < 1
+    drawn = [ov for ov in nr.overlays if ov.kind == "circle"]
+    assert len(drawn) == 1 and abs(drawn[0].geometry["cx"] - 30) < 1
+
+
+def test_analysis_outputs_are_original_frame_coordinates_when_input_was_cropped():
+    """上游（采集节点 /「裁剪 ROI」）裁过的小图带着原点：Blob、轮廓、二维码输出的坐标都换回整帧，叠加层仍在小图坐标里。"""
+    full = squares_gray()
+    sub = Image(full.data[60:140, 10:130].copy(), meta={"roi": [10, 60, 120, 80]})     # 含左边两个方块
+    nr = run_ok(reg, "analysis.blob", {"image": sub}, {"min_area": 100, "sort": "left_to_right"})
+    o = nr.outputs
+    assert o["count"] == 2 and [(b["x"], b["y"]) for b in o["blobs"]] == [(20, 80), (80, 80)]
+    assert [round(c.x) for c in o["centers"]] == [40, 100] and all(round(c.y) == 100 for c in o["centers"])
+    rects = [ov.geometry for ov in nr.overlays if ov.kind == "rect"]
+    assert sorted((r["x"], r["y"]) for r in rects) == [(10, 20), (70, 20)]                 # 小图坐标
+    o = run_ok(reg, "analysis.contours", {"image": sub}, {"min_area": 100}).outputs
+    pts = np.concatenate([c.reshape(-1, 2) for c in o["contours"]])
+    assert pts[:, 0].min() == 20 and pts[:, 1].min() == 80 and o["largest"][0].dtype == np.int32
+    plain = run_ok(reg, "analysis.contours", {"image": Image(sub.data.copy())}, {"min_area": 100}).outputs
+    assert np.concatenate([c.reshape(-1, 2) for c in plain["contours"]])[:, 0].min() == 10   # 没裁过：原样
+    qr = qr_bgr("CVFLOW")
+    base = run_ok(reg, "analysis.qrcode", {"image": qr}).outputs
+    shifted = run_ok(reg, "analysis.qrcode", {"image": Image(qr.data, meta={"roi": [300, 40, qr.width, qr.height]})}).outputs
+    assert base["found"] and shifted["text"] == "CVFLOW"
+    assert np.allclose(np.array(shifted["points"]) - np.array(base["points"]), [300, 40])
 
 
 def test_analysis_intensity_stats_exact():
     d = np.zeros((10, 10), np.uint8); d[:, 5:] = 200
     o = run_ok(reg, "analysis.intensity", {"image": Image(d)}, {"fill_thresh": 128}).outputs
     assert o["mean"] == 100 and o["min"] == 0 and o["max"] == 200 and o["fill_ratio"] == 0.5 and abs(o["std"] - 100) < 1e-6
-    o = run_ok(reg, "analysis.intensity", {"image": Image(d)}, {"roi": {"x": 5, "y": 0, "w": 5, "h": 10}}).outputs
-    assert o["mean"] == 200 and o["std"] == 0
-    o = run_ok(reg, "analysis.intensity", {"image": Image(d), "roi": Rect(0, 0, 5, 10)}, {}).outputs
-    assert o["mean"] == 0
+    o = run_ok(reg, "analysis.intensity", {"image": Image(d[:, 5:].copy())}).outputs           # 不带 ROI：量哪块先裁哪块
+    assert o["mean"] == 200 and o["fill_ratio"] == 1.0
 
 
 def test_analysis_qrcode_decode_and_absent():
@@ -364,6 +458,13 @@ def test_dl_onnx_detector_decodes_boxes_and_nms(tmp_path):
     o = run_ok(reg, "dl.onnx_detector", {"image": Image(np.zeros((480, 640, 3), np.uint8))}, {"model_path": str(model), "conf": 0.25}).outputs
     d = o["detections"][0]                                                    # letterbox: r=1, 竖向填充 80 像素
     assert (d["x"], d["y"]) == (270, 215)
+    # 上游按固定 ROI 裁过的小图：输出框换回原始帧坐标（给 PLC 的），叠加层仍画在小图坐标里（和面板显示对得齐）
+    cropped = Image(np.zeros((640, 640, 3), np.uint8), meta={"roi": [1000, 300, 640, 640]})
+    nr = run_ok(reg, "dl.onnx_detector", {"image": cropped}, {"model_path": str(model), "conf": 0.25, "iou": 0.45})
+    d0 = nr.outputs["detections"][0]
+    assert (d0["x"], d0["y"]) == (1270, 595) and nr.outputs["boxes"][0] == Rect(1270, 595, 100, 50)
+    drawn = [ov for ov in nr.overlays if ov.kind == "rect"]
+    assert (drawn[0].geometry["x"], drawn[0].geometry["y"]) == (270, 295)
 
 
 def test_script_python_template_custom_setup_state_and_errors():
@@ -550,34 +651,80 @@ def test_learning_torch_template_reports_missing_torch_cleanly():
     assert nr.status == NodeStatus.ERROR and "torch" in nr.error.lower()
 
 
-# ---- 轨迹节点：图像尺寸与配置不符时的取图策略（见 trajectory_node._to_canvas） ----
-def _traj_canvas(values: dict, w: int, h: int):
-    """直接问节点：这张图它会把哪块区域、按什么缩放比送进网络。"""
+# ---- 轨迹节点：不自己裁剪，坐标按送进来那张图的原点换回原始帧（见 trajectory_node._to_canvas / decode） ----
+def _traj_canvas(values: dict, w: int, h: int, meta: dict | None = None):
+    """直接问节点：这张图它会按什么缩放比送进网络、输出坐标要加回哪个原点。"""
     node = reg.create("dl.onnx_trajectory", values=values)
-    _, meta = node._to_canvas(Image(np.zeros((h, w, 3), np.uint8)))
-    return meta
+    _, m = node._to_canvas(Image(np.zeros((h, w, 3), np.uint8), meta=meta or {}))
+    return m
 
 
-def test_traj_whole_image_mode_scales_instead_of_cropping():
-    """ROI 配成整图时，来了更大的图要整张缩放送进去，不能只切左上角——切掉的部分模型永远看不见。"""
-    vals = {"roi": {"x": 0, "y": 0, "w": 1280, "h": 1024}, "width": 1280, "height": 1024}
-    assert _traj_canvas(vals, 1280, 1024)["roi"] == (0, 0, 1280, 1024)      # 尺寸相符：原样送入
+def test_traj_has_no_crop_roi_of_its_own():
+    """裁剪只在采集节点 /「裁剪 ROI」节点上做一次；轨迹节点不再带"裁剪区 ROI"，老方案里的这个参数读进来会被忽略。"""
+    node = reg.create("dl.onnx_trajectory")
+    assert all(p.kind != "rect" for p in node.params)
+    old = reg.node_from_dict({"id": "t", "type": "dl.onnx_trajectory",
+                              "values": {"roi": {"x": 0, "y": 0, "w": 1280, "h": 1024}, "width": 628, "height": 768}})
+    assert (old.get("width"), old.get("height")) == (628, 768) and "roi" not in old.values
+
+
+def test_traj_matching_size_passes_through_and_mismatch_scales_with_warning():
+    vals = {"width": 1280, "height": 1024}
+    ok = _traj_canvas(vals, 1280, 1024)
+    assert ok["scale"] == (1.0, 1.0) and ok["origin"] == (0, 0) and not ok["warn"]
     big = _traj_canvas(vals, 1920, 1440)
-    assert big["roi"] == (0, 0, 1920, 1440), "整图模式下不该裁掉任何画面"
-    assert big["scale"] == (1280 / 1920, 1024 / 1440)                        # 坐标按这个比例换算回原图
+    assert big["scale"] == (1280 / 1920, 1024 / 1440) and "整图缩放" in big["warn"] and "1280/1024" in big["warn"]
     small = _traj_canvas(vals, 640, 512)
-    assert small["roi"] == (0, 0, 640, 512) and small["scale"] == (2.0, 2.0)
+    assert small["scale"] == (2.0, 2.0) and small["warn"]
 
 
-def test_traj_roi_mode_still_crops_and_clips():
-    """配了真正的子区域 ROI 就按它裁；ROI 伸出图像时取交集，并在元数据里如实反映。"""
-    vals = {"roi": {"x": 288, "y": 256, "w": 768, "h": 576}, "width": 768, "height": 576}
-    assert _traj_canvas(vals, 1280, 1024)["roi"] == (288, 256, 768, 576)
-    clipped = _traj_canvas(vals, 640, 512)["roi"]
-    assert clipped == (288, 256, 352, 256), "ROI 超出图像时应取交集"
+def test_traj_takes_origin_from_upstream_crop():
+    m = _traj_canvas({"width": 628, "height": 768}, 628, 768, meta={"roi": [300, 200, 628, 768]})
+    assert m["origin"] == (300, 200) and m["scale"] == (1.0, 1.0) and not m["warn"]
 
 
-def test_traj_roi_outside_image_errors_cleanly():
-    vals = {"roi": {"x": 2000, "y": 2000, "w": 768, "h": 576}, "width": 768, "height": 576}
-    with pytest.raises(NodeError, match="没有交集"):
-        _traj_canvas(vals, 1280, 1024)
+class _Ctx:
+    """decode 用到的最小上下文：收叠加层、收判定、收日志。"""
+
+    def __init__(self):
+        self.overlays, self.judged, self.logs = [], [], []
+
+    def add_overlay(self, ov):
+        self.overlays.append(ov)
+
+    def judge(self, ok, reason=""):
+        self.judged.append((ok, reason))
+
+    def log(self, msg, level="info"):
+        self.logs.append((level, msg))
+
+
+def test_traj_outputs_original_frame_points_but_draws_on_the_cropped_image():
+    """上游裁过：输出给 PLC 的点是原始帧坐标，叠加层却画在送进来的小图上——面板显示的就是这张小图。"""
+    node = reg.create("dl.onnx_trajectory", values={"width": 4, "height": 4, "num_points": 3, "conf": 0.5})
+    img = Image(np.zeros((4, 4, 3), np.uint8), meta={"roi": [100, 50, 4, 4]})
+    _, meta = node._to_canvas(img)
+    outs = [np.array([[0, 0], [2, 2], [4, 4]], np.float32), np.array([[1, 1]], np.float32), np.array([0.9], np.float32)]
+    ctx = _Ctx()
+    o = node.decode(ctx, outs, meta, img)
+    assert o["points"] == [[100, 50], [102, 52], [104, 54]] and o["aux"] == [[101, 51]]
+    assert o["start"] == Point(100, 50) and o["end"] == Point(104, 54) and o["valid"] and abs(o["length"] - 2 * 2 ** 1.5) < 1e-4
+    drawn = [tuple(p) for ov in ctx.overlays if ov.kind == "points" for p in ov.geometry["points"]]
+    assert set(drawn) == {(0, 0), (2, 2), (4, 4), (1, 1)}                           # 小图坐标，不带原点
+    lines = [ov.geometry for ov in ctx.overlays if ov.kind == "line"]
+    assert lines[0] == {"x1": 0, "y1": 0, "x2": 2, "y2": 2}
+    assert ctx.judged == [(True, "轨迹不可执行（空夹具/遮挡/刀已插入）")] and not ctx.logs
+    # 上游没裁：两套坐标相同，行为和以前一样
+    plain = Image(np.zeros((4, 4, 3), np.uint8))
+    o2 = node.decode(_Ctx(), outs, node._to_canvas(plain)[1], plain)
+    assert o2["points"] == [[0, 0], [2, 2], [4, 4]]
+
+
+def test_traj_mismatched_input_still_maps_back_through_scale_and_origin():
+    """尺寸对不上会整图缩放并每次提醒；换算仍然先除缩放比、再加原点。"""
+    node = reg.create("dl.onnx_trajectory", values={"width": 4, "height": 4, "num_points": 2, "conf": 0.5})
+    img = Image(np.zeros((8, 8, 3), np.uint8), meta={"roi": [10, 20, 8, 8]})
+    _, meta = node._to_canvas(img)
+    ctx = _Ctx()
+    o = node.decode(ctx, [np.array([[0, 0], [4, 4]], np.float32)], meta, img)
+    assert o["points"] == [[10, 20], [18, 28]] and ctx.logs and ctx.logs[0][0] == "warning" and "8×8" in ctx.logs[0][1]

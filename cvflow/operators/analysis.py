@@ -1,5 +1,11 @@
 """Measurement and inspection operators: blobs, contours, template matching,
-edge caliper, circle finding, intensity statistics, QR codes."""
+edge caliper, circle finding, intensity statistics, QR codes.
+
+这些节点都在**整张送进来的图**上算，自己不带 ROI。要限定区域，在前面接一个「裁剪 ROI」节点
+（或在采集节点上开「固定 ROI 裁剪」）。坐标约定和全软件一致（见 ``Image.origin``）：
+叠加层画在送进来的那张图上，面板上显示的就是它；输出的坐标（中心、框、边缘位置、轮廓点）
+换回**原始帧**坐标——上游裁过也照样是整帧里的位置，给 PLC / 执行机构的不会错。
+"""
 from __future__ import annotations
 
 import os
@@ -11,7 +17,7 @@ from ..core import paths
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import Circle, DataType, Image, Line, Overlay, Point, Rect
-from ._util import as_gray, crop, odd, require_image
+from ._util import as_gray, odd, require_image
 
 _COLOR = "#1565c0"
 
@@ -81,15 +87,17 @@ class BlobAnalysis(Node):
         for b in blobs:
             keep[b["label"]] = 255
         mask = keep[labels]
-        for b in blobs:
+        for b in blobs:                                   # 叠加层：送进来这张图的坐标
             ctx.add_overlay(Overlay.rect(Rect(b["x"], b["y"], b["w"], b["h"]), "#00ff00"))
             ctx.add_overlay(Overlay.text(b["x"], b["y"] - 4, f"{int(b['area'])}"))
         ctx.add_overlay(Overlay.points([(b["cx"], b["cy"]) for b in blobs], "#ff0000"))
-        return {"count": len(blobs), "blobs": blobs,
-                "largest_area": blobs[0]["area"] if blobs and self.get("sort") == "area_desc" else
-                (max((b["area"] for b in blobs), default=0.0)),
-                "total_area": float(sum(b["area"] for b in blobs)),
-                "centers": [Point(b["cx"], b["cy"]) for b in blobs], "mask": img.derive(mask),
+        fx, fy = img.origin                               # 输出：原始帧坐标
+        out = [{**b, "x": b["x"] + fx, "y": b["y"] + fy, "cx": b["cx"] + fx, "cy": b["cy"] + fy} for b in blobs]
+        return {"count": len(out), "blobs": out,
+                "largest_area": out[0]["area"] if out and self.get("sort") == "area_desc" else
+                (max((b["area"] for b in out), default=0.0)),
+                "total_area": float(sum(b["area"] for b in out)),
+                "centers": [Point(b["cx"], b["cy"]) for b in out], "mask": img.derive(mask),
                 "binary": img.derive(binary * 255)}
 
 
@@ -118,9 +126,11 @@ class FindContours(Node):
         pairs = [(c, a) for c, a in pairs if a >= float(self.get("min_area"))]
         pairs.sort(key=lambda p: -p[1])
         cnts = [c for c, _ in pairs]
-        ctx.add_overlay(Overlay.contours(cnts, "#00ffff"))
-        return {"contours": cnts, "count": len(cnts), "areas": [a for _, a in pairs],
-                "largest": cnts[:1]}
+        ctx.add_overlay(Overlay.contours(cnts, "#00ffff"))          # 叠加层：送进来这张图的坐标
+        fx, fy = img.origin                                         # 输出：原始帧坐标
+        out = [c + np.array([fx, fy], dtype=c.dtype) for c in cnts] if (fx or fy) else cnts
+        return {"contours": out, "count": len(out), "areas": [a for _, a in pairs],
+                "largest": out[:1]}
 
 
 def _nms(boxes: list[tuple[int, int, int, int, float]], overlap: float):
@@ -146,7 +156,7 @@ class TemplateMatch(Node):
     type_id = "analysis.template_match"
     category = "Analysis"
     label = "Template Match"
-    description = "Normalised cross-correlation template matching (translation only)."
+    description = "Normalised cross-correlation template matching (translation only) over the whole input image."
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE), Port("template", DataType.IMAGE, optional=True)]
     outputs = [Port("found", DataType.BOOL), Port("score", DataType.FLOAT), Port("center", DataType.POINT),
@@ -155,8 +165,7 @@ class TemplateMatch(Node):
               Param("method", "ccoeff_normed", "enum", choices=["ccoeff_normed", "ccorr_normed", "sqdiff_normed"]),
               Param("min_score", 0.7, "float", min=0, max=1, step=0.01),
               Param("max_matches", 1, "int", min=1, max=500),
-              Param("overlap", 0.3, "float", min=0, max=1, advanced=True),
-              Param("search_roi", None, "rect")]
+              Param("overlap", 0.3, "float", min=0, max=1, advanced=True)]
 
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
@@ -182,13 +191,12 @@ class TemplateMatch(Node):
         img = require_image(inputs["image"])
         tpl = self._template(inputs.get("template"))
         g = as_gray(img)
-        view, eff = crop(img.derive(g), self.rect("search_roi"))
         th, tw = tpl.shape[:2]
-        if th > view.shape[0] or tw > view.shape[1]:
-            raise NodeError("模板比搜索区域大")
+        if th > g.shape[0] or tw > g.shape[1]:
+            raise NodeError("模板比图像大（要缩小搜索范围请在前面接「裁剪 ROI」节点，但裁出的图不能比模板小）")
         method = {"ccoeff_normed": cv2.TM_CCOEFF_NORMED, "ccorr_normed": cv2.TM_CCORR_NORMED,
                   "sqdiff_normed": cv2.TM_SQDIFF_NORMED}[self.get("method")]
-        res = cv2.matchTemplate(view, tpl, method)
+        res = cv2.matchTemplate(g, tpl, method)
         if method == cv2.TM_SQDIFF_NORMED:
             res = 1.0 - res
         min_score = float(self.get("min_score"))
@@ -199,14 +207,13 @@ class TemplateMatch(Node):
         else:
             ys, xs = np.where(res >= min_score)
             cands = _nms([(int(x), int(y), tw, th, float(res[y, x])) for y, x in zip(ys, xs)], float(self.get("overlap")))[:max_n]
+        fx, fy = img.origin                               # 叠加层画在送进来的图上，输出换回原始帧
         matches = []
         for x, y, w, h, s in cands:
-            r = Rect(x + eff.x, y + eff.y, w, h)
-            matches.append({"x": r.x, "y": r.y, "w": w, "h": h, "cx": r.cx, "cy": r.cy, "score": s})
+            r = Rect(x, y, w, h)
+            matches.append({"x": r.x + fx, "y": r.y + fy, "w": w, "h": h, "cx": r.cx + fx, "cy": r.cy + fy, "score": s})
             ctx.add_overlay(Overlay.rect(r, "#00ff00", f"{s:.2f}"))
             ctx.add_overlay(Overlay.text(r.x, r.y - 4, f"{s:.2f}"))
-        if self.rect("search_roi"):
-            ctx.add_overlay(Overlay.rect(eff, "#ffa500", "search"))
         found = bool(matches)
         best = matches[0] if found else None
         return {"found": found, "score": best["score"] if best else 0.0,
@@ -229,14 +236,13 @@ class EdgeCaliper(Node):
     type_id = "analysis.caliper"
     category = "Analysis"
     label = "Edge Caliper"
-    description = ("Project an ROI to a 1-D profile and locate edges with sub-pixel accuracy. "
-                   "Scan direction 'horizontal' finds vertical edges (x positions).")
+    description = ("Project the whole input image to a 1-D profile and locate edges with sub-pixel accuracy "
+                   "(put a Crop ROI node in front to pick the strip). Scan direction 'horizontal' finds vertical edges (x positions).")
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE), Port("roi", DataType.RECT, optional=True)]
+    inputs = [Port("image", DataType.IMAGE, description="要量的那一条：在前面接「裁剪 ROI」节点裁出来")]
     outputs = [Port("edges", DataType.LIST), Port("count", DataType.INT), Port("first", DataType.FLOAT),
                Port("last", DataType.FLOAT), Port("width", DataType.FLOAT), Port("profile", DataType.LIST)]
-    params = [Param("roi", None, "rect"),
-              Param("direction", "horizontal", "enum", choices=["horizontal", "vertical"]),
+    params = [Param("direction", "horizontal", "enum", choices=["horizontal", "vertical"]),
               Param("polarity", "any", "enum", choices=["any", "dark_to_light", "light_to_dark"]),
               Param("min_contrast", 20.0, "float", min=0, max=255, description="Min gradient magnitude"),
               Param("select", "all", "enum", choices=["all", "first", "last", "strongest", "first_last"]),
@@ -244,13 +250,9 @@ class EdgeCaliper(Node):
 
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
-        roi = inputs.get("roi") if isinstance(inputs.get("roi"), Rect) else self.rect("roi")
-        if roi is None:
-            raise NodeError("未设置 ROI")
         g = as_gray(img)
-        view, eff = crop(img.derive(g), roi)
         horizontal = self.get("direction") == "horizontal"
-        profile = view.astype(np.float32).mean(axis=0 if horizontal else 1)
+        profile = g.astype(np.float32).mean(axis=0 if horizontal else 1)
         k = odd(self.get("smooth"))
         if k > 1:
             profile = cv2.GaussianBlur(profile.reshape(1, -1), (k, 1), 0).ravel()
@@ -277,12 +279,13 @@ class EdgeCaliper(Node):
                 edges = [max(edges, key=lambda e: e[1])]
             elif sel == "first_last" and len(edges) > 1:
                 edges = [edges[0], edges[-1]]
-        offset = eff.x if horizontal else eff.y
-        positions = [p + offset for p, _ in edges]
-        ctx.add_overlay(Overlay.rect(eff, "#ffa500", "caliper"))
-        for p in positions:
-            ln = Line(p, eff.y, p, eff.y + eff.h) if horizontal else Line(eff.x, p, eff.x + eff.w, p)
+        local = [p for p, _ in edges]                     # 送进来这张图里的位置：画线用
+        for p in local:
+            ln = Line(p, 0, p, img.height) if horizontal else Line(0, p, img.width, p)
             ctx.add_overlay(Overlay.line(ln, "#ff00ff"))
+        fx, fy = img.origin                               # 输出：原始帧坐标（上游裁过就把裁剪原点加回去）
+        offset = fx if horizontal else fy
+        positions = [p + offset for p in local]
         first = positions[0] if positions else -1.0
         last = positions[-1] if positions else -1.0
         width = (last - first) if len(positions) >= 2 else 0.0
@@ -308,11 +311,10 @@ class CircleFind(Node):
     label = "Find Circle"
     description = "Hough circle detection, or least-squares fit on the largest contour of a binary image."
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE), Port("roi", DataType.RECT, optional=True)]
+    inputs = [Port("image", DataType.IMAGE)]
     outputs = [Port("found", DataType.BOOL), Port("circle", DataType.CIRCLE), Port("cx", DataType.FLOAT),
                Port("cy", DataType.FLOAT), Port("radius", DataType.FLOAT), Port("count", DataType.INT)]
     params = [Param("method", "hough", "enum", choices=["hough", "contour_fit"]),
-              Param("roi", None, "rect"),
               Param("min_radius", 10, "int", min=0, max=10000), Param("max_radius", 200, "int", min=1, max=10000),
               Param("min_dist", 20, "int", min=1, max=10000, advanced=True),
               Param("param1", 100, "int", min=1, max=500, advanced=True, description="Canny high threshold"),
@@ -321,33 +323,30 @@ class CircleFind(Node):
 
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
-        roi = inputs.get("roi") if isinstance(inputs.get("roi"), Rect) else self.rect("roi")
         g = as_gray(img)
-        view, eff = crop(img.derive(g), roi)
-        circles: list[Circle] = []
+        circles: list[Circle] = []                        # 送进来这张图里的圆：画叠加层用
         if self.get("method") == "hough":
-            blurred = cv2.medianBlur(view, 5)
+            blurred = cv2.medianBlur(g, 5)
             res = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=int(self.get("min_dist")),
                                    param1=int(self.get("param1")), param2=int(self.get("param2")),
                                    minRadius=int(self.get("min_radius")), maxRadius=int(self.get("max_radius")))
             if res is not None:
                 for cx, cy, r in res[0][: int(self.get("max_count"))]:
-                    circles.append(Circle(float(cx) + eff.x, float(cy) + eff.y, float(r)))
+                    circles.append(Circle(float(cx), float(cy), float(r)))
         else:
-            cnts, _ = cv2.findContours((view > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            cnts, _ = cv2.findContours((g > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
             cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[: int(self.get("max_count"))]
             for c in cnts:
                 if len(c) < 5:
                     continue
                 cx, cy, r = _fit_circle_lsq(c.reshape(-1, 2))
                 if int(self.get("min_radius")) <= r <= int(self.get("max_radius")):
-                    circles.append(Circle(cx + eff.x, cy + eff.y, r))
-        if roi is not None:
-            ctx.add_overlay(Overlay.rect(eff, "#ffa500"))
+                    circles.append(Circle(cx, cy, r))
         for c in circles:
             ctx.add_overlay(Overlay.circle(c, "#00ff00", f"r={c.r:.1f}"))
             ctx.add_overlay(Overlay.points([(c.cx, c.cy)], "#ff0000"))
-        best = circles[0] if circles else Circle(-1, -1, 0)
+        fx, fy = img.origin                               # 输出：原始帧坐标
+        best = Circle(circles[0].cx + fx, circles[0].cy + fy, circles[0].r) if circles else Circle(-1, -1, 0)
         return {"found": bool(circles), "circle": best, "cx": best.cx, "cy": best.cy, "radius": best.r,
                 "count": len(circles)}
 
@@ -357,23 +356,21 @@ class IntensityStats(Node):
     type_id = "analysis.intensity"
     category = "Analysis"
     label = "Intensity Stats"
+    description = "Mean / std / min / max and fill ratio of the whole input image (crop first to measure a region)."
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE), Port("roi", DataType.RECT, optional=True)]
+    inputs = [Port("image", DataType.IMAGE)]
     outputs = [Port("mean", DataType.FLOAT), Port("std", DataType.FLOAT), Port("min", DataType.FLOAT),
                Port("max", DataType.FLOAT), Port("fill_ratio", DataType.FLOAT)]
-    params = [Param("roi", None, "rect"),
-              Param("fill_thresh", 128, "int", min=0, max=255, description="Pixels above count as filled")]
+    params = [Param("fill_thresh", 128, "int", min=0, max=255, description="Pixels above count as filled")]
 
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
-        roi = inputs.get("roi") if isinstance(inputs.get("roi"), Rect) else self.rect("roi")
-        view, eff = crop(img.derive(as_gray(img)), roi)
-        m, sd = cv2.meanStdDev(view)
+        g = as_gray(img)
+        m, sd = cv2.meanStdDev(g)
         mean, std = float(m[0][0]), float(sd[0][0])
-        fill = float((view > int(self.get("fill_thresh"))).mean())
-        ctx.add_overlay(Overlay.rect(eff, "#ffa500"))
-        ctx.add_overlay(Overlay.text(eff.x, eff.y - 4, f"mean {mean:.1f}"))
-        return {"mean": mean, "std": std, "min": float(view.min()), "max": float(view.max()),
+        fill = float((g > int(self.get("fill_thresh"))).mean())
+        ctx.add_overlay(Overlay.text(4, 4, f"mean {mean:.1f}"))
+        return {"mean": mean, "std": std, "min": float(g.min()), "max": float(g.max()),
                 "fill_ratio": fill}
 
 
@@ -394,7 +391,8 @@ class QRCode(Node):
         img = require_image(inputs["image"])
         text, pts, _ = self._det.detectAndDecode(img.data)
         found = bool(text)
-        points = pts.reshape(-1, 2).tolist() if found and pts is not None else []
+        local = pts.reshape(-1, 2).tolist() if found and pts is not None else []
         if found:
-            ctx.add_overlay(Overlay("polygon", {"points": points}, "#00ff00", label=text))
-        return {"found": found, "text": text or "", "points": points}
+            ctx.add_overlay(Overlay("polygon", {"points": local}, "#00ff00", label=text))
+        fx, fy = img.origin                               # 输出：原始帧坐标
+        return {"found": found, "text": text or "", "points": [[x + fx, y + fy] for x, y in local]}

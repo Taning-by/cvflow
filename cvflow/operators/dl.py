@@ -1152,12 +1152,15 @@ class OnnxDetector(_OnnxBase):
         idx = cv2.dnn.NMSBoxes(rects, scores.tolist(), float(self.get("conf")), float(self.get("iou"))) if rects else []
         idx = np.asarray(idx).reshape(-1)
         labels = _load_labels(self.get("labels_path"))
+        # 送进来的图若是上游按固定 ROI 裁出来的小图：框画在小图上（和面板显示对得齐），
+        # 输出的坐标加上裁剪原点换回**原始帧**——给下游 / PLC 的始终是原始帧坐标
+        fx, fy = img.origin
         dets = []
         for i in idx:
             x, y, w, h = rects[i]
             cid = int(cls_ids[i])
             name = labels[cid] if cid < len(labels) else str(cid)
-            dets.append({"x": x, "y": y, "w": w, "h": h, "score": float(scores[i]), "class_id": cid, "label": name})
+            dets.append({"x": x + fx, "y": y + fy, "w": w, "h": h, "score": float(scores[i]), "class_id": cid, "label": name})
             ctx.add_overlay(Overlay.rect(Rect(x, y, w, h), "#00ff00", f"{name} {scores[i]:.2f}"))
         dets.sort(key=lambda d: -d["score"])
         return {"detections": dets, "count": len(dets),

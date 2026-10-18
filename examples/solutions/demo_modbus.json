@@ -79,7 +79,7 @@
       "description": "统计工件上的三个孔并测量工件宽度。",
       "nodes": [
         {
-          "id": "c9d9b571",
+          "id": "d7b12b31",
           "type": "source.image_folder",
           "name": "取图",
           "enabled": true,
@@ -92,11 +92,15 @@
             "mode": "next",
             "index": 0,
             "loop": true,
-            "grayscale": false
+            "grayscale": false,
+            "roi_enabled": false,
+            "roi_w": 628,
+            "roi_h": 768,
+            "roi": null
           }
         },
         {
-          "id": "fdaeb88b",
+          "id": "3e96b999",
           "type": "preprocess.color",
           "name": "灰度",
           "enabled": true,
@@ -110,7 +114,7 @@
           }
         },
         {
-          "id": "55127190",
+          "id": "c60ff81d",
           "type": "preprocess.threshold",
           "name": "阈值",
           "enabled": true,
@@ -127,7 +131,7 @@
           }
         },
         {
-          "id": "7237a22e",
+          "id": "5d270b90",
           "type": "preprocess.morphology",
           "name": "开运算",
           "enabled": true,
@@ -143,7 +147,7 @@
           }
         },
         {
-          "id": "7747229c",
+          "id": "3507391d",
           "type": "analysis.blob",
           "name": "孔",
           "enabled": true,
@@ -152,6 +156,10 @@
             60.0
           ],
           "values": {
+            "binarize": "auto",
+            "polarity": "bright",
+            "low": 128,
+            "high": 255,
             "min_area": 500,
             "max_area": 5000,
             "min_width": 0,
@@ -162,7 +170,7 @@
           }
         },
         {
-          "id": "689c438e",
+          "id": "63ea0029",
           "type": "logic.judge",
           "name": "孔数判定",
           "enabled": true,
@@ -179,7 +187,28 @@
           }
         },
         {
-          "id": "49fbfa52",
+          "id": "f0b5a22a",
+          "type": "preprocess.crop",
+          "name": "宽度区域",
+          "enabled": true,
+          "position": [
+            670.0,
+            220.0
+          ],
+          "values": {
+            "roi_w": 520,
+            "roi_h": 24,
+            "roi": {
+              "x": 60.0,
+              "y": 150.0,
+              "w": 520.0,
+              "h": 24.0,
+              "angle": 0.0
+            }
+          }
+        },
+        {
+          "id": "7fec2ede",
           "type": "analysis.caliper",
           "name": "宽度",
           "enabled": true,
@@ -188,13 +217,6 @@
             220.0
           ],
           "values": {
-            "roi": {
-              "x": 60.0,
-              "y": 150.0,
-              "w": 520.0,
-              "h": 24.0,
-              "angle": 0.0
-            },
             "direction": "horizontal",
             "polarity": "any",
             "min_contrast": 15.0,
@@ -203,7 +225,7 @@
           }
         },
         {
-          "id": "1136686f",
+          "id": "b6e7841b",
           "type": "logic.judge",
           "name": "宽度判定",
           "enabled": true,
@@ -220,7 +242,7 @@
           }
         },
         {
-          "id": "55948595",
+          "id": "e242e0ca",
           "type": "output.publish",
           "name": "发布",
           "enabled": true,
@@ -236,7 +258,7 @@
           }
         },
         {
-          "id": "f1c5d8a6",
+          "id": "6678916c",
           "type": "output.render",
           "name": "渲染",
           "enabled": true,
@@ -250,7 +272,7 @@
           }
         },
         {
-          "id": "520d73e5",
+          "id": "e2b6a4ec",
           "type": "output.save_image",
           "name": "NG 存图",
           "enabled": true,
@@ -271,131 +293,141 @@
       "links": [
         {
           "src": [
-            "c9d9b571",
+            "d7b12b31",
             "image"
           ],
           "dst": [
-            "fdaeb88b",
+            "3e96b999",
             "image"
           ]
         },
         {
           "src": [
-            "fdaeb88b",
+            "3e96b999",
             "image"
           ],
           "dst": [
-            "55127190",
+            "c60ff81d",
             "image"
           ]
         },
         {
           "src": [
-            "55127190",
+            "c60ff81d",
             "image"
           ],
           "dst": [
-            "7237a22e",
+            "5d270b90",
             "image"
           ]
         },
         {
           "src": [
-            "7237a22e",
+            "5d270b90",
             "image"
           ],
           "dst": [
-            "7747229c",
+            "3507391d",
             "image"
           ]
         },
         {
           "src": [
-            "7747229c",
+            "3507391d",
             "count"
           ],
           "dst": [
-            "689c438e",
+            "63ea0029",
             "value"
           ]
         },
         {
           "src": [
-            "fdaeb88b",
+            "3e96b999",
             "image"
           ],
           "dst": [
-            "49fbfa52",
+            "f0b5a22a",
             "image"
           ]
         },
         {
           "src": [
-            "49fbfa52",
+            "f0b5a22a",
+            "image"
+          ],
+          "dst": [
+            "7fec2ede",
+            "image"
+          ]
+        },
+        {
+          "src": [
+            "7fec2ede",
             "width"
           ],
           "dst": [
-            "1136686f",
+            "b6e7841b",
             "value"
           ]
         },
         {
           "src": [
-            "7747229c",
+            "3507391d",
             "count"
           ],
           "dst": [
-            "55948595",
+            "e242e0ca",
             "a"
           ]
         },
         {
           "src": [
-            "49fbfa52",
+            "7fec2ede",
             "width"
           ],
           "dst": [
-            "55948595",
+            "e242e0ca",
             "b"
           ]
         },
         {
           "src": [
-            "c9d9b571",
+            "d7b12b31",
             "image"
           ],
           "dst": [
-            "f1c5d8a6",
+            "6678916c",
             "image"
           ]
         },
         {
           "src": [
-            "689c438e",
+            "63ea0029",
             "ok"
           ],
           "dst": [
-            "f1c5d8a6",
+            "6678916c",
             "after"
           ]
         },
         {
           "src": [
-            "1136686f",
+            "b6e7841b",
             "ok"
           ],
           "dst": [
-            "520d73e5",
+            "e2b6a4ec",
             "after"
           ]
         },
         {
           "src": [
-            "f1c5d8a6",
+            "6678916c",
             "image"
           ],
           "dst": [
-            "520d73e5",
+            "e2b6a4ec",
             "image"
           ]
         }
@@ -406,7 +438,7 @@
       "description": "Bandit 插件调节阈值；找到 3 个标称面积的孔时奖励最高。",
       "nodes": [
         {
-          "id": "a022481c",
+          "id": "d16c99fe",
           "type": "logic.get_variable",
           "name": "奖励",
           "enabled": true,
@@ -420,7 +452,7 @@
           }
         },
         {
-          "id": "5855368f",
+          "id": "bd03129a",
           "type": "learning.bandit_threshold",
           "name": "调优器",
           "enabled": true,
@@ -438,7 +470,7 @@
           }
         },
         {
-          "id": "8e4bbf65",
+          "id": "68010320",
           "type": "source.image_folder",
           "name": "取图",
           "enabled": true,
@@ -451,11 +483,15 @@
             "mode": "fixed",
             "index": 0,
             "loop": true,
-            "grayscale": false
+            "grayscale": false,
+            "roi_enabled": false,
+            "roi_w": 628,
+            "roi_h": 768,
+            "roi": null
           }
         },
         {
-          "id": "c8ca61e5",
+          "id": "df0fbed7",
           "type": "preprocess.color",
           "name": "灰度",
           "enabled": true,
@@ -469,7 +505,7 @@
           }
         },
         {
-          "id": "f854585d",
+          "id": "15ee4a52",
           "type": "preprocess.threshold",
           "name": "阈值",
           "enabled": true,
@@ -486,7 +522,7 @@
           }
         },
         {
-          "id": "f258c3d7",
+          "id": "84bbfc23",
           "type": "analysis.blob",
           "name": "孔",
           "enabled": true,
@@ -495,6 +531,10 @@
             60.0
           ],
           "values": {
+            "binarize": "auto",
+            "polarity": "bright",
+            "low": 128,
+            "high": 255,
             "min_area": 500,
             "max_area": 5000,
             "min_width": 0,
@@ -505,7 +545,7 @@
           }
         },
         {
-          "id": "1d0a5a6e",
+          "id": "f66d4575",
           "type": "logic.expression",
           "name": "得分",
           "enabled": true,
@@ -518,7 +558,7 @@
           }
         },
         {
-          "id": "d71e284d",
+          "id": "aa67cf08",
           "type": "logic.set_variable",
           "name": "存奖励",
           "enabled": true,
@@ -534,81 +574,81 @@
       "links": [
         {
           "src": [
-            "a022481c",
+            "d16c99fe",
             "value"
           ],
           "dst": [
-            "5855368f",
+            "bd03129a",
             "reward"
           ]
         },
         {
           "src": [
-            "5855368f",
+            "bd03129a",
             "threshold"
           ],
           "dst": [
-            "f854585d",
+            "15ee4a52",
             "thresh"
           ]
         },
         {
           "src": [
-            "8e4bbf65",
+            "68010320",
             "image"
           ],
           "dst": [
-            "c8ca61e5",
+            "df0fbed7",
             "image"
           ]
         },
         {
           "src": [
-            "c8ca61e5",
+            "df0fbed7",
             "image"
           ],
           "dst": [
-            "f854585d",
+            "15ee4a52",
             "image"
           ]
         },
         {
           "src": [
-            "f854585d",
+            "15ee4a52",
             "image"
           ],
           "dst": [
-            "f258c3d7",
+            "84bbfc23",
             "image"
           ]
         },
         {
           "src": [
-            "f258c3d7",
+            "84bbfc23",
             "count"
           ],
           "dst": [
-            "1d0a5a6e",
+            "f66d4575",
             "a"
           ]
         },
         {
           "src": [
-            "f258c3d7",
+            "84bbfc23",
             "largest_area"
           ],
           "dst": [
-            "1d0a5a6e",
+            "f66d4575",
             "b"
           ]
         },
         {
           "src": [
-            "1d0a5a6e",
+            "f66d4575",
             "value"
           ],
           "dst": [
-            "d71e284d",
+            "aa67cf08",
             "value"
           ]
         }

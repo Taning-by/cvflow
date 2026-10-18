@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, 
 from ..comm import CommManager, set_manager
 from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, paths, registry
 from ..core.node import Node
-from ..core.engine import RunResult
+from ..core.engine import RunResult, align_overlays
 from ..core.events import EventBus
 from ..core.types import Image, Overlay, Rect
 from .bridge import EventBridge
@@ -1278,7 +1278,8 @@ class MainWindow(QMainWindow):
         node = g.nodes[node_id]
         rect = node.rect(param)
         r = self.runner
-        img = self._input_image(node_id, r.last_result if r else None)
+        # 采集节点开了裁剪之后输出的是裁好的小图，框要显示在裁剪**之前**的整帧上（和摆框时用的是同一张）
+        img = node.roi_reference_image() or self._input_image(node_id, r.last_result if r else None)
         if img is not None:
             self.image_view.set_image(img)
         # ROI 预览用 ROI 色（与品牌色分开，便于在各种图像上看清），不是算法叠加层
@@ -1427,8 +1428,9 @@ class MainWindow(QMainWindow):
         overlays = list(nr.overlays) if nr else []
         picked = self._sync_image_picker(nid, pairs, out_img is not None, prefer_output=not (overlays and pairs))
         if self.all_overlays.isChecked():
-            overlays = [ov for res in result.node_results.values() for ov in res.overlays]
             img = (pairs[0][1] if pairs else None) or out_img
+            # 各节点的叠加层画在各自输入图的坐标里：裁剪小图上的轨迹搬到整帧上看，要按裁剪原点平移
+            overlays = align_overlays(result.node_results.values(), img)
         elif self.input_pick.isVisible() and picked:
             if picked == OUTPUT_PICK:
                 img = out_img

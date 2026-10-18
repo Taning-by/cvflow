@@ -18,7 +18,7 @@ from . import events
 from .events import EventBus
 from .graph import Graph, GraphError
 from .node import Node, NodeStatus
-from .types import Overlay, to_jsonable
+from .types import Image, Overlay, to_jsonable
 from .variables import GlobalVariables
 
 log = logging.getLogger("cvflow.engine")
@@ -52,6 +52,25 @@ class NodeResult:
     time_ms: float = 0.0
     error: str = ""
     overlays: list[Overlay] = field(default_factory=list)
+    #: 叠加层所在坐标系的原点：节点是在送进它的那张图上画的，这张图若是裁剪过的小图，
+    #: 它在原始帧里的位置就是这个（见 ``Image.origin``）。把几个节点的叠加层合到同一张图上
+    #: 显示（「全部叠加层」、渲染节点）时按它平移，裁剪前后两张图上画的东西才对得齐。
+    origin: tuple[int, int] = (0, 0)
+
+
+def frame_origin(*groups) -> tuple[int, int]:
+    """几组值里第一张图像的原点：先看输入（按端口顺序），没有图像输入再看输出。"""
+    for values in groups:
+        for v in values:
+            if isinstance(v, Image):
+                return v.origin
+    return (0, 0)
+
+
+def align_overlays(results, img: Image | None) -> list[Overlay]:
+    """把这次运行里所有节点的叠加层搬到 ``img`` 的坐标系里（它们各自画在自己输入图的坐标里）。"""
+    bx, by = img.origin if img is not None else (0, 0)
+    return [ov.translated(r.origin[0] - bx, r.origin[1] - by) for r in results for ov in r.overlays]
 
 
 @dataclass
@@ -273,6 +292,7 @@ class Engine:
                 else:
                     node.status = NodeStatus.RUNNING
                     ctx._begin(node)
+                    nres.origin = frame_origin(inputs.values())
                     t0 = time.perf_counter()
                     try:
                         out = node.process(ctx, inputs)
@@ -289,6 +309,7 @@ class Engine:
                             for port in node.outputs:          # 未返回的声明输出补 None，保证下游语义稳定
                                 out.setdefault(port.name, None)
                         nres.outputs = out
+                        nres.origin = frame_origin(inputs.values(), out.values())
                         if nres.status == NodeStatus.OK and node.is_judge and "ok" in out:
                             ok = bool(out["ok"])
                             ctx.judge(ok, out.get("reason", "") or f"{node.name} NG")

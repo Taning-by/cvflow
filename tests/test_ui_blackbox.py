@@ -201,7 +201,7 @@ def test_ui_startup_layout_and_title(win):
     assert win.image_view.isVisible() and win.view.isVisible()
     assert [win.bottom_tabs.tabText(i) for i in range(win.bottom_tabs.count())] == ["结果", "通信", "变量", "日志"]
     assert win.flow_combo.currentText() == "main" and win.flow_combo.count() == 2
-    assert len(win.scene.node_items) == 11 and len(win.scene.link_items) == 13
+    assert len(win.scene.node_items) == 12 and len(win.scene.link_items) == 14
     assert win.status_run.text() == "编辑模式"
 
 
@@ -273,7 +273,7 @@ def test_ui_file_new_open_save_saveas_recent(win, modal, tmp_path, app):
     # 打开 → 回到示例
     modal.answers["getOpenFileName"] = (str(DEMO), "")
     menu_action(win, "文件(&F)", "打开…").trigger(); pump(app)
-    assert len(win.scene.node_items) == 11 and "demo_holes" in win.windowTitle()
+    assert len(win.scene.node_items) == 12 and "demo_holes" in win.windowTitle()
     # 打开失败 → 错误提示
     modal.answers["getOpenFileName"] = (str(tmp_path / "nope.json"), "")
     menu_action(win, "文件(&F)", "打开…").trigger(); pump(app)
@@ -310,7 +310,7 @@ def test_ui_flow_add_rename_remove_switch_validate(win, modal, app):
     menu_action(win, "流程(&L)", "检查流程").trigger(); pump(app)
     assert "未连接" in modal.texts("information")[-1]
     win.flow_combo.setCurrentText("main"); pump(app)
-    assert len(win.scene.node_items) == 11
+    assert len(win.scene.node_items) == 12
     win.flow_combo.setCurrentText("检测3"); pump(app)
     win.act_del_flow.trigger(); pump(app)
     assert "检测3" not in win.solution.flows and win.flow_combo.count() == 2
@@ -481,20 +481,71 @@ def test_ui_params_advanced_toggle_and_json_code_apply(win, app):
     assert any(row.child(i).text(0) == "out1" and row.child(i).text(1) == "99" for i in range(row.childCount()))
 
 
-def test_ui_params_roi_draw_show_clear(win, app):
+def test_ui_params_roi_place_show_clear(win, app):
+    """ROI 只在「裁剪 ROI」/ 采集节点上：尺寸来自宽/高参数，图上「放置」只拖位置，松手即生效，「完成」退出。"""
     win.act_run.trigger(); pump(app); win._apply_pending_result()
-    win.scene.select_node(node_by_name(win, "宽度").id); pump(app)
+    win.scene.select_node(node_by_name(win, "宽度区域").id); pump(app)
     panel = win.param_panel
-    button(panel.widget(), "绘制").click(); pump(app)
-    assert win.image_view.roi_editing
+    button(panel.widget(), "放置").click(); pump(app)
+    assert win.image_view.roi_editing and win.image_view._roi_move == (520, 24)
+    before = node_by_name(win, "宽度区域").rect("roi")
     vp = win.image_view.viewport()
-    drag(app, vp, QPoint(60, 60), QPoint(200, 120))
-    r = node_by_name(win, "宽度").rect("roi")
-    assert r is not None and r.w > 10 and r.h > 10 and not win.image_view.roi_editing
+    c = win.image_view.mapFromScene(QPointF(before.cx, before.cy))
+    drag(app, vp, c, QPoint(c.x() + 20, c.y() + 15))
+    r = node_by_name(win, "宽度区域").rect("roi")
+    assert r is not None and (r.w, r.h) == (520, 24) and (r.x, r.y) != (before.x, before.y) and win.image_view.roi_editing
+    button(win.image_view, "完成").click(); pump(app)
+    assert not win.image_view.roi_editing
     button(panel.widget(), "显示").click(); pump(app)
     assert len(win.image_view._overlay_items) >= 1
     button(panel.widget(), "✕").click(); pump(app)
-    assert node_by_name(win, "宽度").rect("roi") is None
+    assert node_by_name(win, "宽度区域").rect("roi") is None
+
+
+def test_ui_params_crop_node_places_a_fixed_size_box_like_the_source_nodes(win, app):
+    """「裁剪 ROI」节点和采集节点的固定 ROI 是同一套：填宽/高、在图上「放置」只拖位置；
+    选中它时图像面板显示的是裁剪**之前**的输入图并画出框，输出就是定尺寸的小图。"""
+    g = win.solution.flows["main"]
+    node = win.scene.add_node("preprocess.crop", QPointF(100, 600))
+    g.add_link(node_by_name(win, "取图").id, "image", node.id, "image")
+    win.scene.set_graph(g)
+    node.set("roi_w", 120); node.set("roi_h", 90)
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    win.scene.select_node(node.id); pump(app)
+    panel = win.param_panel
+    assert button(panel.widget(), "放置") is not None                      # 不是随手拖尺寸的"绘制"
+    with pytest.raises(LookupError):
+        button(panel.widget(), "绘制")
+    button(panel.widget(), "放置").click(); pump(app)
+    assert win.image_view.roi_editing and win.image_view._roi_move == (120, 90)
+    assert win.image_view.image.width == 640                               # 在整帧（输入图）上摆
+    vp = win.image_view.viewport()
+    c = QPoint(vp.width() // 2, vp.height() // 2)
+    drag(app, vp, c, QPoint(c.x() + 30, c.y() + 10))
+    r = node.rect("roi")
+    assert r is not None and (r.w, r.h) == (120, 90)
+    button(win.image_view, "完成").click(); pump(app)
+    assert not win.image_view.roi_editing
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    out = win.runner.last_result.node_results[node.id].outputs
+    assert out["image"].data.shape[:2] == (90, 120) and out["image"].meta["roi"][2:] == [120, 90]
+    assert out["roi"].w == 120 and out["offset"].x == out["roi"].x
+    win.scene.select_node(node.id); pump(app)
+    assert win.image_view.image.width == 640 and len(win.image_view._overlay_items) >= 1   # 整帧 + 橙色 ROI 框
+
+
+def test_ui_params_source_roi_show_uses_the_frame_before_cropping(win, app):
+    """采集节点开了固定 ROI 裁剪后输出的是小图；「显示」要把框画在裁剪之前的整帧上，不然框会跑到小图外面。"""
+    src = node_by_name(win, "取图")
+    src.set("roi_w", 100); src.set("roi_h", 80)
+    src.set("roi", {"x": 10, "y": 10, "w": 100, "h": 80})                  # 摆了框就自动开裁剪
+    assert src.get("roi_enabled") is True
+    win.act_run.trigger(); pump(app); win._apply_pending_result()
+    win.scene.select_node(src.id); pump(app)
+    assert win.image_view.image.width == 100                               # 面板上看到的是裁出来的小图
+    button(win.param_panel.widget(), "显示").click(); pump(app)
+    assert win.image_view.image.width == 640 and len(win.image_view._overlay_items) >= 1   # 框显示在整帧上
+    src.set("roi_enabled", False); src.set("roi", None)
 
 
 def test_ui_params_choosing_a_model_loads_it_right_away(win, app, tmp_path):
@@ -1330,13 +1381,13 @@ def test_ui_params_rename_field_does_not_crash(win, app):
 
 def test_ui_params_roi_clear_button_does_not_crash(win, app):
     win.act_run.trigger(); pump(app); win._apply_pending_result()
-    win.scene.select_node(node_by_name(win, "宽度").id)
+    win.scene.select_node(node_by_name(win, "宽度区域").id)
     pump(app)
-    assert node_by_name(win, "宽度").rect("roi") is not None
+    assert node_by_name(win, "宽度区域").rect("roi") is not None
     button(win.param_panel.widget(), "✕").click()              # 清除按钮会就地重建面板
     pump(app, 100)
-    assert node_by_name(win, "宽度").rect("roi") is None
-    assert button(win.param_panel.widget(), "绘制") is not None
+    assert node_by_name(win, "宽度区域").rect("roi") is None
+    assert button(win.param_panel.widget(), "放置") is not None
 
 
 def test_ui_params_advanced_toggle_does_not_crash(win, app):

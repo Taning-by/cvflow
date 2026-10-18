@@ -56,13 +56,16 @@ def build_main() -> Graph:
     # 定位：找第一个孔的圆心当作抓取坐标
     circ = place(g.add_node(registry.create("analysis.circle", name="定位",
                                             values={"min_radius": 15, "max_radius": 40})), 4, 1)
-    # 两把卡尺：上下各量一次左边缘，位置差就是偏转角
+    # 两把卡尺：上下各量一次左边缘，位置差就是偏转角。卡尺自己不带 ROI，各接一个「裁剪 ROI」裁出要量的那一条
+    #（卡尺输出的位置仍是整帧坐标，两条的差不受裁剪影响）
+    strip_top = place(g.add_node(registry.create("preprocess.crop", name="上卡尺区域", values={
+        "roi_w": 520, "roi_h": 20, "roi": {"x": 60, "y": 140, "w": 520, "h": 20}})), 3, 2)
+    strip_bot = place(g.add_node(registry.create("preprocess.crop", name="下卡尺区域", values={
+        "roi_w": 520, "roi_h": 20, "roi": {"x": 60, "y": 240, "w": 520, "h": 20}})), 3, 3)
     cal_top = place(g.add_node(registry.create("analysis.caliper", name="上卡尺", values={
-        "roi": {"x": 60, "y": 140, "w": 520, "h": 20}, "direction": "horizontal",
-        "select": "first_last", "min_contrast": 15})), 4, 2)
+        "direction": "horizontal", "select": "first_last", "min_contrast": 15})), 4, 2)
     cal_bot = place(g.add_node(registry.create("analysis.caliper", name="下卡尺", values={
-        "roi": {"x": 60, "y": 240, "w": 520, "h": 20}, "direction": "horizontal",
-        "select": "first_last", "min_contrast": 15})), 4, 3)
+        "direction": "horizontal", "select": "first_last", "min_contrast": 15})), 4, 3)
     angle = place(g.add_node(registry.create("logic.expression", name="偏转角", values={
         "expression": "degrees(atan2(b - a, 100.0))"})), 5, 3)
     jw = place(g.add_node(registry.create("logic.judge", name="宽度判定", values={
@@ -81,8 +84,10 @@ def build_main() -> Graph:
     g.add_link(mo.id, "image", blob.id, "image")
     g.add_link(blob.id, "count", jc.id, "value")
     g.add_link(gray.id, "image", circ.id, "image")
-    g.add_link(gray.id, "image", cal_top.id, "image")
-    g.add_link(gray.id, "image", cal_bot.id, "image")
+    g.add_link(gray.id, "image", strip_top.id, "image")
+    g.add_link(strip_top.id, "image", cal_top.id, "image")
+    g.add_link(gray.id, "image", strip_bot.id, "image")
+    g.add_link(strip_bot.id, "image", cal_bot.id, "image")
     g.add_link(cal_top.id, "first", angle.id, "a")
     g.add_link(cal_bot.id, "first", angle.id, "b")
     g.add_link(cal_top.id, "width", jw.id, "value")

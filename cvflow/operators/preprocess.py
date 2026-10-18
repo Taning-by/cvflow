@@ -7,7 +7,8 @@ import numpy as np
 from ..core.node import Node, NodeError, Param, Port
 from ..core.registry import register
 from ..core.types import DataType, Overlay, Point, Rect
-from ._util import as_gray, as_bgr, crop, odd, require_image
+from ._roi import ROI_COLOR, crop_fixed, fixed_roi_xy, roi_params
+from ._util import as_gray, as_bgr, odd, require_image
 
 _IMG_IN = [Port("image", DataType.IMAGE)]
 _IMG_OUT = [Port("image", DataType.IMAGE)]
@@ -161,25 +162,48 @@ class Resize(Node):
 
 @register
 class Crop(Node):
+    """固定尺寸的裁剪，和采集节点上的「固定 ROI 裁剪」是同一套：填 ROI 宽/高，在图上「放置」框。
+
+    采集节点上开裁剪适合"一路相机一块固定区域"；中间多了预处理、或者同一帧要裁几块各走各的模型时，
+    就用这个节点。两边裁法、参数、摆框方式和坐标约定完全一样（见 ``_roi``）：
+    输出的小图记着自己是原始帧的哪一块，下游深度学习节点输出的点照样是原始帧坐标。
+    """
+
     type_id = "preprocess.crop"
     category = "Preprocess"
     label = "Crop ROI"
-    description = "Crop to a rectangle given as a parameter or supplied by an upstream node."
+    description = ("Crop a fixed-size ROI (same as the acquisition nodes' fixed ROI): set width/height, "
+                   "drag the box into place. A linked 'roi' overrides both position and size.")
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE), Port("roi", DataType.RECT, optional=True)]
-    outputs = [Port("image", DataType.IMAGE), Port("offset", DataType.POINT), Port("roi", DataType.RECT)]
-    params = [Param("roi", None, "rect")]
+    inputs = [Port("image", DataType.IMAGE),
+              Port("roi", DataType.RECT, optional=True,
+                   description="上游算出来的框（例如模板匹配的 rect）：接上后位置和尺寸都以它为准，参数里的不再用")]
+    outputs = [Port("image", DataType.IMAGE),
+               Port("offset", DataType.POINT, description="裁出的图左上角在原始帧里的位置"),
+               Port("roi", DataType.RECT, description="输出的图对应原始帧的哪一块")]
+    params = roi_params(toggle=False)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Node":
+        node = super().from_dict(d)
+        # 老方案里这个节点只有一个随手拖出来的框、没有宽/高参数：框多大就裁多大，行为不变
+        vals = d.get("values") or {}
+        r = node.rect("roi")
+        if r is not None and not r.is_empty() and not ({"roi_w", "roi_h"} & set(vals)):
+            node.values["roi_w"] = node.param_def("roi_w").coerce(r.w)
+            node.values["roi_h"] = node.param_def("roi_h").coerce(r.h)
+        return node
 
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
-        roi = inputs.get("roi") if isinstance(inputs.get("roi"), Rect) else self.rect("roi")
-        if roi is None:
-            raise NodeError("未设置 ROI（请在图像上绘制，或连接 'roi' 输入）")
-        view, eff = crop(img, roi)
-        ctx.add_overlay(Overlay.rect(eff, "#ffa500", "ROI"))
-        out = img.derive(np.ascontiguousarray(view))
-        out.meta["offset"] = (eff.x, eff.y)
-        return {"image": out, "offset": Point(eff.x, eff.y), "roi": eff}
+        linked = inputs.get("roi")
+        if isinstance(linked, Rect) and not linked.is_empty():
+            x, y, w, h = linked.as_int()
+        else:
+            x, y, w, h = fixed_roi_xy(self, img)
+        out, rect = crop_fixed(img, x, y, w, h, ctx)
+        ctx.add_overlay(Overlay.rect(Rect(x, y, w, h), ROI_COLOR, "ROI"))     # 画在送进来的图上：裁的是哪儿一眼看见
+        return {"image": out, "offset": Point(rect.x, rect.y), "roi": rect}
 
 
 @register

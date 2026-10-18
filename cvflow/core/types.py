@@ -78,6 +78,21 @@ class Image:
     def is_gray(self) -> bool:
         return self.data.ndim == 2
 
+    @property
+    def origin(self) -> tuple[int, int]:
+        """这张图左上角落在**原始帧**（相机取到的整幅）里的哪个位置。
+
+        固定 ROI 裁剪（采集节点或「裁剪 ROI」节点）会在 ``meta["roi"] = [x, y, w, h]`` 里记下
+        裁的是原始帧的哪一块，连着裁两次也是相对最原始那帧累加的。没裁过就是 (0, 0)。
+
+        约定：节点画的叠加层用送进它那张图的坐标（和面板上显示的图对得齐）；
+        节点输出给下游 / PLC 的坐标用原始帧坐标，差的就是这个原点。
+        """
+        r = self.meta.get("roi")
+        if r and len(r) >= 4:
+            return int(round(float(r[0]))), int(round(float(r[1])))
+        return 0, 0
+
     def derive(self, data: np.ndarray) -> "Image":
         """New Image carrying this image's metadata but different pixel data."""
         return Image(data=data, frame_id=self.frame_id, timestamp=self.timestamp,
@@ -212,6 +227,25 @@ class Overlay:
     @staticmethod
     def contours(cnts, color: str = "#00ffff") -> "Overlay":
         return Overlay("contours", {"contours": list(cnts)}, color)
+
+    def translated(self, dx: float, dy: float) -> "Overlay":
+        """整体平移后的副本。把画在裁剪小图上的叠加层搬到原始帧（或别的裁法的图）上显示时用。"""
+        if not dx and not dy:
+            return self
+        g = dict(self.geometry)
+        k = self.kind
+        if k in ("rect", "text"):
+            g["x"], g["y"] = g["x"] + dx, g["y"] + dy
+        elif k == "circle":
+            g["cx"], g["cy"] = g["cx"] + dx, g["cy"] + dy
+        elif k == "line":
+            g["x1"], g["y1"], g["x2"], g["y2"] = g["x1"] + dx, g["y1"] + dy, g["x2"] + dx, g["y2"] + dy
+        elif k in ("polygon", "points"):
+            g["points"] = [[float(x) + dx, float(y) + dy] for x, y in g["points"]]
+        elif k == "contours":
+            off = np.array([dx, dy], dtype=np.float32)
+            g["contours"] = [np.asarray(c) + off for c in g["contours"]]
+        return Overlay(k, g, self.color, self.width, self.label, self.group)
 
 
 def to_jsonable(value: Any) -> Any:

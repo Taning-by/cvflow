@@ -42,9 +42,12 @@ def build_main() -> Graph:
                                             values={"min_area": 500, "max_area": 5000})), 4)
     jc = place(g.add_node(registry.create("logic.judge", name="孔数判定",
                                           values={"op": "==", "low": 3, "name": "holes"})), 5)
+    # 卡尺自己不带 ROI：要量哪一条，先用「裁剪 ROI」裁出来（输出的边缘位置仍是整帧坐标）
+    strip = place(g.add_node(registry.create("preprocess.crop", name="宽度区域",
+                                             values={"roi_w": 520, "roi_h": 24,
+                                                     "roi": {"x": 60, "y": 150, "w": 520, "h": 24}})), 3, 1)
     cal = place(g.add_node(registry.create("analysis.caliper", name="宽度",
-                                           values={"roi": {"x": 60, "y": 150, "w": 520, "h": 24},
-                                                   "direction": "horizontal", "select": "first_last",
+                                           values={"direction": "horizontal", "select": "first_last",
                                                    "min_contrast": 15})), 4, 1)
     jw = place(g.add_node(registry.create("logic.judge", name="宽度判定",
                                           values={"op": "in_range", "low": 390, "high": 410, "name": "width"})), 5, 1)
@@ -58,7 +61,8 @@ def build_main() -> Graph:
     g.add_link(th.id, "image", mo.id, "image")
     g.add_link(mo.id, "image", blob.id, "image")
     g.add_link(blob.id, "count", jc.id, "value")
-    g.add_link(gray.id, "image", cal.id, "image")
+    g.add_link(gray.id, "image", strip.id, "image")
+    g.add_link(strip.id, "image", cal.id, "image")
     g.add_link(cal.id, "width", jw.id, "value")
     g.add_link(blob.id, "count", pub.id, "a")
     g.add_link(cal.id, "width", pub.id, "b")

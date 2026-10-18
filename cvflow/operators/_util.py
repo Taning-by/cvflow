@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from ..core.node import NodeError
-from ..core.types import Image, Rect
+from ..core.types import Image
 
 
 def require_image(value, name: str = "image") -> Image:
@@ -20,17 +20,6 @@ def as_gray(img: Image) -> np.ndarray:
 
 def as_bgr(img: Image) -> np.ndarray:
     return cv2.cvtColor(img.data, cv2.COLOR_GRAY2BGR) if img.is_gray else img.data
-
-
-def crop(img: Image, roi: Rect | None) -> tuple[np.ndarray, Rect]:
-    """Crop ``img`` to ``roi`` (clipped). Returns (view, effective_rect). Full image if roi is None."""
-    if roi is None or roi.is_empty():
-        return img.data, Rect(0, 0, img.width, img.height)
-    r = roi.clip(img.width, img.height)
-    x, y, w, h = r.as_int()
-    if w <= 0 or h <= 0:
-        raise NodeError("ROI 在图像范围之外")
-    return img.data[y:y + h, x:x + w], Rect(x, y, w, h)
 
 
 def odd(k: int) -> int:
