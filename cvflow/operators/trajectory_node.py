@@ -77,12 +77,7 @@ class OnnxTrajectory(_OnnxBase):
         w, h = self.get("width"), self.get("height")
         log.info("按 %s 配置：输入 %sx%s", os.path.basename(side), w, h)
         # 裁剪不在本节点做：sidecar 里的 ROI 只用来告诉人该在采集节点 /「裁剪 ROI」节点上填什么
-        st = d.get("station_rois") or {}
-        if st:
-            log.info("这个模型是按工位固定 ROI 训的：%s。请在采集节点上开「固定 ROI 裁剪」（或接「裁剪 ROI」节点），"
-                     "ROI 宽/高填 %s×%s，位置按工位填",
-                     "  ".join(f"{c}:({v[0]},{v[1]})" for c, v in sorted(st.items())), w, h)
-        elif d.get("roi"):
+        if d.get("roi"):
             x, y, rw, rh = d["roi"]
             if (int(x), int(y)) != (0, 0) or (int(rw), int(rh)) != (int(w), int(h)):
                 log.info("这个模型训练时裁的 ROI 是 x%s y%s %s×%s：请在采集节点上开「固定 ROI 裁剪」"
