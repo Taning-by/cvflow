@@ -64,38 +64,102 @@ class RenderOverlays(Node):
 
 @register
 class SaveImage(Node):
+    """存图。文件名 = 前缀 + [name 输入] + 后缀，后缀按「命名方式」是采集时间、序号或两者都有。
+
+    和 VisionMaster 的「图像保存」一样：时间格式可改（默认到毫秒），序号从「起始序号」开始、
+    按位数补零，设了上限就循环覆盖——产线上长期跑不会把盘存满。序号记在节点状态里，随方案保存，
+    重开软件接着数；改「起始序号」就从那个数重新数。
+    """
+
     type_id = "output.save_image"
     category = "Output"
     label = "Save Image"
-    description = "Save the image to disk (optionally only NG runs; place it after the Judge nodes)."
+    description = ("Save the image to disk. File name = prefix + linked name + suffix; the suffix is the capture "
+                   "time and/or a running index. Optionally only NG/OK runs; place it after the Judge nodes.")
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE), Port("name", DataType.STRING, optional=True),
+    inputs = [Port("image", DataType.IMAGE),
+              Port("name", DataType.STRING, optional=True,
+                   description="自定义的文件名主体（例如条码、产品号）：接上后放在前缀和时间/序号后缀之间"),
               Port("after", DataType.ANY, optional=True, description="Link a judge output to force running after it")]
-    outputs = [Port("path", DataType.STRING)]
+    outputs = [Port("path", DataType.STRING, description="实际写出的文件路径；按条件没存时为空"),
+               Port("index", DataType.INT, description="本次用掉的序号；没存图或命名方式不含序号时为 0")]
     params = [Param("directory", "./captures", "dir"),
               Param("when", "always", "enum", choices=["always", "ng_only", "ok_only"]),
               Param("format", "png", "enum", choices=["png", "jpg", "bmp"]),
               Param("subfolder_by_result", True, "bool"),
-              Param("prefix", "", "string"),
+              Param("prefix", "", "string", description="文件名开头固定的字样，例如工位号 \"S1_\""),
+              Param("naming", "time", "enum", choices=["time", "index", "time_index", "none"], label="命名方式",
+                    description="文件名后缀：time=采集时间　index=序号　time_index=时间_序号　"
+                                "none=不加后缀（同名会覆盖，一般只在接了 name 输入时用）"),
+              Param("time_format", "%Y%m%d_%H%M%S_%3f", "string", label="时间格式", advanced=True,
+                    description="strftime 写法，%3f 是毫秒、%f 是微秒。默认写出来像 20261018_093012_345。"
+                                "时间取的是这帧图像的采集时间"),
+              Param("index_start", 1, "int", min=0, max=1_000_000_000, label="起始序号",
+                    description="改了它就从这个数重新数"),
+              Param("index_digits", 4, "int", min=1, max=12, label="序号位数", advanced=True,
+                    description="不够的位数前面补 0（4 位：0001）；超过位数照实写"),
+              Param("index_max", 0, "int", min=0, max=1_000_000_000, label="序号上限", advanced=True,
+                    description="0 表示不限。到了上限就回到起始序号循环覆盖旧图，磁盘不会被存满"),
               Param("jpeg_quality", 92, "int", min=1, max=100, advanced=True)]
+
+    def on_param_changed(self, name, value):
+        if name == "index_start":
+            self.state.pop("next_index", None)          # 改起始序号＝从头重新数
+
+    def _next_index(self) -> int:
+        """取本次要用的序号并把计数器往前拨一格。越过上限（或起始序号被改大）就回到起始序号。"""
+        start, top = int(self.get("index_start")), int(self.get("index_max"))
+        i = int(self.state.get("next_index", start))
+        if i < start or (top and i > top):
+            i = start
+        self.state["next_index"] = i + 1
+        return i
+
+    @staticmethod
+    def _stamp(ts: float, fmt: str) -> str:
+        dt = datetime.fromtimestamp(ts) if ts else datetime.now()
+        ms = f"{dt.microsecond // 1000:03d}"
+        try:
+            out = dt.strftime((fmt or "%Y%m%d_%H%M%S_%3f").replace("%3f", ms))
+        except ValueError:                               # Windows 上不认识的指令会直接抛
+            out = ""
+        if not out or "%" in out:                        # Linux 上不认识的指令原样留下：也算写坏了
+            out = dt.strftime("%Y%m%d_%H%M%S_") + ms     # 格式写坏了别让存图失败，退回默认
+        return out
 
     def process(self, ctx, inputs):
         img = require_image(inputs["image"])
         when = self.get("when")
         ng = ctx.judgement is False
         if (when == "ng_only" and not ng) or (when == "ok_only" and ng):
-            return {"path": ""}
+            return {"path": "", "index": 0}
         d = paths.resolve(self.get("directory") or ".")
         if self.get("subfolder_by_result"):
             d = os.path.join(d, "NG" if ng else "OK")
         os.makedirs(d, exist_ok=True)
-        base = inputs.get("name") or f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{ctx.run_id}"
-        name = f"{self.get('prefix')}{os.path.basename(str(base))}.{self.get('format')}"
-        path = os.path.join(d, name)
-        params = [cv2.IMWRITE_JPEG_QUALITY, int(self.get("jpeg_quality"))] if self.get("format") == "jpg" else []
+        naming = self.get("naming")
+        parts: list[str] = []
+        linked = inputs.get("name")
+        if linked is not None and str(linked) != "":
+            parts.append(os.path.basename(str(linked)))
+        if naming in ("time", "time_index"):
+            parts.append(self._stamp(img.timestamp, self.get("time_format")))
+        idx = 0
+        if naming in ("index", "time_index"):
+            idx = self._next_index()
+            parts.append(f"{idx:0{int(self.get('index_digits'))}d}")
+        stem = f"{self.get('prefix')}{'_'.join(parts)}" or str(ctx.run_id)
+        fmt = self.get("format")
+        path = os.path.join(d, f"{stem}.{fmt}")
+        if naming == "time":                             # 同一毫秒存两张：加个尾号，别悄悄把上一张冲掉。
+            k = 1                                        # 序号模式撞名则是到了上限回头循环，本来就是要覆盖
+            while os.path.exists(path):
+                path = os.path.join(d, f"{stem}-{k}.{fmt}")
+                k += 1
+        params = [cv2.IMWRITE_JPEG_QUALITY, int(self.get("jpeg_quality"))] if fmt == "jpg" else []
         if not cv2.imwrite(path, img.data, params):
             raise NodeError(f"无法写入 {path}")
-        return {"path": path}
+        return {"path": path, "index": idx}
 
 
 @register

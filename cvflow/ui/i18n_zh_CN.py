@@ -236,7 +236,8 @@ DESCRIPTIONS = {
     "Run any ONNX model; outputs the raw tensors for downstream post-processing (e.g. a script node).": "运行任意 ONNX 模型，输出原始张量供下游后处理（例如脚本节点）。",
     "Run user Python code as a node (the escape hatch for custom DL/RL logic).": "把用户 Python 代码作为节点运行（自定义深度学习/强化学习逻辑的入口）。",
     "Runs a PyTorch model on the input image. Edit this plugin to load your own network.": "对输入图像运行 PyTorch 模型。修改此插件以加载你自己的网络。",
-    "Save the image to disk (optionally only NG runs; place it after the Judge nodes).": "把图像保存到磁盘（可只保存 NG；请放在判定节点之后）。",
+    "Save the image to disk. File name = prefix + linked name + suffix; the suffix is the capture time and/or a running index. Optionally only NG/OK runs; place it after the Judge nodes.":
+        "把图像保存到磁盘。文件名 = 前缀 + name 输入 + 后缀，后缀是采集时间和/或序号（命名方式里选）。可只保存 NG / OK；请放在判定节点之后。",
     "Send text to a communication device (TCP/UDP/serial) configured in the Communication panel.": "向通信面板中配置的设备（TCP/UDP/串口）发送文本。",
     "Shared camera name": "共享的相机名称",
     "Stop learning, always use the best arm": "停止学习，始终使用最优动作",

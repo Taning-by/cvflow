@@ -590,10 +590,75 @@ def test_output_save_image_modes_formats_and_name(tmp_path):
     for fmt in ("png", "jpg", "bmp"):
         nr = run_ok(reg, "output.save_image", {"image": img}, {"directory": str(tmp_path), "format": fmt, "subfolder_by_result": False})
         assert Path(nr.outputs["path"]).suffix == f".{fmt}" and Path(nr.outputs["path"]).is_file()
-    nr = run_ok(reg, "output.save_image", {"image": img, "name": "part7"}, {"directory": str(tmp_path), "prefix": "x_", "subfolder_by_result": True})
+    nr = run_ok(reg, "output.save_image", {"image": img, "name": "part7"},
+                {"directory": str(tmp_path), "prefix": "x_", "subfolder_by_result": True, "naming": "none"})
     assert nr.outputs["path"].endswith("x_part7.png") and (tmp_path / "OK" / "x_part7.png").is_file()
     assert run_ok(reg, "output.save_image", {"image": img}, {"directory": str(tmp_path), "when": "ng_only"}).outputs["path"] == ""
     assert run_ok(reg, "output.save_image", {"image": img}, {"directory": str(tmp_path), "when": "ok_only"}).outputs["path"] != ""
+
+
+def _save_runner(tmp_path, values: dict, judge_ng: bool = False):
+    """同一个存图节点反复运行：序号要接着数，所以不能每次都新建节点。返回 (跑一次的函数, 节点)。"""
+    from cvflow.core import Graph
+    from cvflow.core.engine import Engine
+    from nodes_helpers import _Feeder
+
+    class _Judge(_Feeder):
+        def process(self, ctx, inputs):
+            if judge_ng:
+                ctx.judge(False, "forced")
+            return super().process(ctx, inputs)
+
+    g = Graph("save")
+    img = squares_bgr()
+    img.timestamp = 1_760_000_000.345678                 # 固定的采集时间：文件名里的时间可以精确断言
+    feed = g.add_node(_Judge({"image": img, "name": "A1"}))
+    node = g.add_node(reg.create("output.save_image", values={"directory": str(tmp_path), "subfolder_by_result": False, **values}))
+    g.add_link(feed.id, "image", node.id, "image")
+    if values.get("_link_name"):
+        g.add_link(feed.id, "name", node.id, "name")
+    eng = Engine(g)
+    return (lambda: eng.run().node_results[node.id].outputs), node
+
+
+def test_output_save_image_time_suffix_uses_capture_time_and_format(tmp_path):
+    """默认按采集时间命名，精确到毫秒；时间格式可改；撞名不覆盖而是加尾号。"""
+    from datetime import datetime
+    run, node = _save_runner(tmp_path, {"prefix": "S1_"})
+    expect = datetime.fromtimestamp(1_760_000_000.345678).strftime("%Y%m%d_%H%M%S") + "_345"
+    o = run()
+    assert Path(o["path"]).name == f"S1_{expect}.png" and o["index"] == 0
+    assert Path(run()["path"]).name == f"S1_{expect}-1.png"                       # 同一时间再存：加尾号，不覆盖
+    node.set("time_format", "%H%M%S")
+    assert Path(run()["path"]).name == "S1_" + datetime.fromtimestamp(1_760_000_000.345678).strftime("%H%M%S") + ".png"
+    node.set("time_format", "%Q")                                                   # 写坏的格式退回默认，存图不失败
+    assert Path(run()["path"]).name.startswith("S1_" + expect[:8])
+
+
+def test_output_save_image_index_suffix_counts_pads_wraps_and_persists(tmp_path):
+    """序号从起始值开始、按位数补零、到上限回头循环覆盖；计数记在节点状态里，重新加载方案接着数；没存图不消耗序号。"""
+    run, node = _save_runner(tmp_path, {"naming": "index", "index_start": 7, "index_digits": 3, "index_max": 9})
+    names = [Path(run()["path"]).name for _ in range(4)]
+    assert names == ["007.png", "008.png", "009.png", "007.png"]                    # 到 9 之后回到 7 覆盖
+    assert (tmp_path / "007.png").is_file() and not (tmp_path / "010.png").exists()
+    assert node.state["next_index"] == 8
+    clone = reg.node_from_dict(node.to_dict())                                      # 随方案保存的状态
+    assert clone.state["next_index"] == 8 and clone._next_index() == 8
+    node.set("index_start", 100)                                                     # 改起始序号：从头数
+    assert Path(run()["path"]).name == "100.png"
+    node.set("index_max", 0); node.set("index_digits", 2)
+    assert [Path(run()["path"]).name for _ in range(2)] == ["101.png", "102.png"]   # 不限上限；位数不够照实写
+    run_ng, _ = _save_runner(tmp_path / "ng", {"naming": "index", "when": "ng_only"})
+    assert run_ng() == {"path": "", "index": 0}                                     # 条件不满足：不存、也不占序号
+    run_ng2, _ = _save_runner(tmp_path / "ng2", {"naming": "index", "when": "ng_only"}, judge_ng=True)
+    o = run_ng2()
+    assert Path(o["path"]).name == "0001.png" and o["index"] == 1
+
+
+def test_output_save_image_name_input_sits_between_prefix_and_suffix(tmp_path):
+    run, _ = _save_runner(tmp_path, {"prefix": "P_", "naming": "time_index", "_link_name": True})
+    name = Path(run()["path"]).name
+    assert name.startswith("P_A1_") and name.endswith("_345_0001.png")
 
 
 def test_output_log_passthrough():
