@@ -86,25 +86,36 @@ class CameraDialog(QDialog):
         bar.addWidget(close)
         lay.addLayout(bar)
 
-        self.status = QLabel(self._sdk_status())
+        text, tip = self._sdk_status()
+        self.status = QLabel(text)
         self.status.setWordWrap(True)
+        self.status.setToolTip(tip)                 # 完整原因（含找过哪些目录）放提示里，标签只留一行
         self.status.setStyleSheet("color:#aaa")
         lay.addWidget(self.status)
 
     # ---- helpers ----
     @staticmethod
-    def _sdk_status() -> str:
+    def _sdk_status() -> tuple[str, str]:
+        """返回（一行状态, 完整原因）。
+
+        用不了的原因要照原话报出来：「没装 MVS」和「装了 MVS 但运行库没加载上」
+        （打包版那句 PyInstallerImportError 就是后者）得让用户当场分得清，
+        否则会一直去重装已经装好的 MVS。
+        """
+        why = ""
         try:
-            from ..camera.hik_cam import sdk_available
-            hik = "可用" if sdk_available() else "未找到（安装 MVS 后可用海康相机取图）"
-        except Exception:
-            hik = "未找到"
+            from ..camera.hik_cam import sdk_status
+            ok, why = sdk_status()
+        except Exception as e:                      # pragma: no cover - 兜底，别让对话框开不出来
+            ok, why = False, str(e)
+        hik = "可用" if ok else (why.splitlines()[0] if why else "未找到（安装 MVS 后可用海康相机取图）")
         try:
             import harvesters  # noqa: F401
             gen = "可用"
         except ImportError:
             gen = "未安装（pip install harvesters）"
-        return f"海康 MVS SDK：{hik}　|　GenICam/harvesters：{gen}　|　搜索使用 GigE Vision 发现协议，不依赖 SDK"
+        return (f"海康 MVS SDK：{hik}　|　GenICam/harvesters：{gen}　|　搜索使用 GigE Vision 发现协议，不依赖 SDK",
+                why)
 
     def _browse_cti(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择 GenTL 驱动", self.cti.text(), "GenTL producer (*.cti)")

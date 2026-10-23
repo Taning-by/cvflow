@@ -1,17 +1,26 @@
 """海康机器人（HIKROBOT）工业相机，基于 MVS SDK 的 Python 接口 ``MvCameraControl_class``。
 
-这是 VisionMaster 使用的同一套 SDK。需要先安装 MVS（Windows/Linux 都有，且要带上 Python 示例），
-Python 模块在 ``<MVS>/Development/Samples/Python/MvImport`` 下。MVS 可以装在任意路径，所以这里
-按环境变量（``MVCAM_SDK_PATH`` / ``MVCAM_COMMON_RUNENV``）与常见安装位置组合着找；都找不到时
-可以在相机参数的 ``sdk_path`` 里直接指定。
+这是 VisionMaster 使用的同一套 SDK。需要先安装 MVS（Windows/Linux 都有，且要带上 Python 示例）。
+SDK 分两半，**得分别找到**，少哪一半都报错：
+
+* Python 封装 ``MvCameraControl_class.py``：在 ``<MVS>/Development/Samples/Python/MvImport`` 下，
+  按 ``MVCAM_SDK_PATH`` 和常见安装位置找（见 ``_sdk_dirs``）。
+* 运行库 ``MvCameraControl.dll``（Linux 上 ``libMvCameraControl.so``）：在
+  ``<Common Files>/MVS/Runtime/Win64_x64`` 下，按 ``MVCAM_COMMON_RUNENV`` 和常见位置找，
+  再挂进 DLL 搜索路径（见 ``_open_runtime_search_path``——MVS 只把它加进 PATH，而
+  Windows 上 Python 3.8 起加载 DLL 不认 PATH，所以必须自己挂）。
+
+MVS 可以装在任意路径；两半都能在相机参数的 ``sdk_path`` 里直接指定（填哪一半都认）。
 
 装不到 Python 示例时改用 GenICam 方式（``kind=genicam``）：cti 在
 ``<Common Files>/MVS/Runtime/Win64_x64/`` 下，GigE 相机用 ``MvProducerGEV.cti``，USB3 用 ``MvProducerU3V.cti``。
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
+import platform
 import sys
 from ctypes import POINTER, byref, c_ubyte, cast, memmove
 
@@ -49,6 +58,94 @@ def _sdk_dirs(extra: str = "") -> list[str]:
     return out
 
 
+#: 运行库（MvCameraControl.dll / libMvCameraControl.so）所在目录的候选根。MVS 把运行库装在
+#: Common Files 下，和上面的 MvImport 不在同一棵树上（环境变量 MVCAM_COMMON_RUNENV 指到
+#: Runtime 这一级），所以要单独找一遍。
+_RUNTIME_ROOTS = [
+    os.environ.get("MVCAM_COMMON_RUNENV", ""),
+    *(os.path.join(v, "MVS", "Runtime") for v in
+      (os.environ.get("CommonProgramFiles(x86)", ""), os.environ.get("CommonProgramW6432", ""),
+       os.environ.get("CommonProgramFiles", "")) if v),
+    r"C:\Program Files (x86)\Common Files\MVS\Runtime",
+    r"C:\Program Files\Common Files\MVS\Runtime",
+    "/opt/MVS/lib",
+]
+
+_LIB_NAME = "MvCameraControl.dll" if os.name == "nt" else "libMvCameraControl.so"
+
+
+def _runtime_subdirs() -> list[str]:
+    """运行库按平台分的子目录，当前解释器的架构排在前面。
+
+    架构不对不是「找不到」而是加载失败（Windows 上是 WinError 193），所以候选宁可多排几个，
+    由 _runtime_dirs 逐个确认文件在不在、_open_runtime_search_path 逐个试着加载。
+    """
+    if os.name == "nt":
+        return ["Win64_x64", "Win32_i86"] if sys.maxsize > 2 ** 32 else ["Win32_i86", "Win64_x64"]
+    m = platform.machine().lower()
+    if m in ("aarch64", "arm64"):
+        return ["aarch64", "64"]
+    if m.startswith("arm"):
+        return ["arm", "32"]
+    return ["64", "32"] if sys.maxsize > 2 ** 32 else ["32", "64"]
+
+
+def _runtime_dirs(extra: str = "") -> list[str]:
+    """确实放着运行库的目录；extra 来自相机参数 sdk_path（有人把 dll 和 MvImport 放一起）。"""
+    out: list[str] = []
+    for root in ([extra] if extra else []) + _RUNTIME_ROOTS:
+        if not root:
+            continue
+        for sub in _runtime_subdirs() + [""]:
+            d = os.path.join(root, sub) if sub else root
+            if d not in out and os.path.isfile(os.path.join(d, _LIB_NAME)):
+                out.append(d)
+    return out
+
+
+_runtime_tried: set[str] = set()
+
+
+def _open_runtime_search_path(extra: str = "") -> None:
+    r"""把 MVS 运行库目录挂进 DLL 搜索路径，再按绝对路径预加载一次。
+
+    MvImport 里是**按名字**加载运行库的（``WinDLL("MvCameraControl.dll")``），而 MVS 装完
+    只把运行库目录加进了 PATH。Windows 上 Python 3.8 起 LoadLibraryEx 带的是
+    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS，**不再搜 PATH**，于是：
+
+        FileNotFoundError: Could not find module 'MvCameraControl.dll'
+
+    打包成 exe 之后同一句话被 PyInstaller 的 ctypes 钩子包了一层（它只去 _internal 里找，
+    找不到就原样再试一次），报出来是 PyInstallerImportError——是同一件事，和「装没装 MVS」无关。
+
+    add_dll_directory 管带标志位的 LoadLibraryEx，PATH 管朴素的 LoadLibraryA；之后按绝对路径
+    加载一次，MvImport 那句按名字的加载就直接命中进程里已有的模块，厂商的 .py 一个字都不用改。
+    """
+    for d in _runtime_dirs(extra):
+        if d in _runtime_tried:
+            continue
+        _runtime_tried.add(d)
+        if os.name == "nt":
+            try:
+                os.add_dll_directory(d)           # 句柄故意不释放：整个进程期间都要有效
+            except (AttributeError, OSError):     # pragma: no cover - 取决于系统
+                pass
+            path = os.environ.get("PATH", "")
+            if d.lower() not in path.lower():
+                os.environ["PATH"] = d + os.pathsep + path
+        lib = os.path.join(d, _LIB_NAME)
+        try:
+            if os.name == "nt":
+                ctypes.WinDLL(lib)
+            else:
+                ctypes.CDLL(lib)
+        except OSError as e:                      # pragma: no cover - 取决于本机安装
+            log.debug("预加载 %s 失败（位数/架构对不上？）：%s", lib, e)
+            continue
+        log.info("MVS 运行库：%s", lib)
+        return
+
+
 _PIX_MONO8 = 0x01080001
 _PIX_MONO10 = 0x01100003
 _PIX_MONO12 = 0x01100005
@@ -59,40 +156,75 @@ _PIX_BGR8 = 0x02180015
 _mv = None
 
 
+def _import_sdk() -> tuple[object | None, str]:
+    """试着 ``import MvCameraControl_class``，返回（模块，失败原因）。
+
+    导入失败不只有「模块没找到」一种：模块找到了而运行库没加载上时抛的是 OSError
+    （打包版是 PyInstaller 包装过的 PyInstallerImportError，同样是 OSError 的子类），
+    版本对不上的 .py 还能抛出别的。这些都不该越过 sdk_available() 把界面带崩，
+    所以一律收敛成一句原因，由 load_sdk 拼成 CameraError。
+    """
+    try:
+        import MvCameraControl_class as mv  # type: ignore
+        return mv, ""
+    except ModuleNotFoundError as e:
+        return None, "" if e.name == "MvCameraControl_class" else str(e)
+    except Exception as e:                         # pragma: no cover - 取决于本机安装
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _not_found_hint(tried: list[str], why: str, extra: str = "") -> str:
+    """装不上时给一句能照着做的提示：分「模块没找到」和「运行库没加载上」两种。"""
+    if not why:
+        looked = "\n  ".join(tried) if tried else "（没有一个候选目录存在）"
+        return ("未找到海康 MVS SDK 的 Python 模块 MvCameraControl_class。请先安装 MVS（含 Python 示例），"
+                "再把 MvImport 目录填进相机参数的 sdk_path，或设成环境变量 MVCAM_SDK_PATH；"
+                "典型位置是 <MVS 安装目录>\\Development\\Samples\\Python\\MvImport。"
+                f"\n找过这些目录：\n  {looked}")
+    rt = _runtime_dirs(extra)
+    where = "\n  ".join(rt) if rt else f"（候选目录里没有一个有 {_LIB_NAME}）"
+    return (f"海康 MVS SDK 的 Python 模块导入失败：{why}\n"
+            f"多半是运行库 {_LIB_NAME} 没加载上：请确认 MVS 和本软件位数一致（都是 64 位），"
+            "并把运行库目录设进环境变量 MVCAM_COMMON_RUNENV（装 MVS 时本该自动设好），"
+            "典型位置是 C:\\Program Files (x86)\\Common Files\\MVS\\Runtime\\Win64_x64；"
+            "也可以把这个目录直接填进相机参数的 sdk_path。"
+            f"\n找到的运行库目录：\n  {where}")
+
+
 def load_sdk(extra_dir: str = ""):
     """导入 MvCameraControl_class；找不到时抛出带安装提示的 CameraError。"""
     global _mv
     if _mv is not None:
         return _mv
-    try:
-        import MvCameraControl_class as mv  # type: ignore
-    except ImportError:
-        mv, tried = None, _sdk_dirs(extra_dir)
+    _open_runtime_search_path(extra_dir)       # 先挂运行库：模块一导入就会去加载它
+    tried = _sdk_dirs(extra_dir)
+    mv, why = _import_sdk()
+    if mv is None:
         for d in tried:
             if d not in sys.path:
                 sys.path.append(d)
-            try:
-                import MvCameraControl_class as mv  # type: ignore
+            mv, err = _import_sdk()
+            if mv is not None:
                 break
-            except ImportError:
-                continue
-        if mv is None:
-            looked = "\n  ".join(tried) if tried else "（没有一个候选目录存在）"
-            raise CameraError(
-                "未找到海康 MVS SDK 的 Python 模块 MvCameraControl_class。请先安装 MVS（含 Python 示例），"
-                "再把 MvImport 目录填进相机参数的 sdk_path，或设成环境变量 MVCAM_SDK_PATH；"
-                "典型位置是 <MVS 安装目录>\\Development\\Samples\\Python\\MvImport。"
-                f"\n找过这些目录：\n  {looked}")
+            why = err or why
+    if mv is None:
+        raise CameraError(_not_found_hint(tried, why, extra_dir))
     _mv = mv
     return mv
 
 
-def sdk_available() -> bool:
+def sdk_status() -> tuple[bool, str]:
+    """(能不能用, 用不了的原因)。界面和 ``cvflow cameras`` 都用它，免得各写一份提示——
+    「没装 MVS」和「装了 MVS 但运行库没加载上」要让用户当场分得清。"""
     try:
         load_sdk()
-        return True
-    except CameraError:
-        return False
+        return True, ""
+    except CameraError as e:
+        return False, str(e)
+
+
+def sdk_available() -> bool:
+    return sdk_status()[0]
 
 
 def _ip_str(n: int) -> str:

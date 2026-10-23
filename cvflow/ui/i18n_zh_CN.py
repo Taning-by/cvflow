@@ -145,7 +145,7 @@ NODE_LABELS = {
 
 PARAM_LABELS = {
     "Address": "地址", "Binarize": "二值化方式", "Input Count": "输入个数", "Max Batch": "批次上限",
-    "Wait Ms": "合批等待（毫秒）", "Weight Group": "权重共享组", "MindVision SDK path": "迈德威视 SDK 目录", "Backend": "采集后端", "Arrival": "输入到达方式",
+    "Wait Ms": "合批等待（毫秒）", "Weight Group": "权重共享组", "MindVision SDK path": "迈德威视 SDK 目录", "Vendor SDK path": "厂商 SDK 目录", "Backend": "采集后端", "Arrival": "输入到达方式",
     "Trigger just this path: only this path's nodes run; the other paths stay put.":
         "只触发这一路：只有这一路（及其下游）的节点执行，别的路一动不动。\n"
         "一路的入口由「触发」节点声明，或由深度学习节点的异步汇合推断；\n"

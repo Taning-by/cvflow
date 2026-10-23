@@ -179,9 +179,11 @@ class CameraSource(Node):
               Param("grayscale", False, "bool")] + roi_params() + [
               Param("cti", "", "file", label="GenTL producer (.cti)", advanced=True),
               Param("sdk_path", "", "dir", label="Vendor SDK path", advanced=True,
-                    description="厂商 SDK 的 Python 模块目录，装在非默认路径时才要填。"
+                    description="厂商 SDK 的目录，装在非默认路径时才要填。"
                                 "迈德威视填 mvsdk.py 所在目录（一般是 Demo\\Python）；"
-                                "海康填 MvImport 目录（一般是 MVS\\Development\\Samples\\Python\\MvImport）。"
+                                "海康填 MvImport 目录（一般是 MVS\\Development\\Samples\\Python\\MvImport），"
+                                "或者填运行库目录（里面有 MvCameraControl.dll，"
+                                "一般是 Common Files\\MVS\\Runtime\\Win64_x64）。"
                                 "留空则按环境变量和常见安装路径找"),
               Param("features", {}, "json", label="Camera features (JSON)", advanced=True)]
 

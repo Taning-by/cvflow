@@ -475,7 +475,8 @@ def cmd_cameras(args) -> int:
 
     print("\n== 海康机器人 MVS ==")
     from .camera import hik_cam
-    if hik_cam.sdk_available():
+    ok, why = hik_cam.sdk_status()
+    if ok:
         try:
             devs = hik_cam.enumerate_hik()
             print(f"  SDK 可用，枚举到 {len(devs)} 台")
@@ -484,7 +485,9 @@ def cmd_cameras(args) -> int:
         except Exception as e:                                   # pragma: no cover
             print(f"  SDK 可用但枚举失败：{e}")
     else:
-        print("  没找到 MVS SDK（没装海康相机的话正常）")
+        # 原因要原样打出来：装了 MVS 还报错时，差别全在这段话里（模块没找到 / 运行库没加载上）
+        print("  " + why.replace("\n", "\n  "))
+        print("  （没装海康相机的话，这段不用管）")
 
     if args.gige:
         print("\n== GigE Vision 广播发现 ==")

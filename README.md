@@ -179,12 +179,35 @@ Windows 生成 `CVFlow.lnk`，Linux 生成 `CVFlow.desktop`（同时加入应用
 |---|---|---|
 | `folder` | 用一个文件夹里的图片模拟相机，开发调试用 | 无 |
 | `opencv` | UVC 摄像头、视频流（RTSP 等） | 无 |
-| `hik` | 海康机器人（HIKROBOT）GigE / USB3 | MVS SDK，`MVCAM_SDK_PATH` 指向 `MVS/Development/Samples/Python/MvImport` |
+| `hik` | 海康机器人（HIKROBOT）GigE / USB3 | MVS SDK（含 Python 示例），见下面「海康相机报找不到 `MvCameraControl.dll`」 |
 | `mindvision` | **迈德威视（MindVision）GigE / USB3** | 厂商驱动 + SDK，`MVSDK_PATH` 或节点参数「迈德威视 SDK 目录」指向 `mvsdk.py` 所在目录 |
 | `genicam` | 任何符合 GenICam/GenTL 的相机 | `pip install harvesters` + 厂商的 `.cti` 驱动 |
 
 **迈德威视和海康这类相机走的是厂商自己的协议**，不是 USB3 Vision 标准，所以 `opencv` 和
 `genicam` 两条路都接不上，必须用对应的 SDK 后端。接法见下面「接一台迈德威视相机」。
+
+### 海康相机报找不到 `MvCameraControl.dll`
+
+```
+PyInstallerImportError: Failed to load dynlib/dll 'MvCameraControl.dll'
+  ← FileNotFoundError: Could not find module 'MvCameraControl.dll'
+```
+
+**MVS 已经装好也会这样，不用重装。** MVS 的 SDK 是两半：Python 封装 `MvCameraControl_class.py`
+在 `MVS\Development\Samples\Python\MvImport` 下，运行库 `MvCameraControl.dll` 在
+`C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64` 下。上面这个报错说明**封装找到了、
+运行库没加载上**——MVS 只把运行库目录加进了 PATH，而 Windows 上 Python 3.8 起加载 DLL 不再搜 PATH
+（打包成 exe 之后，这句话被 PyInstaller 的钩子包了一层，就成了 `PyInstallerImportError`）。
+
+CVFlow 会自己按环境变量 `MVCAM_COMMON_RUNENV` 和几个常见位置找到这个目录并挂上去。还报错的话：
+
+1. `cvflow cameras` 跑一遍，它会把找过哪些目录、现在卡在哪一半都打出来（界面里是「搜索相机」
+   对话框底下那行字，鼠标停上去看完整内容）。
+2. 把运行库所在目录（里面有 `MvCameraControl.dll`）填进**相机节点**的高级参数
+   「**厂商 SDK 目录**」，或者设成环境变量 `MVCAM_COMMON_RUNENV` 再重启软件；
+   同一个参数填 `MvImport` 目录也认，两半里缺哪半就填哪半。
+3. **位数要一致**：64 位的 CVFlow 配 64 位 MVS（`Win64_x64`），拿 `Win32_i86` 里的 dll 顶上
+   会报 `[WinError 193]`。
 
 ### 不确定相机能不能接？先问一句
 
