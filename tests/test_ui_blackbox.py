@@ -454,7 +454,9 @@ def test_ui_params_edit_spinbox_combo_checkbox_rename(win, app):
     sb.setValue(777); pump(app)
     assert node_by_name(win, "孔").get("min_area") == 777
     combo = param_widget(panel, "排序")
-    combo.setCurrentText("left_to_right"); pump(app)
+    # 下拉框显示中文，存回节点的仍是原始取值（方案文件和节点代码比的都是它）
+    assert combo.currentText() == "面积从大到小" and combo.currentData() == "area_desc"
+    combo.setCurrentIndex(combo.findData("left_to_right")); pump(app)
     assert node_by_name(win, "孔").get("sort") == "left_to_right"
     name = param_widget(panel, "名称")
     name.setText("孔洞"); name.editingFinished.emit(); pump(app)
@@ -1623,7 +1625,8 @@ def test_ui_dl_node_shows_arrival_and_weight_group(win, app, tmp_path):
     pump(app)
     win.scene.select_node(node.id); pump(app)
     panel = win.param_panel
-    assert param_widget(panel, "输入到达方式").currentText() == "sync"
+    arrival = param_widget(panel, "输入到达方式")
+    assert arrival.currentText() == "同步" and arrival.currentData() == "sync"
     button(panel.widget(), next(b.text() for b in panel.widget().findChildren(QPushButton)
                                 if b.text().startswith("显示高级参数"))).click()
     pump(app)

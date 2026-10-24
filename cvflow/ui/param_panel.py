@@ -21,7 +21,7 @@ from ..core.graph import Graph
 from ..core.node import Node, NodeStatus, Param
 from ..core.types import to_jsonable
 from .code_editor import CodeEditor
-from .i18n import tr
+from .i18n import tr, tr_choice
 from .theme import (C, M, STATUS_COLORS, STATUS_GLYPH, STATUS_TEXT, make_icon, mono_font, soft_chip_style,
                     tabular, ui_font)
 
@@ -217,8 +217,9 @@ class ParamPanel(QScrollArea):
         self._widgets["__error"] = err
         self._layout.addWidget(err)
 
-        basic = [p for p in node.params if not p.advanced]
-        adv = [p for p in node.params if p.advanced]
+        shown = node.visible_params()          # 当下用不上的参数不占地方（见 Param.visible_if）
+        basic = [p for p in shown if not p.advanced]
+        adv = [p for p in shown if p.advanced]
         sec = self._section(tr("Parameters"), f"{len(basic)}")
         if basic:
             sec.add(self._form(node, basic))
@@ -431,11 +432,14 @@ class ParamPanel(QScrollArea):
             cb.toggled.connect(lambda x: self._emit(p, x))
             return cb
         if k == "enum":
+            # 显示中文，存回去的仍是原始取值：方案文件和节点代码里比的都是它
             combo = QComboBox()
-            combo.addItems([str(c) for c in p.choices])
-            combo.setCurrentText(str(v))
+            for c in p.choices:
+                combo.addItem(tr_choice(p.name, str(c)), str(c))
+            idx = combo.findData(str(v))
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
             combo.setFixedHeight(M["ctl_h"])
-            combo.currentTextChanged.connect(lambda x: self._emit(p, x))
+            combo.currentIndexChanged.connect(lambda _i, cb=combo: self._emit(p, cb.currentData()))
             return combo
         if k == "choice":
             return self._choice_widget(node, p, str(v or ""))

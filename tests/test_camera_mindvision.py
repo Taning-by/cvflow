@@ -374,11 +374,11 @@ def test_keep_does_not_touch_white_balance(fake_sdk):
     cam.close()
 
 
-def test_manual_white_balance_gain_accepts_both_scales(fake_sdk):
-    """厂商软件里显示的是 100 起的刻度，手写时更顺手的是倍数，两种都要认。"""
-    for text, want in (("100,100,160", (100, 100, 160)),
-                       ("1.0,1.0,1.6", (100, 100, 160)),
-                       ("100, 100, 160", (100, 100, 160))):
+def test_manual_white_balance_gain_is_in_multiples(fake_sdk):
+    """参数里一律填倍数（和 GenICam 的 BalanceRatio 同单位），到了 SDK 才换成 ×100 的刻度。"""
+    for text, want in (("1.0,1.0,1.6", (100, 100, 160)),
+                       ("1, 1, 1.6", (100, 100, 160)),
+                       ("1.0 1.0 1.6", (100, 100, 160))):
         sdk = fake_sdk()
         cam = make_cam(wb_mode="manual", wb_gain=text)
         cam.open()
@@ -387,8 +387,17 @@ def test_manual_white_balance_gain_accepts_both_scales(fake_sdk):
         cam.close()
 
 
+def test_gain_in_vendor_scale_is_refused_with_the_conversion(fake_sdk):
+    """照抄厂商软件里的 160 会把画面打爆，要当场拒掉并说清怎么换算。"""
+    fake_sdk()
+    cam = make_cam(wb_mode="manual", wb_gain="100,100,160")
+    with pytest.raises(CameraError) as e:
+        cam.open()
+    assert "除以 100" in str(e.value)
+
+
 def test_manual_white_balance_rejects_bad_gain(fake_sdk):
-    for bad in ("", "100,160", "红,绿,蓝"):
+    for bad in ("", "1.0,1.6", "红,绿,蓝", "-1,1,1"):
         fake_sdk()
         cam = make_cam(wb_mode="manual", wb_gain=bad)
         with pytest.raises(CameraError):
@@ -414,7 +423,134 @@ def test_camera_node_passes_the_imaging_params_through(tmp_path):
     node.set("param_group", "A")
     node.set("param_file", str(f))
     node.set("wb_mode", "manual")
-    node.set("wb_gain", "100,100,160")
+    node.set("wb_gain", "1.0,1.0,1.6")
     cfg = node._config()
     assert cfg["param_group"] == "A" and cfg["param_file"] == str(f)
-    assert cfg["wb_mode"] == "manual" and cfg["wb_gain"] == "100,100,160"
+    assert cfg["wb_mode"] == "manual" and cfg["wb_gain"] == "1.0,1.0,1.6"
+
+
+# ==================================================== 白平衡是通用能力，不是哪一家专有
+def test_white_balance_on_a_genicam_style_camera():
+    """海康 / GenTL 走的是 SFNC 特性名，基类里实现，和迈德威视无关。"""
+    from cvflow.camera.base import Camera
+
+    class Fake(Camera):
+        kind = "fake"
+
+        def __init__(self):
+            super().__init__("c", {})
+            self.feats: list = []
+
+        def open(self): ...
+        def close(self): ...
+        def _grab_raw(self, t): ...
+        def set_feature(self, name, value):
+            self.feats.append((name, value))
+
+    cam = Fake()
+    cam.apply_white_balance({"wb_mode": "auto"})
+    assert ("BalanceWhiteAuto", "Continuous") in cam.feats
+
+    cam = Fake()
+    cam.apply_white_balance({"wb_mode": "once"})
+    assert ("BalanceWhiteAuto", "Once") in cam.feats
+
+    cam = Fake()
+    cam.apply_white_balance({"wb_mode": "manual", "wb_gain": "1.0,1.0,1.6"})
+    assert cam.feats[0] == ("BalanceWhiteAuto", "Off")      # 不先关自动就会被算回去
+    assert ("BalanceRatioSelector", "Blue") in cam.feats and ("BalanceRatio", 1.6) in cam.feats
+
+    cam = Fake()
+    cam.apply_white_balance({"wb_mode": "keep"})
+    assert cam.feats == []                                  # keep 不碰相机
+
+
+def test_wb_gain_parser_rejects_the_vendor_scale():
+    from cvflow.camera.base import parse_wb_gain
+    assert parse_wb_gain("1.0,1.0,1.6") == (1.0, 1.0, 1.6)
+    assert parse_wb_gain("") is None
+    with pytest.raises(CameraError) as e:
+        parse_wb_gain("100,100,160")
+    assert "除以 100" in str(e.value)
+
+
+# ==================================================== 参数按相机类型露面
+def test_camera_params_are_filtered_by_camera_kind():
+    """选了哪种相机就只留哪种用得上的参数——别让客户在一堆厂商专有项里找。"""
+    from cvflow.operators.source import CameraSource
+    node = CameraSource("n")
+    names = lambda: {p.name for p in node.visible_params()}
+
+    node.set("kind", "folder")
+    assert not (names() & {"backend", "cti", "sdk_path", "user_set",
+                           "param_group", "param_file", "wb_mode", "exposure_us"})
+
+    node.set("kind", "mindvision")
+    assert {"param_group", "param_file", "sdk_path", "wb_mode", "exposure_us"} <= names()
+    assert not (names() & {"cti", "backend", "user_set"})   # 这几样迈德威视用不上
+
+    node.set("kind", "hik")
+    assert {"user_set", "sdk_path", "wb_mode"} <= names()
+    assert not (names() & {"param_group", "param_file", "cti", "backend"})
+
+    node.set("kind", "genicam")
+    assert {"cti", "user_set", "features"} <= names()
+
+    node.set("kind", "opencv")
+    assert "backend" in names() and not (names() & {"cti", "sdk_path", "param_group"})
+
+
+def test_hidden_params_still_have_values():
+    """只是不显示，取值照常在——节点代码读到的永远是完整的一套。"""
+    from cvflow.operators.source import CameraSource
+    node = CameraSource("n")
+    node.set("kind", "folder")
+    assert "param_group" not in {p.name for p in node.visible_params()}
+    assert node.get("param_group") == "keep"
+    assert node._config()["param_group"] == "keep"
+
+
+def test_changing_the_camera_kind_triggers_a_panel_rebuild():
+    """改了相机类型，面板得知道要整块重建，否则藏起来的参数还挂在那儿。"""
+    from cvflow.operators.source import CameraSource
+    node = CameraSource("n")
+    assert [p.name for p in node.params_watching("kind")]
+    assert node.params_watching("exposure_us") == []
+
+
+def test_enum_choices_are_shown_in_chinese_but_stored_raw():
+    """下拉框翻译只管显示：存进方案文件的必须还是原始取值。"""
+    from cvflow.ui.i18n import tr_choice
+    assert tr_choice("wb_mode", "once") == "打开时做一次"
+    assert tr_choice("kind", "mindvision") == "迈德威视"
+    # 同名参数在不同节点上含义不同，按参数名分域查，不会串味
+    assert tr_choice("method", "linear") == "线性拉伸"
+    assert tr_choice("interpolation", "linear") == "双线性"
+    assert tr_choice("mode", "list") == "全部（不分层）"
+    # 表里没有的原样返回，插件自定义的选项不会出错
+    assert tr_choice("没这个参数", "whatever") == "whatever"
+
+
+def test_every_enum_choice_has_a_chinese_label():
+    """新加 enum 选项忘了配翻译，这条会拦住——只放过符号和专有名词。"""
+    import re
+    import cvflow.operators  # noqa: F401
+    from cvflow.core.registry import registry
+    from cvflow.ui.i18n import tr_choice
+    keep_as_is = {"BGR", "RGB", "HSV", "HLS", "Lab", "NCHW", "NHWC",
+                  "PNG", "JPG", "BMP", "CPU", "TensorRT", "FFmpeg", "GStreamer"}
+    missing = set()
+    for cls in registry.all():
+        if not cls.__module__.startswith("cvflow.operators"):
+            continue                                        # 第三方插件自己的选项不强求
+        for p in getattr(cls, "params", []):
+            if p.kind != "enum":
+                continue
+            for c in p.choices:
+                shown = tr_choice(p.name, str(c))
+                if shown in keep_as_is or not re.search(r"[A-Za-z]{2}", shown):
+                    continue
+                if re.search(r"[一-鿿]", shown):     # 带中文说明就算翻过了
+                    continue
+                missing.add(f"{p.name}.{c}")
+    assert not missing, f"这些选项还没有中文：{sorted(missing)}"

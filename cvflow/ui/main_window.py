@@ -1149,7 +1149,8 @@ class MainWindow(QMainWindow):
         # 节点可能在 on_param_changed 里顺带改掉别的参数（例如选了模型后按 sidecar 填好输入尺寸与 ROI），
         # 那些控件不刷新就会一直显示旧值，让人以为配置没生效。
         derived = [k for k, v in node.values.items() if k != name and values_before.get(k) != v]
-        if derived or name == "roi" or node.param_def(name).kind == "rect":
+        # 改了相机类型这种"决定别的参数露不露面"的参数，面板得整块重建
+        if derived or name == "roi" or node.param_def(name).kind == "rect" or node.params_watching(name):
             self.param_panel.set_node(node, g)
             if derived:
                 self.statusBar().showMessage("已按模型配置自动填入：" + "、".join(

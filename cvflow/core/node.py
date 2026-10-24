@@ -89,6 +89,11 @@ class Param:
     #: kind == "rect" 时，框的尺寸由另外两个 int 参数决定，写成 ``"宽参数名,高参数名"``。
     #: 界面上这种框只能拖位置、不能拉大小——尺寸是喂给模型的张量尺寸，随手拖出来的尺寸就是事故。
     locked_size: str = ""
+    #: 只在另一个参数取到某些值时才显示，写成 ``"参数名=值1|值2"``（或 ``"参数名!=值1|值2"``）。
+    #: 相机节点就靠它收口：选了"文件夹模拟"就不该看见 GenTL 驱动和厂商 SDK 目录，
+    #: 选了海康也不该看见迈德威视的参数组——参数表是全的，面板上只露出当下用得上的那些。
+    #: 只影响显示，不影响取值：藏起来的参数照样有默认值，节点代码照常读。
+    visible_if: str = ""
     #: kind == "choice" 时的候选来源名（见 ``cvflow.ui.param_options``）。
     #: 候选是**运行时才知道**的——配了哪些通信设备、哪些数据点、哪些流程——所以不能像 enum
     #: 那样写死在 choices 里。界面渲染成可编辑下拉框：能从列表里挑，也能手填（配置顺序不限）。
@@ -103,12 +108,29 @@ class Param:
             raise ValueError(f"参数 {self.name!r}：enum 类型需要 choices")
         if self.kind == "choice" and not self.options:
             raise ValueError(f"参数 {self.name!r}：choice 类型需要 options（候选来源名）")
+        if self.visible_if and "=" not in self.visible_if:
+            raise ValueError(f"参数 {self.name!r}：visible_if 要写成 '参数名=值1|值2'")
         if self.locked_size:
             if self.kind != "rect":
                 raise ValueError(f"参数 {self.name!r}：locked_size 只能用在 rect 上")
             if len(self.locked_size.split(",")) != 2:
                 raise ValueError(f"参数 {self.name!r}：locked_size 要写成 '宽参数名,高参数名'")
         self.default = self.coerce(self.default)
+
+    def depends_on(self) -> str:
+        """visible_if 盯着哪个参数；没写就是空。"""
+        if not self.visible_if:
+            return ""
+        return self.visible_if.split("!=")[0].split("=")[0].strip()
+
+    def is_visible(self, values: dict[str, Any]) -> bool:
+        """按 visible_if 判断这个参数在当前取值下该不该露面。"""
+        if not self.visible_if:
+            return True
+        negate = "!=" in self.visible_if
+        key, _, rhs = self.visible_if.partition("!=" if negate else "=")
+        wanted = {v.strip() for v in rhs.split("|")}
+        return (str(values.get(key.strip(), "")) in wanted) is not negate
 
     def coerce(self, value: Any) -> Any:
         """Convert and clamp ``value`` so stored parameters are always well typed."""
@@ -208,6 +230,14 @@ class Node:
             if p.name == name:
                 return p
         raise KeyError(f"{self.type_id}：没有参数 {name!r}")
+
+    def visible_params(self) -> list[Param]:
+        """当前取值下该显示在参数面板上的参数（见 ``Param.visible_if``）。"""
+        return [p for p in self.params if p.is_visible(self.values)]
+
+    def params_watching(self, name: str) -> list[Param]:
+        """有哪些参数的显示与否盯着 ``name``——改完它面板就得重建。"""
+        return [p for p in self.params if p.depends_on() == name]
 
     def get(self, name: str, default: Any = None) -> Any:
         return self.values.get(name, default)

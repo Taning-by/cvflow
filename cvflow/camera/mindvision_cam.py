@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from .base import Camera, CameraError
+from .base import Camera, CameraError, parse_wb_gain
 from .discovery import GigEDevice
 
 #: mvsdk.py 可能在的地方。装驱动时路径可选，各版本 Demo 的层级也不一致
@@ -47,24 +47,6 @@ def _call(mvsdk, name: str, *args) -> bool:
     fn(*args)
     return True
 
-
-def _rgb_gain(text: Any) -> tuple[int, int, int] | None:
-    """把白平衡增益解析成 SDK 的整数刻度（100 = 1 倍）。
-
-    厂商软件「颜色调整」页里显示的就是这个整数刻度，但手写时更顺手的是倍数，
-    所以两种都收：不大于 10 的当倍数（1.6 → 160），其余当刻度（160 → 160）。
-    """
-    s = str(text or "").replace("，", ",").replace(";", ",").replace(" ", ",")
-    parts = [p for p in s.split(",") if p]
-    if not parts:
-        return None
-    if len(parts) != 3:
-        raise CameraError(f"迈德威视：白平衡增益要填 R,G,B 三个数，收到 {text!r}")
-    try:
-        vals = [float(p) for p in parts]
-    except ValueError:
-        raise CameraError(f"迈德威视：白平衡增益不是数字：{text!r}") from None
-    return tuple(max(0, round(v * 100 if v <= 10 else v)) for v in vals)  # type: ignore[return-value]
 
 
 def _sdk_dirs(extra: str = "") -> list[str]:
@@ -311,30 +293,30 @@ class MindVisionCamera(Camera):
                 setter(h, float(gain))                     # 新版本按倍数
             else:                                          # pragma: no cover - 老版本按档位
                 mvsdk.CameraSetAnalogGain(h, int(gain))
-        self._apply_white_balance(cfg)
+        self.apply_white_balance(cfg)
 
-    def _apply_white_balance(self, cfg: dict[str, Any]) -> None:
-        """白平衡。彩色相机不做白平衡就会整幅偏色（典型是偏品红），黑白相机没这回事。
+    def apply_white_balance(self, cfg: dict[str, Any]) -> None:
+        """白平衡。基类那套 GenICam 特性名迈德威视不认，换成它自己的函数。
 
-        手动增益和 once 都得先关掉连续自动白平衡，否则设完下一帧就被算回去了。
+        黑白相机没有白平衡这回事，直接跳过。
         """
         mvsdk, h = self._sdk, self._h
-        if self._mono:
+        mode = str(cfg.get("wb_mode") or "keep").strip().lower()
+        if mode == "keep" or self._mono:
             return
-        mode = str(cfg.get("wb_mode", "keep") or "keep").strip().lower()
         if mode == "auto":
             _call(mvsdk, "CameraSetWbMode", h, True)
-        elif mode in ("once", "manual"):
-            _call(mvsdk, "CameraSetWbMode", h, False)
-            if mode == "once":
-                # 画面里得有白/灰面，不然算出来的增益是歪的
-                _call(mvsdk, "CameraSetOnceWB", h)
-        if mode != "manual":
             return
-        gains = _rgb_gain(cfg.get("wb_gain"))
+        _call(mvsdk, "CameraSetWbMode", h, False)          # 不关自动，设完下一帧就被算回去
+        if mode == "once":
+            # 画面里得有白面或灰面，不然算出来的增益是歪的
+            _call(mvsdk, "CameraSetOnceWB", h)
+            return
+        gains = parse_wb_gain(cfg.get("wb_gain"))
         if gains is None:
-            raise CameraError("迈德威视：白平衡选了 manual，但没填增益 wb_gain（形如 100,100,160）")
-        if not _call(mvsdk, "CameraSetGain", h, *gains):    # pragma: no cover - 老版本没有
+            raise CameraError("迈德威视：白平衡选了手动，但没填增益（形如 1.0,1.0,1.6）")
+        scaled = tuple(round(v * 100) for v in gains)      # SDK 收的是 ×100 的整数刻度
+        if not _call(mvsdk, "CameraSetGain", h, *scaled):  # pragma: no cover - 老版本没有
             raise CameraError("迈德威视：当前 SDK 版本没有 CameraSetGain，手动白平衡用不了")
 
     def software_trigger(self) -> None:

@@ -144,6 +144,10 @@ NODE_LABELS = {
 }
 
 PARAM_LABELS = {
+    "Field": "字段", "Handshake": "握手", "On Empty": "没收到时", "On Error": "出错时",
+    "On Length": "长度不符时", "Peer": "对端", "Point": "数据点", "Queue Size": "队列长度",
+    "Require Connected": "要求已连接", "Rule": "规则", "Target": "发给谁",
+    "Timeout Ms": "超时（毫秒）", "Sigma": "高斯 Sigma", "Softmax": "Softmax 归一化",
     "Address": "地址", "Binarize": "二值化方式", "Input Count": "输入个数", "Max Batch": "批次上限",
     "Wait Ms": "合批等待（毫秒）", "Weight Group": "权重共享组", "MindVision SDK path": "迈德威视 SDK 目录", "Vendor SDK path": "厂商 SDK 目录", "Backend": "采集后端", "Arrival": "输入到达方式",
     "Trigger just this path: only this path's nodes run; the other paths stay put.":
@@ -168,7 +172,7 @@ PARAM_LABELS = {
     "Name D": "名称 d", "Op": "运算", "Overlap": "重叠率", "Param1": "Canny 高阈值", "Param2": "累加器阈值",
     "Path": "路径", "Polarity": "极性", "Prefix": "前缀", "Provider": "推理后端", "Reset": "复位",
     "Roi": "ROI", "Rotate": "旋转", "Scale": "缩放系数", "Select": "边缘选择",
-    "Shape": "核形状", "Sigma": "Sigma", "Size": "尺寸", "Smooth": "平滑", "Softmax": "Softmax",
+    "Shape": "核形状", "Size": "尺寸", "Smooth": "平滑",
     "Sort": "排序", "Source": "来源", "Stamp Result": "标注结果", "Std": "标准差", "Step": "步长",
     "Subfolder By Result": "按结果分文件夹", "Template": "模板", "Template Path": "模板文件", "Text": "文本",
     "Thickness": "线宽", "Thresh": "阈值", "Tile": "分块数", "Timeout S": "超时（秒）", "Weights": "权重文件",
@@ -300,3 +304,85 @@ UI_WORKSPACE = {
 }
 
 TABLE = {**DESCRIPTIONS, **PARAM_LABELS, **NODE_LABELS, **CATEGORIES, **UI, **UI_WORKSPACE}
+
+#: 下拉框里的选项文字。键是「参数名.取值」——同名参数在不同节点上含义不同
+#: （``method`` 在阈值节点是二值化方法、在模板匹配节点是匹配算法），所以必须带参数名。
+#: **只翻译显示**：存进方案文件、以及代码里比较的，始终是左边那个原始值。
+#: 通道顺序、张量布局、文件格式这类本来就是符号，保持原样或写成大写，翻成中文反而认不出。
+CHOICES = {
+    "arrival.sync": "同步", "arrival.async": "异步",
+    "backend.auto": "自动", "backend.dshow": "DirectShow（厂商滤镜）",
+    "backend.msmf": "Media Foundation（仅 UVC）", "backend.v4l2": "V4L2（Linux 下用）",
+    "backend.gstreamer": "GStreamer", "backend.ffmpeg": "FFmpeg",
+    "binarize.none": "不二值化", "binarize.otsu": "大津法", "binarize.manual": "手动阈值",
+    "binarize.auto": "自动",
+    "color.bgr": "BGR", "color.rgb": "RGB", "color.gray": "灰度",
+    "connectivity.4": "4 邻域", "connectivity.8": "8 邻域",
+    "device.auto": "自动", "device.cpu": "CPU", "device.cuda": "CUDA（N 卡）",
+    "direction.horizontal": "水平", "direction.vertical": "垂直",
+    "flip.none": "不翻转", "flip.horizontal": "水平翻转", "flip.vertical": "垂直翻转",
+    "flip.both": "水平＋垂直",
+    "format.png": "PNG", "format.jpg": "JPG", "format.bmp": "BMP",
+    "interpolation.nearest": "最近邻", "interpolation.linear": "双线性",
+    "interpolation.cubic": "三次插值", "interpolation.area": "区域（缩小用）",
+    # kind：相机类型 / 常量类型 / Modbus 寄存器类型共用一个参数名，取值不重
+    "kind.folder": "文件夹模拟", "kind.opencv": "OpenCV（USB／视频流）", "kind.hik": "海康 MVS",
+    "kind.mindvision": "迈德威视", "kind.genicam": "GenTL 驱动",
+    "kind.int": "整数", "kind.float": "浮点数", "kind.bool": "布尔", "kind.string": "字符串",
+    "kind.int16": "有符号 16 位", "kind.uint16": "无符号 16 位",
+    "kind.int32": "有符号 32 位", "kind.float32": "32 位浮点",
+    "layout.NCHW": "NCHW", "layout.NHWC": "NHWC",
+    "level.debug": "调试", "level.info": "信息", "level.warning": "警告", "level.error": "错误",
+    # method：二值化 / 滤波 / 模板匹配 / 圆检测 / 增强共用，取值不重
+    "method.binary": "固定阈值", "method.binary_inv": "固定阈值（反）",
+    "method.otsu": "大津法", "method.otsu_inv": "大津法（反）", "method.range": "区间",
+    "method.adaptive_mean": "自适应均值", "method.adaptive_gaussian": "自适应高斯",
+    "method.gaussian": "高斯滤波", "method.median": "中值滤波", "method.box": "均值滤波",
+    "method.bilateral": "双边滤波",
+    "method.ccoeff_normed": "归一化相关系数", "method.ccorr_normed": "归一化互相关",
+    "method.sqdiff_normed": "归一化平方差",
+    "method.hough": "霍夫变换", "method.contour_fit": "轮廓拟合",
+    "method.linear": "线性拉伸", "method.equalize": "直方图均衡",
+    "method.clahe": "限制对比度均衡 (CLAHE)", "method.normalize": "归一化",
+    # mode：取图顺序 / 色彩空间 / 缩放 / 轮廓层级 / 报文编码 / 取点时机共用，取值不重
+    "mode.fixed": "固定一张", "mode.next": "依次下一张", "mode.random": "随机",
+    "mode.bgr": "BGR", "mode.rgb": "RGB", "mode.gray": "灰度",
+    "mode.hsv": "HSV", "mode.hls": "HLS", "mode.lab": "Lab",
+    "mode.scale": "按比例", "mode.size": "按尺寸",
+    "mode.external": "只取最外层", "mode.list": "全部（不分层）", "mode.tree": "全部（带层级）",
+    "mode.text": "文本", "mode.hex": "十六进制",
+    "mode.cached": "用缓存值", "mode.fresh": "现读一次",
+    "naming.none": "不加", "naming.time": "采集时间", "naming.index": "序号",
+    "naming.time_index": "时间＋序号",
+    "on_empty.skip": "跳过", "on_empty.empty": "给空值", "on_empty.error": "报错",
+    "on_error.empty": "给空值", "on_error.error": "报错", "on_error.false": "给假",
+    "on_error.invalid": "标为无效",
+    "on_length.error": "报错", "on_length.fit": "截断或补齐",
+    # op：比较 / 位运算 / 形态学共用，取值不重；比较符号本身就是符号，不翻
+    "op.contains": "包含", "op.in_range": "在区间内", "op.is_true": "为真",
+    "op.and": "与", "op.or": "或", "op.xor": "异或", "op.not": "取反",
+    "op.subtract": "相减", "op.absdiff": "绝对差",
+    "op.erode": "腐蚀", "op.dilate": "膨胀", "op.open": "开运算", "op.close": "闭运算",
+    "op.gradient": "形态学梯度", "op.tophat": "顶帽", "op.blackhat": "黑帽",
+    "param_group.keep": "不加载",
+    "polarity.any": "不限", "polarity.bright": "亮", "polarity.dark": "暗",
+    "polarity.dark_to_light": "由暗到亮", "polarity.light_to_dark": "由亮到暗",
+    "provider.auto": "自动", "provider.cpu": "CPU", "provider.cuda": "CUDA（N 卡）",
+    "provider.tensorrt": "TensorRT",
+    "rotate.0": "不旋转", "rotate.90": "顺时针 90°", "rotate.180": "180°", "rotate.270": "逆时针 90°",
+    "select.all": "全部", "select.first": "第一个", "select.last": "最后一个",
+    "select.first_last": "首尾各一个", "select.strongest": "最强的一个",
+    "session_scope.auto": "自动", "session_scope.shared": "共享", "session_scope.exclusive": "独占",
+    "shape.rect": "矩形", "shape.ellipse": "椭圆", "shape.cross": "十字",
+    "sort.area_desc": "面积从大到小", "sort.area_asc": "面积从小到大",
+    "sort.left_to_right": "从左到右", "sort.top_to_bottom": "从上到下",
+    "source.input": "输入端口", "source.trigger": "触发报文",
+    "target.default": "默认设备", "target.origin": "来源设备", "target.broadcast": "广播",
+    "trigger_mode.keep": "沿用当前", "trigger_mode.off": "自由采集",
+    "trigger_mode.software": "软触发", "trigger_mode.hardware": "硬触发",
+    "user_set.keep": "不加载", "user_set.Default": "出厂默认",
+    "user_set.UserSet1": "用户集 1", "user_set.UserSet2": "用户集 2", "user_set.UserSet3": "用户集 3",
+    "wb_mode.keep": "沿用当前", "wb_mode.auto": "连续自动", "wb_mode.once": "打开时做一次",
+    "wb_mode.manual": "手动增益",
+    "when.always": "总是", "when.ok_only": "仅 OK", "when.ng_only": "仅 NG",
+}
