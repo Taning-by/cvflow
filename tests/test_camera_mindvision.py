@@ -87,6 +87,11 @@ def make_fake_sdk(mono=False, w=8, h=4, fail_timeout=False):
     sdk.CameraSetExposureTime = lambda hc, v: calls.append(("exposure", v))
     sdk.CameraSetAnalogGainX = lambda hc, v: calls.append(("gain", v))
     sdk.CameraSoftTrigger = lambda hc: calls.append(("soft_trigger",))
+    sdk.CameraLoadParameter = lambda hc, team: calls.append(("load_team", team))
+    sdk.CameraReadParameterFromFile = lambda hc, path: calls.append(("load_file", path))
+    sdk.CameraSetWbMode = lambda hc, auto: calls.append(("wb_mode", bool(auto)))
+    sdk.CameraSetOnceWB = lambda hc: calls.append(("wb_once",))
+    sdk.CameraSetGain = lambda hc, r, g, b: calls.append(("wb_gain", (r, g, b)))
 
     def CameraGetImageBuffer(hc, ms):
         if fail_timeout:
@@ -294,3 +299,122 @@ def test_cameras_command_reports_every_route(capsys, monkeypatch):
     assert "OpenCV" in out and "迈德威视" in out and "海康" in out
     assert "设备号 0" in out                                  # 探到的设备号要列出来
     assert "mvsdk" in out and "Python Demo" in out            # 告诉用户去哪个包里找
+
+
+# ==================================================== 成像参数：存档与白平衡
+def test_loads_the_saved_parameter_group(fake_sdk):
+    """不加载厂商软件存好的那组参数，相机就停在出厂白平衡上，整幅图偏色。"""
+    for team, idx in (("A", 0), ("B", 1), ("C", 2), ("D", 3)):
+        sdk = fake_sdk()
+        cam = make_cam(param_group=team)
+        cam.open()
+        assert ("load_team", idx) in sdk.calls, team
+        cam.close()
+
+
+def test_parameter_group_keep_loads_nothing(fake_sdk):
+    sdk = fake_sdk()
+    cam = make_cam(param_group="keep")
+    cam.open()
+    assert not any(c[0] == "load_team" for c in sdk.calls)
+    cam.close()
+
+
+def test_loads_the_parameter_file(fake_sdk, tmp_path):
+    f = tmp_path / "cam.config"
+    f.write_text("fake", encoding="utf-8")
+    sdk = fake_sdk()
+    cam = make_cam(param_file=str(f))
+    cam.open()
+    assert ("load_file", str(f)) in sdk.calls
+    cam.close()
+
+
+def test_missing_parameter_file_says_where_to_export_it(fake_sdk, tmp_path):
+    fake_sdk()
+    cam = make_cam(param_file=str(tmp_path / "没有这个文件.config"))
+    with pytest.raises(CameraError) as e:
+        cam.open()
+    assert "保存当前配置参数到指定文件" in str(e.value)
+
+
+def test_saved_params_load_before_format_and_exposure(fake_sdk, tmp_path):
+    """存档里也带输出格式和曝光，所以必须先加载、再设我们自己的，否则会被覆盖回去。"""
+    f = tmp_path / "cam.config"
+    f.write_text("fake", encoding="utf-8")
+    sdk = fake_sdk()
+    cam = make_cam(param_group="A", param_file=str(f), exposure_us=3000)
+    cam.open()
+    order = [c[0] for c in sdk.calls]
+    assert order.index("load_team") < order.index("load_file") < order.index("fmt")
+    assert order.index("load_file") < order.index("exposure")
+    cam.close()
+
+
+def test_white_balance_modes(fake_sdk):
+    sdk = fake_sdk()
+    cam = make_cam(wb_mode="auto")
+    cam.open()
+    assert ("wb_mode", True) in sdk.calls and not any(c[0] == "wb_once" for c in sdk.calls)
+    cam.close()
+
+    sdk = fake_sdk()
+    cam = make_cam(wb_mode="once")
+    cam.open()
+    # 一次性白平衡之前要先关连续自动，否则下一帧就被算回去了
+    assert sdk.calls.index(("wb_mode", False)) < sdk.calls.index(("wb_once",))
+    cam.close()
+
+
+def test_keep_does_not_touch_white_balance(fake_sdk):
+    sdk = fake_sdk()
+    cam = make_cam(wb_mode="keep")
+    cam.open()
+    assert not any(c[0] in ("wb_mode", "wb_once", "wb_gain") for c in sdk.calls)
+    cam.close()
+
+
+def test_manual_white_balance_gain_accepts_both_scales(fake_sdk):
+    """厂商软件里显示的是 100 起的刻度，手写时更顺手的是倍数，两种都要认。"""
+    for text, want in (("100,100,160", (100, 100, 160)),
+                       ("1.0,1.0,1.6", (100, 100, 160)),
+                       ("100, 100, 160", (100, 100, 160))):
+        sdk = fake_sdk()
+        cam = make_cam(wb_mode="manual", wb_gain=text)
+        cam.open()
+        assert ("wb_gain", want) in sdk.calls, text
+        assert sdk.calls.index(("wb_mode", False)) < sdk.calls.index(("wb_gain", want))
+        cam.close()
+
+
+def test_manual_white_balance_rejects_bad_gain(fake_sdk):
+    for bad in ("", "100,160", "红,绿,蓝"):
+        fake_sdk()
+        cam = make_cam(wb_mode="manual", wb_gain=bad)
+        with pytest.raises(CameraError):
+            cam.open()
+
+
+def test_mono_camera_skips_white_balance(fake_sdk):
+    """黑白相机没有白平衡这回事，设了反而可能报错。"""
+    sdk = fake_sdk(mono=True)
+    cam = make_cam(wb_mode="once")
+    cam.open()
+    assert not any(c[0] in ("wb_mode", "wb_once") for c in sdk.calls)
+    cam.close()
+
+
+def test_camera_node_passes_the_imaging_params_through(tmp_path):
+    """这些参数得真从节点传到相机配置里，否则界面上填了也没用。"""
+    from cvflow.operators.source import CameraSource
+    f = tmp_path / "cam.config"
+    f.write_text("fake", encoding="utf-8")
+    node = CameraSource("n1")
+    node.set("kind", "mindvision")
+    node.set("param_group", "A")
+    node.set("param_file", str(f))
+    node.set("wb_mode", "manual")
+    node.set("wb_gain", "100,100,160")
+    cfg = node._config()
+    assert cfg["param_group"] == "A" and cfg["param_file"] == str(f)
+    assert cfg["wb_mode"] == "manual" and cfg["wb_gain"] == "100,100,160"

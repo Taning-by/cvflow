@@ -173,6 +173,25 @@ class CameraSource(Node):
               Param("trigger_mode", "keep", "enum", choices=["keep", "off", "software", "hardware"],
                     description="keep=沿用相机当前设置 off=自由采集 software=软触发 hardware=外部触发"),
               Param("trigger_source", "Line0", "string", description="硬件触发信号线", advanced=True),
+              Param("param_group", "keep", "enum", choices=["keep", "A", "B", "C", "D"],
+                    label="MindVision parameter group",
+                    description="迈德威视：打开相机时加载「相机配置参数存档」里的某一组——就是厂商软件"
+                                "相机设置页底部那排 A/B/C/D，在那边点「保存」就存进对应组。"
+                                "keep=不加载，相机停在出厂参数上（彩色相机会整幅偏色）"),
+              Param("param_file", "", "file", label="MindVision parameter file",
+                    filter="相机参数 (*.config *.ini);;所有文件 (*)",
+                    description="迈德威视：加载厂商软件「保存当前配置参数到指定文件」导出的参数文件。"
+                                "白平衡/颜色矩阵/Gamma/饱和度/LUT 全在里面，比按组加载可靠——"
+                                "换台电脑也能用。和上面的分组同时填就以文件为准"),
+              Param("wb_mode", "keep", "enum", choices=["keep", "auto", "once", "manual"],
+                    label="White balance",
+                    description="迈德威视白平衡：keep=沿用相机当前值 auto=连续自动 "
+                                "once=打开相机时做一次（画面里要有白面或灰面）manual=用下面填的增益。"
+                                "黑白相机忽略此项"),
+              Param("wb_gain", "", "string", label="White balance gain R,G,B", advanced=True,
+                    description="迈德威视，wb_mode=manual 时生效。填三个数，如 100,100,160"
+                                "（厂商软件「颜色调整」页里的 RGB 增益刻度，100 为 1 倍）；"
+                                "写成倍数 1.0,1.0,1.6 也认"),
               Param("exposure_us", 0.0, "float", min=0, max=10_000_000, description="0 表示沿用相机当前曝光"),
               Param("gain", -1.0, "float", min=-1, max=100, description="-1 表示沿用相机当前增益"),
               Param("timeout_s", 2.0, "float", min=0.01, max=60),
@@ -204,7 +223,11 @@ class CameraSource(Node):
         cfg = {"source": src, "grayscale": self.get("grayscale"), "loop": True, "backend": self.get("backend"),
                "user_set": self.get("user_set"),
                "trigger_mode": self.get("trigger_mode"), "trigger_source": self.get("trigger_source"),
-               "exposure_us": self.get("exposure_us"), "gain": self.get("gain")}
+               "exposure_us": self.get("exposure_us"), "gain": self.get("gain"),
+               "param_group": self.get("param_group"),
+               "wb_mode": self.get("wb_mode"), "wb_gain": self.get("wb_gain")}
+        if self.get("param_file"):
+            cfg["param_file"] = paths.resolve(self.get("param_file"))
         if self.get("cti"):
             cfg["cti"] = paths.resolve(self.get("cti"))
         if self.get("sdk_path"):
