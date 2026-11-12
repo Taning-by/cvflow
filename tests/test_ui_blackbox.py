@@ -744,6 +744,29 @@ def test_ui_script_pane_follows_the_node(win, app):
     assert win.code_pane.isHidden() and win._code_target is None
 
 
+def test_ui_script_port_counts_follow_the_param_panel(win, app):
+    """脚本节点的输入/输出个数在参数面板里调：端口跟着变，去掉的端口上的连线断开。"""
+    node = add_script_node(win, app)
+    g = win.solution.flows["main"]
+    for label, want in (("输入个数", 7), ("输出个数", 6)):
+        sb = spin(win.param_panel, label)
+        sb.setFocus(); sb.selectAll(); QTest.keyClicks(sb, str(want)); QTest.keyClick(sb, Qt.Key_Return)
+        pump(app, 100)
+    assert len(node.inputs) == 8 and len(node.outputs) == 7          # 都另带一个 image
+    item = win.scene.node_items[node.id]
+    assert len(item.inputs) == 8 and len(item.outputs) == 7
+    src = node_by_name(win, "取图")
+    g.add_link(src.id, "image", node.id, "in7")
+    win.scene.set_graph(g)
+    win.scene.select_node(node.id); pump(app)
+    sb = spin(win.param_panel, "输入个数")
+    sb.setFocus(); sb.selectAll(); QTest.keyClicks(sb, "2"); QTest.keyClick(sb, Qt.Key_Return)
+    pump(app, 100)
+    assert [p.name for p in node.inputs] == ["image", "in1", "in2"]
+    assert not any(l.dst_node == node.id for l in g.links)
+    assert "断开" in win.statusBar().currentMessage()
+
+
 def test_ui_script_is_read_only_in_run_mode(win, app):
     """运行模式下参数面板整体锁住，脚本也一样：产线在跑，不能边跑边改算法。"""
     node = add_script_node(win, app)

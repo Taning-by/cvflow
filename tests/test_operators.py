@@ -150,6 +150,59 @@ def test_script_node_custom_code_and_error(reg):
     assert r.node_results[n.id].status == NodeStatus.ERROR and "process" in r.node_results[n.id].error
 
 
+def _port_names(ports):
+    return [p.name for p in ports]
+
+
+def test_script_node_port_counts_default_to_four_for_old_solutions(reg):
+    n = reg.create("script.python")
+    assert _port_names(n.inputs) == ["image", "in1", "in2", "in3", "in4"]
+    assert _port_names(n.outputs) == ["image", "out1", "out2", "out3", "out4"]
+    # 老方案里没有这两个参数，读回来端口照旧
+    old = reg.node_from_dict({"type": "script.python", "id": "s", "values": {"code": "x = 1"}})
+    assert _port_names(old.inputs) == _port_names(n.inputs)
+
+
+def test_script_node_port_counts_are_adjustable(reg):
+    n = reg.create("script.python", values={"input_count": 6, "output_count": 0})
+    assert _port_names(n.inputs) == ["image"] + [f"in{i}" for i in range(1, 7)]
+    assert _port_names(n.outputs) == ["image"]
+    n.set("output_count", 99)                      # 超过上限按上限
+    from cvflow.operators.dl import SCRIPT_MAX_PORTS
+    assert len(n.outputs) == 1 + SCRIPT_MAX_PORTS
+
+
+def test_script_node_uses_extra_ports(reg):
+    code = ("def process(ctx, inputs, params, state):\n"
+            "    s = sum(inputs[f'in{i}'] for i in range(1, 7))\n"
+            "    return {f'out{i}': s * i for i in range(1, 7)}\n")
+    feed = {f"in{i}": i for i in range(1, 7)}
+    nr, _ = run_single(reg, "script.python", feed, {"input_count": 6, "output_count": 6, "code": code})
+    assert [nr.outputs[f"out{i}"] for i in range(1, 7)] == [21 * i for i in range(1, 7)]
+
+
+def test_script_node_links_on_extra_ports_survive_save_and_load(reg):
+    g = Graph()
+    a = g.add_node(reg.create("script.python", values={"output_count": 7}))
+    b = g.add_node(reg.create("script.python", values={"input_count": 9}))
+    g.add_link(a.id, "out7", b.id, "in9")
+    g2 = Graph.from_dict(g.to_dict(), reg)
+    assert [(l.src_port, l.dst_port) for l in g2.links] == [("out7", "in9")]
+
+
+def test_script_node_warns_once_about_returned_keys_without_port(reg, caplog):
+    code = "def process(ctx, inputs, params, state):\n    return {'out1': 1, 'out3': 3}\n"
+    g = Graph()
+    n = g.add_node(reg.create("script.python", values={"output_count": 2, "code": code}))
+    eng = Engine(g)
+    with caplog.at_level("WARNING", logger="cvflow.dl"):
+        eng.run()
+        eng.run()
+    hits = [r for r in caplog.records if "out3" in r.getMessage()]
+    assert len(hits) == 1
+    assert eng.run().node_results[n.id].outputs["out1"] == 1
+
+
 def test_render_and_save(reg, blob_image, tmp_path):
     from cvflow.core import Overlay
     g = Graph()

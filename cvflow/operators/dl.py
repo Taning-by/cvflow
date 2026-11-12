@@ -1177,12 +1177,15 @@ for _cls in (OnnxInference, OnnxClassifier, OnnxDetector):
     _cls.inputs, _cls.outputs = _cls.build_ports(1)      # 类级端口用于节点库展示，实例按 input_count 重建
 
 
+SCRIPT_MAX_PORTS = 16           # 脚本节点 in/out 端口的上限，再多节点图元就太长了
+
 _SCRIPT_TEMPLATE = '''"""自定义节点代码。可用对象：np, cv2, Image, Overlay, Rect, Point, Line, Circle。
 
 def setup(state): 可选，流程启动时执行一次。
 def process(ctx, inputs, params, state) -> dict: 每张图执行一次。
-   inputs: {"image": Image|None, "in1".."in4": 任意}
-   返回 {"image": Image, "out1".."out4": 任意}
+   inputs: {"image": Image|None, "in1".."inN": 任意，未连接为 None}
+   返回 {"image": Image, "out1".."outM": 任意}，没返回的输出为 None
+   N、M 在参数面板的"输入个数""输出个数"里调。
 """
 def process(ctx, inputs, params, state):
     img = inputs["image"]
@@ -1202,14 +1205,35 @@ class PythonScript(Node):
     label = "Python Script"
     description = "Run user Python code as a node (the escape hatch for custom DL/RL logic)."
     color = "#ef6c00"
-    inputs = [Port("image", DataType.IMAGE, optional=True)] + [Port(f"in{i}", DataType.ANY, optional=True) for i in range(1, 5)]
-    outputs = [Port("image", DataType.IMAGE)] + [Port(f"out{i}", DataType.ANY) for i in range(1, 5)]
-    params = [Param("code", _SCRIPT_TEMPLATE, "code")]
+    inputs, outputs = Node.inputs, Node.outputs      # 占位，类定义之后用 build_ports 覆盖
+    params = [Param("input_count", 4, "int", min=0, max=SCRIPT_MAX_PORTS, label="输入个数",
+                    description="除 image 外的通用输入个数，端口名依次为 in1、in2……，可以接任意类型"
+                                "（包括图像）。调小时，接在被去掉的端口上的连线会断开"),
+              Param("output_count", 4, "int", min=0, max=SCRIPT_MAX_PORTS, label="输出个数",
+                    description="除 image 外的通用输出个数，端口名依次为 out1、out2……。"
+                                "调小时，接在被去掉的端口上的连线会断开"),
+              Param("code", _SCRIPT_TEMPLATE, "code")]
 
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._ns: dict | None = None
         self._compiled_src = None
+        self._warned_extra: frozenset[str] = frozenset()
+        self._rebuild_ports()
+
+    # ---- 动态端口 ----
+    @staticmethod
+    def build_ports(n_in: int, n_out: int) -> tuple[list[Port], list[Port]]:
+        n_in = max(0, min(SCRIPT_MAX_PORTS, int(n_in)))
+        n_out = max(0, min(SCRIPT_MAX_PORTS, int(n_out)))
+        ins = [Port("image", DataType.IMAGE, optional=True)]
+        ins += [Port(f"in{i}", DataType.ANY, optional=True) for i in range(1, n_in + 1)]
+        outs = [Port("image", DataType.IMAGE)]
+        outs += [Port(f"out{i}", DataType.ANY) for i in range(1, n_out + 1)]
+        return ins, outs
+
+    def _rebuild_ports(self) -> None:
+        self.inputs, self.outputs = self.build_ports(self.get("input_count", 4), self.get("output_count", 4))
 
     def _namespace(self):
         src = self.get("code")
@@ -1228,6 +1252,8 @@ class PythonScript(Node):
     def on_param_changed(self, name, value):
         if name == "code":
             self._ns = None
+        elif name in ("input_count", "output_count"):
+            self._rebuild_ports()
 
     def setup(self, ctx=None):
         self._namespace()
@@ -1235,4 +1261,15 @@ class PythonScript(Node):
     def process(self, ctx, inputs):
         ns = self._namespace()
         out = ns["process"](ctx, inputs, dict(self.values), self.state)
+        if isinstance(out, dict):
+            # 脚本返回了没有对应端口的键（多半是输出个数调小了）：下游拿不到，提醒一次
+            declared = {p.name for p in self.outputs} | {"__skip__"}
+            extra = frozenset(k for k in out if k not in declared)
+            if extra and extra != self._warned_extra:
+                log.warning("脚本节点 %s 返回了没有对应输出端口的键 %s，下游拿不到；"
+                            "需要的话把\"输出个数\"调大", self.name, ", ".join(sorted(extra)))
+            self._warned_extra = extra
         return out or {}
+
+
+PythonScript.inputs, PythonScript.outputs = PythonScript.build_ports(4, 4)   # 类级端口用于节点库展示
