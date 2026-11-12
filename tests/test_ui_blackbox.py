@@ -767,6 +767,59 @@ def test_ui_script_port_counts_follow_the_param_panel(win, app):
     assert "断开" in win.statusBar().currentMessage()
 
 
+_BUGGY_SCRIPT = ("def helper(x):\n"
+                 "    return x['a']\n"
+                 "\n"
+                 "def process(ctx, inputs, params, state):\n"
+                 "    return {'out1': helper({})}\n")
+
+
+def test_ui_script_error_marks_the_line_and_can_jump_there(win, app):
+    """脚本出错：编辑区把出错行标红，底栏说出第几行，点一下跳过去；代码一改标记就撤掉。"""
+    node = add_script_node(win, app, code=_BUGGY_SCRIPT)
+    win.open_code_editor(node.id); pump(app)
+    win.run_once(); pump(app, 120)
+    assert win.code_edit.error_line == 2
+    assert "第 2 行 helper()" in win.code_status.text() and "KeyError" in win.code_status.text()
+    assert not win.btn_code_goto.isHidden() and "2" in win.btn_code_goto.text()
+    win.code_edit.goto_line(5); pump(app)
+    win.btn_code_goto.click(); pump(app)
+    assert win.code_edit.cursor_position()[0] == 2
+    QTest.keyClicks(win.code_edit, "# "); pump(app)                 # 改了：行号不一定还对，不再标
+    assert win.code_edit.error_line is None and win.btn_code_goto.isHidden()
+    win.code_edit.setPlainText("def process(ctx, inputs, params, state):\n    return {}\n")
+    win._apply_code(); win.run_once(); pump(app, 120)
+    assert win.code_edit.error_line is None and "第" not in win.code_status.text()
+
+
+def test_ui_script_trial_run_reuses_the_last_inputs(win, app):
+    """试运行：用上一次运行的上游输出只重跑这个节点，结果进日志，last_result 不被改掉。"""
+    code = "def process(ctx, inputs, params, state):\n    return {'out1': inputs['image'].width}\n"
+    node = add_script_node(win, app, code=code)
+    g = win.solution.flows["main"]
+    g.add_link(node_by_name(win, "取图").id, "image", node.id, "image")
+    win.scene.set_graph(g)
+    win.open_code_editor(node.id); pump(app)
+    win.btn_code_trial.click(); pump(app)                         # 还没运行过：没有上游结果
+    assert "F5" in win.code_status.text()
+    win.run_once(); pump(app, 120)
+    last = win.runner.last_result
+    width = last.node_results[node.id].outputs["out1"]
+    win.code_edit.setPlainText(code.replace(".width}", ".width + 1}"))
+    win.code_edit.trial_requested.emit(); pump(app)               # Ctrl+Shift+Enter：先应用再试运行
+    assert node.get("code").endswith(".width + 1}\n")
+    assert "试运行 OK" in win.code_status.text()
+    assert f"out1 = {width + 1}" in win.log_panel.text.toPlainText()
+    assert win.runner.last_result is last
+
+
+def test_ui_script_print_shows_in_the_log_panel(win, app):
+    code = "def process(ctx, inputs, params, state):\n    print('来自脚本', 42)\n    return {}\n"
+    node = add_script_node(win, app, code=code)
+    win.run_once(); pump(app, 120)
+    assert f"[{node.name}] 来自脚本 42" in win.log_panel.text.toPlainText()
+
+
 def test_ui_script_is_read_only_in_run_mode(win, app):
     """运行模式下参数面板整体锁住，脚本也一样：产线在跑，不能边跑边改算法。"""
     node = add_script_node(win, app)

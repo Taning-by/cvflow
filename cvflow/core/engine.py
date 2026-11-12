@@ -35,12 +35,18 @@ def _describe(e: BaseException) -> str:
     head = str(e) or type(e).__name__
     if not _is_ours(e):
         head = f"{type(e).__name__}: {head}"
-    cause = e.__cause__ or e.__context__
+    cause = e.__cause__ or (None if e.__suppress_context__ else e.__context__)   # raise … from None 表示起因不必再提
     if cause is not None:
         tail = str(cause) or type(cause).__name__
         if tail and tail not in head:
             return f"{head}　←　起因 {type(cause).__name__}: {tail}"
     return head
+
+
+def _details(e: BaseException) -> str:
+    """异常自带的补充说明（例如脚本节点只含脚本自身代码的堆栈），日志里接在摘要下一行。"""
+    details = getattr(e, "details", "")
+    return f"\n{details}" if isinstance(details, str) and details else ""
 
 
 @dataclass
@@ -228,7 +234,7 @@ class Engine:
                 node.last_error = msg
                 node.status = NodeStatus.ERROR
                 errors.append(msg)
-                log.error(msg, exc_info=not _is_ours(e))
+                log.error("%s%s", msg, _details(e), exc_info=not _is_ours(e))
         return errors
 
     def teardown_nodes(self) -> None:
@@ -291,37 +297,9 @@ class Engine:
                     nres.error = skip_reason
                 else:
                     node.status = NodeStatus.RUNNING
-                    ctx._begin(node)
-                    nres.origin = frame_origin(inputs.values())
-                    t0 = time.perf_counter()
-                    try:
-                        out = node.process(ctx, inputs)
-                        if out is None:
-                            out = {}
-                        if not isinstance(out, dict):
-                            raise TypeError(f"process() 必须返回 dict，实际返回 {type(out).__name__}")
-                        if "__skip__" in out:          # node asked to skip its dependants (e.g. Gate)
-                            nres.status = NodeStatus.SKIPPED
-                            nres.error = str(out.get("__skip__") or "已跳过")
-                            out = {}
-                        else:
-                            nres.status = NodeStatus.OK
-                            for port in node.outputs:          # 未返回的声明输出补 None，保证下游语义稳定
-                                out.setdefault(port.name, None)
-                        nres.outputs = out
-                        nres.origin = frame_origin(inputs.values(), out.values())
-                        if nres.status == NodeStatus.OK and node.is_judge and "ok" in out:
-                            ok = bool(out["ok"])
-                            ctx.judge(ok, out.get("reason", "") or f"{node.name} NG")
-                            if not ok:
-                                nres.status = NodeStatus.NG
-                    except Exception as e:
-                        nres.status = NodeStatus.ERROR
-                        nres.error = _describe(e)
+                    self._exec_node(node, ctx, inputs, nres)
+                    if nres.status == NodeStatus.ERROR:
                         result.ok = False
-                        log.error("[%s] %s", node.name, nres.error, exc_info=not _is_ours(e))
-                    nres.time_ms = (time.perf_counter() - t0) * 1000
-                    nres.overlays = ctx._end()
 
             node.status = nres.status
             node.last_error = nres.error if nres.status in (NodeStatus.ERROR, NodeStatus.SKIPPED) else ""
@@ -342,6 +320,68 @@ class Engine:
         result.duration_ms = (time.perf_counter() - t_run) * 1000
         self._finish(result)
         return result
+
+    def _exec_node(self, node: Node, ctx: RunContext, inputs: dict[str, Any], nres: NodeResult) -> None:
+        """执行一个节点的 ``process``，把状态、输出、耗时、叠加层填进 ``nres``（异常不外抛）。"""
+        ctx._begin(node)
+        nres.origin = frame_origin(inputs.values())
+        t0 = time.perf_counter()
+        try:
+            out = node.process(ctx, inputs)
+            if out is None:
+                out = {}
+            if not isinstance(out, dict):
+                raise TypeError(f"process() 必须返回 dict，实际返回 {type(out).__name__}")
+            if "__skip__" in out:          # node asked to skip its dependants (e.g. Gate)
+                nres.status = NodeStatus.SKIPPED
+                nres.error = str(out.get("__skip__") or "已跳过")
+                out = {}
+            else:
+                nres.status = NodeStatus.OK
+                for port in node.outputs:          # 未返回的声明输出补 None，保证下游语义稳定
+                    out.setdefault(port.name, None)
+            nres.outputs = out
+            nres.origin = frame_origin(inputs.values(), out.values())
+            if nres.status == NodeStatus.OK and node.is_judge and "ok" in out:
+                ok = bool(out["ok"])
+                ctx.judge(ok, out.get("reason", "") or f"{node.name} NG")
+                if not ok:
+                    nres.status = NodeStatus.NG
+        except Exception as e:
+            nres.status = NodeStatus.ERROR
+            nres.error = _describe(e)
+            log.error("[%s] %s%s", node.name, nres.error, _details(e), exc_info=not _is_ours(e))
+        nres.time_ms = (time.perf_counter() - t0) * 1000
+        nres.overlays = ctx._end()
+
+    def run_node(self, node_id: str, previous: RunResult | None, trigger: Any = None) -> NodeResult:
+        """只跑一个节点，输入取自 ``previous``（上一次运行）里上游节点的输出。
+
+        脚本"试运行"用：改完代码不必重新触发相机、跑整条流程，拿上一帧的输入单独重跑这一个节点。
+        不发事件、不改 ``last_result``、不碰下游，节点的界面状态也不动——只是看看它这次会算出什么。
+        节点自己的副作用（``state``、写全局变量）照常发生。
+        """
+        node = self.graph.nodes[node_id]
+        nres = NodeResult(node_id=node_id, node_name=node.name, status=NodeStatus.SKIPPED)
+        with self._lock:
+            ctx = RunContext(0, self.graph, self.variables, trigger, None)
+            if previous is not None:
+                ctx.results = dict(previous.node_results)
+            if not node._is_setup:
+                try:
+                    node.setup()
+                    node._is_setup = True
+                except Exception as e:
+                    nres.status = NodeStatus.ERROR
+                    nres.error = f"初始化失败：{_describe(e)}"
+                    log.error("[%s] %s%s", node.name, nres.error, _details(e), exc_info=not _is_ours(e))
+                    return nres
+            inputs, skip_reason = self._gather_inputs(node, ctx)
+            if skip_reason:
+                nres.error = skip_reason
+                return nres
+            self._exec_node(node, ctx, inputs, nres)
+        return nres
 
     def _gather_inputs(self, node: Node, ctx: RunContext,
                        only: set[str] | None = None) -> tuple[dict[str, Any], str]:

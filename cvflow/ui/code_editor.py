@@ -161,10 +161,13 @@ class CodeEditor(QPlainTextEdit):
     * Tab / Shift+Tab 缩进（含整块选中），Enter 继承缩进、行尾是 ``:`` 再多缩一级
     * Ctrl+Enter 发出 ``apply_requested``（Ctrl+S 被主窗口的"保存方案"占着，到不了这里；
       保存方案时会自动先把编辑中的代码应用掉，所以按 Ctrl+S 也不会丢东西）
+    * Ctrl+Shift+Enter 发出 ``trial_requested``（试运行本节点）
+    * ``set_error_line`` 把出错行标红（底色 + 行号），``goto_line`` 跳过去
     * 永不自动换行——代码折行会把缩进读乱
     """
 
     apply_requested = Signal()
+    trial_requested = Signal()
 
     def __init__(self, text: str = "", parent=None, font_size: int = 13) -> None:
         super().__init__(parent)
@@ -174,6 +177,7 @@ class CodeEditor(QPlainTextEdit):
         self.setTabStopDistance(QFontMetricsF(self.font()).horizontalAdvance(" ") * len(INDENT))
         self.highlighter = PythonHighlighter(self.document())
         self._gutter = _Gutter(self)
+        self._error_line: int | None = None      # 从 1 数
         self.blockCountChanged.connect(lambda _: self._sync_gutter_width())
         self.updateRequest.connect(self._on_update_request)
         self.cursorPositionChanged.connect(self._highlight_current_line)
@@ -214,7 +218,9 @@ class CodeEditor(QPlainTextEdit):
         height = self.blockBoundingRect(block).height()
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and top + height >= event.rect().top():
-                painter.setPen(QColor(C["accent"] if block.blockNumber() == current else C["faint"]))
+                n = block.blockNumber()
+                color = C["ng"] if n + 1 == self._error_line else C["accent"] if n == current else C["faint"]
+                painter.setPen(QColor(color))
                 painter.drawText(0, int(top), self._gutter.width() - 6, int(height),
                                  Qt.AlignRight | Qt.AlignVCenter, str(block.blockNumber() + 1))
             block = block.next()
@@ -222,18 +228,55 @@ class CodeEditor(QPlainTextEdit):
             height = self.blockBoundingRect(block).height()
 
     def _highlight_current_line(self) -> None:
+        sels = []
+        if self._error_line is not None:
+            block = self.document().findBlockByNumber(self._error_line - 1)
+            if block.isValid():
+                err = QTextEdit.ExtraSelection()
+                err.format.setBackground(QColor(C["ng_bg"]))
+                err.format.setProperty(QTextFormat.FullWidthSelection, True)
+                err.cursor = QTextCursor(block)
+                sels.append(err)
         sel = QTextEdit.ExtraSelection()
         sel.format.setBackground(QColor(C["accent_bg"]))
         sel.format.setProperty(QTextFormat.FullWidthSelection, True)
         sel.cursor = self.textCursor()
         sel.cursor.clearSelection()
-        self.setExtraSelections([sel])
+        if self._error_line is None or sel.cursor.blockNumber() != self._error_line - 1:
+            sels.append(sel)                    # 光标停在出错行上时，红底优先
+        self.setExtraSelections(sels)
         self._gutter.update()
+
+    # ---- 出错行 ----
+    @property
+    def error_line(self) -> int | None:
+        return self._error_line
+
+    def set_error_line(self, line: int | None) -> None:
+        """标红出错的那一行（从 1 数），None 清掉。不动光标和视口——用户可能正在别处看代码。"""
+        if line is not None and not 1 <= line <= self.blockCount():
+            line = None
+        if line == self._error_line:
+            return
+        self._error_line = line
+        self._highlight_current_line()
+
+    def goto_line(self, line: int) -> None:
+        block = self.document().findBlockByNumber(max(0, min(line, self.blockCount()) - 1))
+        cur = self.textCursor()
+        cur.setPosition(block.position())
+        self.setTextCursor(cur)
+        self.centerCursor()
+        self.setFocus()
 
     # ---- 编辑习惯 ----
     def keyPressEvent(self, event) -> None:
         key, mods = event.key(), event.modifiers()
         ctrl = mods & Qt.ControlModifier
+        if ctrl and mods & Qt.ShiftModifier and key in (Qt.Key_Return, Qt.Key_Enter):
+            self.trial_requested.emit()
+            event.accept()
+            return
         if ctrl and key in (Qt.Key_S, Qt.Key_Return, Qt.Key_Enter):
             self.apply_requested.emit()
             event.accept()

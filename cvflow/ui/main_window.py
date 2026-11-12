@@ -1,6 +1,7 @@
 """Main window: wires solution, flows, runners, communication and all panels together."""
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, 
 
 from ..comm import CommManager, set_manager
 from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, paths, registry
-from ..core.node import Node
+from ..core.node import Node, NodeStatus
 from ..core.engine import RunResult, align_overlays
 from ..core.events import EventBus
 from ..core.types import Image, Overlay, Rect
@@ -34,6 +35,17 @@ from .variables_panel import VariablesPanel
 
 log = logging.getLogger("cvflow.ui")
 OUTPUT_PICK = "__output__"      # 图像选择框里代表"节点输出"的标记
+
+
+def _brief(v) -> str:
+    """试运行输出在日志里的简短写法：图像只说尺寸，数组只说形状，其余截断到一行。"""
+    import numpy as np
+    if isinstance(v, Image):
+        return f"Image {v.width}×{v.height}" + (" gray" if v.is_gray else "")
+    if isinstance(v, np.ndarray):
+        return f"ndarray{tuple(v.shape)} {v.dtype}"
+    text = repr(v)
+    return text if len(text) <= 120 else text[:117] + "…"
 
 
 class MainWindow(QMainWindow):
@@ -323,6 +335,7 @@ class MainWindow(QMainWindow):
         self.code_title.setToolTip(tr("Node and parameter being edited"))
         self.code_edit = CodeEditor(font_size=M["font"])
         self.code_edit.apply_requested.connect(self._apply_code)
+        self.code_edit.trial_requested.connect(self._trial_run_code)
         self.code_edit.textChanged.connect(self._sync_code_state)
         self.code_edit.cursorPositionChanged.connect(self._sync_code_state)
         self.btn_code_apply = QPushButton(tr("Apply"))
@@ -334,6 +347,10 @@ class MainWindow(QMainWindow):
         self.btn_code_revert.setFixedHeight(26)
         self.btn_code_revert.setToolTip(tr("Go back to the code the node is running"))
         self.btn_code_revert.clicked.connect(self._revert_code)
+        self.btn_code_trial = QPushButton(tr("Trial run"))
+        self.btn_code_trial.setFixedHeight(26)
+        self.btn_code_trial.setToolTip(tr("Re-run only this node on the inputs of the last run (Ctrl+Shift+Enter)"))
+        self.btn_code_trial.clicked.connect(self._trial_run_code)
         self.btn_expand_code = self._tool_button("expand", tr("Maximise the script area"),
                                                  lambda: self._toggle_expand(2), checkable=True)
         # 注意包一层 lambda：clicked 会带一个 bool，直连过去会变成 ask=False，
@@ -343,6 +360,7 @@ class MainWindow(QMainWindow):
         hl.addWidget(self.code_title, 1)
         hl.addWidget(self.code_header_sep)
         hl.addWidget(self.btn_code_revert)
+        hl.addWidget(self.btn_code_trial)
         hl.addWidget(self.btn_code_apply)
         hl.addWidget(self.btn_expand_code)
         hl.addWidget(close)
@@ -353,10 +371,20 @@ class MainWindow(QMainWindow):
         self.code_status = ElidedLabel("")
         self.code_status.setObjectName("muted")
         self.code_status.setFont(ui_font(M["font_s"]))
+        self.code_status.setTextFormat(Qt.PlainText)       # 报错里常有 "<"，别被当成富文本
         self.code_pos = QLabel("")
         self.code_pos.setObjectName("muted")
         self.code_pos.setFont(tabular(ui_font(M["font_s"])))
+        # 出错时出现：点一下跳到出错行
+        self.btn_code_goto = QPushButton("")
+        self.btn_code_goto.setFlat(True)
+        self.btn_code_goto.setCursor(Qt.PointingHandCursor)
+        self.btn_code_goto.setStyleSheet(f"QPushButton {{ color: {C['ng']}; border: none; padding: 0 6px; text-decoration: underline; }}")
+        self.btn_code_goto.clicked.connect(lambda: self.code_edit.error_line and self.code_edit.goto_line(self.code_edit.error_line))
+        self.btn_code_goto.hide()
+        self._code_note: tuple[str, str] | None = None     # 试运行之类的临时提示：（文字，颜色键）
         foot.addWidget(self.code_status, 1)
+        foot.addWidget(self.btn_code_goto)
         foot.addWidget(self.code_pos)
         foot_w = QFrame()
         foot_w.setObjectName("paneFooter")
@@ -396,6 +424,7 @@ class MainWindow(QMainWindow):
             return False                       # 上一份改动还没处理完，用户选择了取消
         self._code_target = (self.current_flow, node_id, param)
         self._code_applied = str(node.get(param) or "")
+        self._code_note = None
         self.code_edit.setPlainText(self._code_applied)
         self.code_title.setText(f"{node.name} · {tr(node.param_def(param).label)}")
         self.code_title.setToolTip(f"{node.name} [{node.type_id}] · {param}")
@@ -476,19 +505,80 @@ class MainWindow(QMainWindow):
         line, col = self.code_edit.cursor_position()
         self.code_pos.setText(f"{tr('line')} {line}, {tr('col')} {col}")
         dirty = self._code_dirty()
+        if dirty or applied:
+            self._code_note = None
         self.code_edit.setReadOnly(self.run_mode)
         self.btn_code_apply.setEnabled(dirty and not self.run_mode)
         self.btn_code_revert.setEnabled(dirty)
-        if self.run_mode:
+        self.btn_code_trial.setEnabled(not self.run_mode)
+        err = self._code_error()
+        self.code_edit.set_error_line(err.lineno if err else None)
+        self.btn_code_goto.setVisible(bool(err and err.lineno))
+        if err and err.lineno:
+            self.btn_code_goto.setText(tr("go to line {n}").format(n=err.lineno))
+        if dirty:
+            self.code_status.setText(tr("edited – press Ctrl+Enter to apply"))
+            self.code_status.setStyleSheet(f"color:{C['warn']}")
+        elif err:
+            prefix = tr("read-only") + " · " if self.run_mode else ""
+            self.code_status.setText(prefix + err.message)
+            self.code_status.setStyleSheet(f"color:{C['ng']}")
+        elif self.run_mode:
             # 运行模式下参数面板整体锁住，脚本也一样：产线正在跑，不该边跑边改算法
             self.code_status.setText(tr("read-only in run mode"))
             self.code_status.setStyleSheet(f"color:{C['muted']}")
-        elif dirty:
-            self.code_status.setText(tr("edited – press Ctrl+Enter to apply"))
-            self.code_status.setStyleSheet(f"color:{C['warn']}")
+        elif self._code_note:
+            text, color = self._code_note
+            self.code_status.setText(text)
+            self.code_status.setStyleSheet(f"color:{C[color]}")
         else:
             self.code_status.setText(tr("applied") if applied else tr("same as the node's code"))
             self.code_status.setStyleSheet(f"color:{C['ok'] if applied else C['muted']}")
+        self.code_status.setToolTip(self.code_status.text())   # 长的报错会被省略，悬停看全文
+
+    def _code_error(self):
+        """脚本区正在编辑的节点最近一次出错的位置；编辑区里的代码已经不是出错的那一版时不算。"""
+        node = self._code_node()
+        err = getattr(node, "script_error", None) if node is not None else None
+        if err is None or err.source != self.code_edit.toPlainText():
+            return None
+        return err
+
+    def _trial_run_code(self) -> None:
+        """试运行：用上一次运行里上游的输出，只重跑脚本区这个节点。改完代码不必再触发相机。"""
+        node = self._code_node()
+        r = self.runner
+        if node is None or r is None:
+            return
+        if self.run_mode:
+            self.statusBar().showMessage(tr("Trial run is not available in run mode."), 4000)
+            return
+        if self._code_dirty():
+            self._apply_code()
+        prev = r.last_result
+        QApplication.setOverrideCursor(Qt.BusyCursor)
+        try:
+            nres = r.engine.run_node(node.id, prev, Trigger(TriggerSource.MANUAL))
+        finally:
+            QApplication.restoreOverrideCursor()
+        if nres.status == NodeStatus.ERROR:
+            self._code_note = (tr("Trial run failed: {error}").format(error=nres.error), "ng")
+        elif nres.status == NodeStatus.SKIPPED:
+            hint = tr(" – run the flow once (F5) first") if prev is None or "无结果" in nres.error else ""
+            self._code_note = (tr("Trial run skipped: {reason}").format(reason=nres.error) + hint, "warn")
+        else:
+            outs = "; ".join(f"{k} = {_brief(v)}" for k, v in nres.outputs.items())
+            logging.getLogger("cvflow.script").info("[%s] %s", node.name, tr("trial run outputs: {outs}").format(outs=outs or "—"))
+            self._code_note = (tr("Trial run {status} in {ms:.1f} ms – outputs are in the log").format(
+                status=nres.status.value.upper(), ms=nres.time_ms), "ok")
+        self._sync_code_state()
+        if nres.status != NodeStatus.SKIPPED:
+            # 预览：上一次运行的结果里换上这个节点的新结果，图像区与参数面板显示它；下一次真正运行会盖掉
+            preview = copy.copy(prev) if prev is not None else RunResult(run_id=0, flow=self.current_flow)
+            preview.node_results = {**preview.node_results, node.id: nres}
+            if self.selected_node == node.id:
+                self.param_panel.set_result(nres)
+            self._update_image(preview)
 
     def _edit_selected_script(self) -> None:
         """菜单项：打开（或关掉）脚本区。没选中脚本节点时，拿当前流程里第一个来编辑。"""
@@ -1383,6 +1473,9 @@ class MainWindow(QMainWindow):
         self.param_panel.refresh()
         self.param_panel.set_result(self._node_result(self.selected_node))
         self._update_image(result)
+        if self._code_target is not None:
+            self._code_note = None
+            self._sync_code_state()            # 脚本出错 / 恢复正常：编辑区的红行和底栏跟着变
         r = self.runner
         st = r.stats if r else None
         if st:

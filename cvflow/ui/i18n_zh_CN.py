@@ -75,6 +75,16 @@ UI = {
     "applied": "已应用", "same as the node's code": "与节点当前代码一致",
     "read-only in run mode": "运行模式下只读（退出运行模式才能改脚本）",
     "line": "行", "col": "列",
+    "Trial run": "试运行",
+    "Re-run only this node on the inputs of the last run (Ctrl+Shift+Enter)":
+        "用上一次运行的上游输出，只重跑这个节点（Ctrl+Shift+Enter）",
+    "Trial run is not available in run mode.": "运行模式下不能试运行。",
+    "Trial run failed: {error}": "试运行出错：{error}",
+    "Trial run skipped: {reason}": "试运行未执行：{reason}",
+    " – run the flow once (F5) first": "，先运行一次流程（F5）",
+    "Trial run {status} in {ms:.1f} ms – outputs are in the log": "试运行 {status}，{ms:.1f} ms，输出见日志",
+    "trial run outputs: {outs}": "试运行输出：{outs}",
+    "go to line {n}": "跳到第 {n} 行", "read-only": "只读",
     # results panel
     "no run yet": "尚未运行", "Value": "值", "Status / ms": "状态 / 毫秒", "Published": "发布的结果",
     "{status}  ·  run {id}  ·  {ms:.1f} ms": "{status}  ·  第 {id} 次  ·  {ms:.1f} ms",

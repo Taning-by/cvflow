@@ -483,6 +483,103 @@ def test_script_python_template_custom_setup_state_and_errors():
     assert nr.status == NodeStatus.ERROR
 
 
+_BUGGY = ("def helper(x):\n"
+          "    return x['a']\n"
+          "\n"
+          "def process(ctx, inputs, params, state):\n"
+          "    return {'out1': helper({})}\n")
+
+
+def test_script_error_names_the_script_line_and_source():
+    """节点上的报错要说出脚本里哪一行、哪一句，不能只有一句 KeyError: 'a'。"""
+    nr, _, node = run_node(reg, "script.python", {}, {"code": _BUGGY})
+    assert nr.status == NodeStatus.ERROR
+    assert nr.error.startswith("第 2 行 helper()：KeyError: 'a'") and "return x['a']" in nr.error
+    assert "起因" not in nr.error
+    assert node.script_error.lineno == 2 and node.script_error.source == _BUGGY
+
+
+def test_script_error_log_shows_only_script_frames_with_source(caplog):
+    with caplog.at_level("ERROR", logger="cvflow.engine"):
+        run_node(reg, "script.python", {}, {"code": _BUGGY})
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "第 5 行，process()" in text and "return {'out1': helper({})}" in text
+    assert "第 2 行，helper()" in text and "return x['a']" in text
+    assert not any(r.exc_info for r in caplog.records)              # 框架内部的栈不再混进来
+    assert "engine.py" not in text and "dl.py" not in text
+
+
+def test_script_syntax_error_points_at_the_line():
+    code = "def process(ctx, inputs, params, state):\n    x = (1,\n    return {}\n"
+    nr, _, node = run_node(reg, "script.python", {}, {"code": code})
+    assert nr.status == NodeStatus.ERROR and "语法错误" in nr.error and nr.error.startswith("第 ")
+    assert "起因" not in nr.error and node.script_error.lineno is not None
+
+
+def test_script_error_in_setup_and_module_level_code_has_line():
+    nr, _, _ = run_node(reg, "script.python", {}, {"code": "x = 1\ny = 1 / 0\ndef process(c, i, p, s):\n    return {}\n"})
+    assert nr.error.startswith("第 2 行：ZeroDivisionError")
+    code = "def setup(state):\n    state['k'] = undefined_name\n\ndef process(c, i, p, s):\n    return {}\n"
+    nr, _, _ = run_node(reg, "script.python", {}, {"code": code})
+    assert nr.error.startswith("第 2 行 setup()：NameError")
+
+
+def test_script_raising_node_error_keeps_its_own_message():
+    """脚本自己 raise NodeError("…") 是写给操作员看的，原样给出，不加行号。"""
+    code = "def process(ctx, inputs, params, state):\n    raise NodeError('没有找到目标')\n"
+    nr, _, node = run_node(reg, "script.python", {}, {"code": code})
+    assert nr.error == "没有找到目标" and node.script_error is None
+
+
+def test_script_error_is_cleared_after_a_good_run():
+    nr, r, node = run_node(reg, "script.python", {}, {"code": _BUGGY})
+    assert node.script_error is not None
+    node.set("code", "def process(ctx, inputs, params, state):\n    return {}\n")
+    assert node.script_error is None
+
+
+def test_two_script_nodes_with_the_same_name_have_distinct_filenames():
+    a, b = reg.create("script.python", name="s"), reg.create("script.python", name="s")
+    assert a.script_filename != b.script_filename
+
+
+def test_script_print_and_log_go_to_the_log_panel(caplog):
+    """打包后的界面没有控制台：print 和 log.* 都要进 cvflow 日志（日志面板），并带节点名。"""
+    code = ("def process(ctx, inputs, params, state):\n"
+            "    print('mean', 1.5)\n"
+            "    log.warning('x=%s', 3)\n"
+            "    log.info('100% done')\n"
+            "    return {}\n")
+    with caplog.at_level("INFO", logger="cvflow.script"):
+        nr, _, node = run_node(reg, "script.python", {}, {"code": code})
+    assert nr.status == NodeStatus.OK
+    msgs = [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "cvflow.script"]
+    assert ("INFO", f"[{node.name}] mean 1.5") in msgs
+    assert ("WARNING", f"[{node.name}] x=3") in msgs
+    assert ("INFO", f"[{node.name}] 100% done") in msgs
+
+
+def test_engine_run_node_reuses_upstream_outputs_of_the_last_run():
+    """试运行：拿上一次运行里上游的输出，只重跑一个节点，不改 last_result、不动下游。"""
+    from cvflow.core import Graph
+    from cvflow.core.engine import Engine
+    from nodes_helpers import _Feeder
+    g = Graph("trial")
+    feeder = g.add_node(_Feeder({"in1": 21}))
+    node = g.add_node(reg.create("script.python", values={
+        "code": "def process(ctx, inputs, params, state):\n    return {'out1': inputs['in1'] * 2}\n"}))
+    g.add_link(feeder.id, "in1", node.id, "in1")
+    eng = Engine(g)
+    r = eng.run()
+    assert r.node_results[node.id].outputs["out1"] == 42
+    node.set("code", "def process(ctx, inputs, params, state):\n    return {'out1': inputs['in1'] + 1}\n")
+    trial = eng.run_node(node.id, r)
+    assert trial.status == NodeStatus.OK and trial.outputs["out1"] == 22
+    assert eng.last_result is r and r.node_results[node.id].outputs["out1"] == 42
+    skipped = eng.run_node(node.id, None)                     # 还没运行过：上游没有结果
+    assert skipped.status == NodeStatus.SKIPPED and "无结果" in skipped.error
+
+
 # =============================================================== Logic
 @pytest.mark.parametrize("op,value,params,expected", [
     ("in_range", 5, {"low": 0, "high": 10}, True), ("in_range", 11, {"low": 0, "high": 10}, False),

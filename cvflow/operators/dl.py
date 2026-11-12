@@ -7,12 +7,16 @@ For a reusable algorithm write a plugin file instead (see examples/plugins).
 """
 from __future__ import annotations
 
+import builtins
+import linecache
 import logging
 import os
 import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -1180,6 +1184,7 @@ for _cls in (OnnxInference, OnnxClassifier, OnnxDetector):
 SCRIPT_MAX_PORTS = 16           # 脚本节点 in/out 端口的上限，再多节点图元就太长了
 
 _SCRIPT_TEMPLATE = '''"""自定义节点代码。可用对象：np, cv2, Image, Overlay, Rect, Point, Line, Circle。
+调试：print(...) 和 log.info / log.warning / log.error(...) 的输出都在日志面板里，带节点名。
 
 def setup(state): 可选，流程启动时执行一次。
 def process(ctx, inputs, params, state) -> dict: 每张图执行一次。
@@ -1196,6 +1201,73 @@ def process(ctx, inputs, params, state):
     ctx.add_overlay(Overlay.text(8, 20, f"script run {state['runs']}", "#ffff00"))
     return {"image": img.derive(gray), "out1": float(gray.mean()), "out2": state["runs"]}
 '''
+
+
+_script_log = logging.getLogger("cvflow.script")
+
+
+class ScriptErrorInfo(NamedTuple):
+    lineno: int | None
+    message: str
+    source: str                        # 出错时跑的是哪一版代码：编辑区里的代码改过了，行号就对不上了
+
+
+class ScriptError(NodeError):
+    """脚本代码出错。消息是一行带行号的摘要，``details`` 是只含脚本自身代码的堆栈（引擎记日志时附上）。"""
+
+    def __init__(self, message: str, lineno: int | None = None, details: str = "") -> None:
+        super().__init__(message)
+        self.lineno = lineno
+        self.details = details
+
+    @classmethod
+    def from_exception(cls, e: BaseException, filename: str) -> "ScriptError | None":
+        head = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        if isinstance(e, SyntaxError) and e.filename == filename:
+            text = (e.text or "").rstrip("\n")
+            where = f"第 {e.lineno} 行"
+            msg = f"{where} 语法错误：{e.msg}" + (f"　→　{text.strip()}" if text.strip() else "")
+            details = ["脚本语法错误：", f"  {where}", f"    {text}"]
+            if e.offset and text:
+                details.append("    " + " " * (e.offset - 1) + "^")
+            details.append(f"{type(e).__name__}: {e.msg}")
+            return cls(msg, e.lineno, "\n".join(details))
+        frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == filename]
+        if not frames:
+            return None
+        last = frames[-1]
+        where = f"第 {last.lineno} 行" + ("" if last.name == "<module>" else f" {last.name}()")
+        msg = f"{where}：{head}" + (f"　→　{last.line.strip()}" if last.line else "")
+        details = ["脚本堆栈（只列脚本自己的代码，最后一行是出错的地方）："]
+        for f in frames:
+            details.append(f"  第 {f.lineno} 行，{'模块顶层' if f.name == '<module>' else f.name + '()'}")
+            if f.line:
+                details.append(f"    {f.line.strip()}")
+        details.append(head)
+        return cls(msg, last.lineno, "\n".join(details))
+
+
+class _ScriptLog:
+    """脚本里可用的 ``log``：``log.info("x=%s", x)``，输出进日志面板，前面带节点名。"""
+
+    def __init__(self, node: Node) -> None:
+        self._node = node
+
+    def _log(self, level: int, msg, *args) -> None:
+        text = str(msg) % args if args else str(msg)
+        _script_log.log(level, "[%s] %s", self._node.name, text)
+
+    def debug(self, msg, *args) -> None:
+        self._log(logging.DEBUG, msg, *args)
+
+    def info(self, msg, *args) -> None:
+        self._log(logging.INFO, msg, *args)
+
+    def warning(self, msg, *args) -> None:
+        self._log(logging.WARNING, msg, *args)
+
+    def error(self, msg, *args) -> None:
+        self._log(logging.ERROR, msg, *args)
 
 
 @register
@@ -1219,6 +1291,8 @@ class PythonScript(Node):
         self._ns: dict | None = None
         self._compiled_src = None
         self._warned_extra: frozenset[str] = frozenset()
+        #: 最近一次出错的位置（成功运行一次就清掉）。脚本编辑区用它标红出错行
+        self.script_error: ScriptErrorInfo | None = None
         self._rebuild_ports()
 
     # ---- 动态端口 ----
@@ -1235,23 +1309,57 @@ class PythonScript(Node):
     def _rebuild_ports(self) -> None:
         self.inputs, self.outputs = self.build_ports(self.get("input_count", 4), self.get("output_count", 4))
 
+    # ---- 编译与执行 ----
+    @property
+    def script_filename(self) -> str:
+        """堆栈里脚本的"文件名"。带节点 id，两个同名节点的报错也分得清。"""
+        return f"<script:{self.id}>"
+
     def _namespace(self):
         src = self.get("code")
         if self._ns is None or self._compiled_src != src:
             from ..core.types import Circle, Line, Point
+            fname = self.script_filename
+            # 登记进 linecache：堆栈里才显示得出出错的那一行源码（mtime=None，checkcache 不会清掉它）
+            linecache.cache[fname] = (len(src), None, src.splitlines(True), fname)
             ns = {"np": np, "cv2": cv2, "Image": Image, "Overlay": Overlay, "Rect": Rect,
-                  "Point": Point, "Line": Line, "Circle": Circle, "NodeError": NodeError, "__name__": f"script_{self.id}"}
-            exec(compile(src, f"<script {self.name}>", "exec"), ns)
-            if "process" not in ns or not callable(ns["process"]):
-                raise NodeError("脚本必须定义 process(ctx, inputs, params, state)")
+                  "Point": Point, "Line": Line, "Circle": Circle, "NodeError": NodeError,
+                  "print": self._print, "log": _ScriptLog(self), "__name__": f"script_{self.id}"}
+            try:
+                exec(compile(src, fname, "exec"), ns)
+                if "process" not in ns or not callable(ns["process"]):
+                    raise NodeError("脚本必须定义 process(ctx, inputs, params, state)")
+                if callable(ns.get("setup")):
+                    ns["setup"](self.state)
+            except Exception as e:
+                self._raise_script_error(e, src)
             self._ns, self._compiled_src = ns, src
-            if callable(ns.get("setup")):
-                ns["setup"](self.state)
         return self._ns
+
+    def _print(self, *args, sep=" ", end="\n", file=None, flush=False):
+        """脚本里的 print：进日志面板（打包后的界面没有控制台，标准输出等于丢掉）。"""
+        if file is not None and file not in (sys.stdout, sys.stderr):
+            builtins.print(*args, sep=sep, end=end, file=file, flush=flush)   # 写文件之类照常
+            return
+        text = (" " if sep is None else sep).join(str(a) for a in args)
+        _script_log.log(logging.WARNING if file is sys.stderr else logging.INFO, "[%s] %s", self.name, text)
+
+    def _raise_script_error(self, e: Exception, src: str):
+        """把脚本里的异常换成带行号的 ScriptError 抛出；记下出错行，脚本编辑区据此标红。"""
+        if isinstance(e, NodeError) and not isinstance(e, ScriptError):
+            self.script_error = None
+            raise e                            # 脚本自己 raise NodeError("…")：那是写给操作员看的，原样给
+        err = ScriptError.from_exception(e, self.script_filename)
+        if err is None:                        # 出错位置不在脚本里（比如 process 的参数签名不对）
+            self.script_error = None
+            raise e
+        self.script_error = ScriptErrorInfo(err.lineno, str(err), src)
+        raise err from None                    # 摘要和脚本堆栈已经说清楚了，不再挂一层框架内部的起因
 
     def on_param_changed(self, name, value):
         if name == "code":
             self._ns = None
+            self.script_error = None
         elif name in ("input_count", "output_count"):
             self._rebuild_ports()
 
@@ -1260,7 +1368,11 @@ class PythonScript(Node):
 
     def process(self, ctx, inputs):
         ns = self._namespace()
-        out = ns["process"](ctx, inputs, dict(self.values), self.state)
+        try:
+            out = ns["process"](ctx, inputs, dict(self.values), self.state)
+        except Exception as e:
+            self._raise_script_error(e, self._compiled_src or "")
+        self.script_error = None
         if isinstance(out, dict):
             # 脚本返回了没有对应端口的键（多半是输出个数调小了）：下游拿不到，提醒一次
             declared = {p.name for p in self.outputs} | {"__skip__"}
