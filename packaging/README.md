@@ -37,6 +37,17 @@ onnxruntime 的 CUDA 后端是**单独一个 DLL**，运行时才去加载。不
 
 构建完会打印两个组件各占多少，当场就能核对切分对不对。
 
+### 提交 Bug 的发信邮箱
+
+"帮助 → 提交 Bug"会通过 SMTP 把报告发到 `callme@tanxinji.com`。发信邮箱的账号和授权码
+**不进仓库**：打包前把 `bug_report.example.json` 复制成 `packaging/bug_report.json` 并填好，
+构建时会把它打进安装包（这个文件名已在 `.gitignore` 里）。没有这个文件也能打包，只是打出来的
+程序只能把报告另存为 zip。
+
+授权码打进安装包后，有心人是能从安装目录里翻出来的，所以**专门注册一个发信小号**来用，
+别用你的主邮箱。源码运行时把同样的文件放到 `cvflow/bug_report.json`，或者用环境变量
+`CVFLOW_BUG_REPORT_CONFIG` 指向它。
+
 ## 安装后的样子
 
 ```

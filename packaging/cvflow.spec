@@ -62,6 +62,14 @@ def onnxruntime_binaries():
 
 
 datas = collect_data_files("cvflow", includes=["ui/assets/*"])
+
+# "帮助 → 提交 Bug"用的发信邮箱配置。含 SMTP 授权码，不进仓库：打包前把它放到 packaging/ 下
+# （格式见 bug_report.example.json），没有的话打出来的程序只能把 bug 报告另存为文件。
+_bug_cfg = ROOT / "packaging" / "bug_report.json"
+if _bug_cfg.is_file():
+    datas.append((str(_bug_cfg), "."))
+else:
+    print("spec: packaging/bug_report.json not found - 'Report a bug' will only be able to save to a file")
 binaries = onnxruntime_binaries() + nvidia_binaries()
 
 # 这些模块由注册表按名字动态加载，静态分析看不出来，必须显式列出。

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, 
                                QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
                                QSizePolicy, QSplitter, QTabWidget, QToolBar, QToolButton, QVBoxLayout, QWidget)
 
+from .. import bug_report
 from ..comm import CommManager, set_manager
 from ..core import FlowRunner, Graph, Solution, Trigger, TriggerSource, events, paths, registry
 from ..core.node import Node, NodeStatus
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, solution_path: str | None = None) -> None:
         super().__init__()
+        bug_report.install_log_buffer()      # 提交 bug 时附带最近的日志
         self.setWindowTitle("CVFlow")
         self.setWindowIcon(app_icon())
         self.resize(1500, 920)
@@ -891,10 +893,15 @@ class MainWindow(QMainWindow):
         p.addAction(QAction(tr("Load plugin folder…"), self, triggered=self._load_plugin_dir))
         p.addAction(QAction(tr("Reload plugins"), self, triggered=self._reload_plugins))
         h = m.addMenu(tr("&Help"))
+        h.addAction(QAction(tr("Report a bug…"), self, triggered=self._report_bug))
         h.addAction(QAction(tr("About"), self, triggered=lambda: QMessageBox.about(
             self, "CVFlow", tr("CVFlow – open, flow-based industrial vision platform.\n\n"
                                "Nodes are Python plugins; flows talk to PLCs over TCP/UDP/serial/Modbus."))))
 
+
+    def _report_bug(self) -> None:
+        from .bug_report_dialog import BugReportDialog
+        BugReportDialog(self).exec()
 
     def toolbar_actions(self) -> list[QAction]:
         """工具栏上的全部动作（供自动化测试/脚本按文字查找）。"""

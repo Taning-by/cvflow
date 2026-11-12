@@ -75,6 +75,7 @@ UI = {
     "applied": "已应用", "same as the node's code": "与节点当前代码一致",
     "read-only in run mode": "运行模式下只读（退出运行模式才能改脚本）",
     "line": "行", "col": "列",
+    "Report a bug…": "提交 Bug…",
     "Trial run": "试运行",
     "Re-run only this node on the inputs of the last run (Ctrl+Shift+Enter)":
         "用上一次运行的上游输出，只重跑这个节点（Ctrl+Shift+Enter）",

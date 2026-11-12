@@ -1373,6 +1373,85 @@ def test_ui_help_about(win, modal, app):
     assert modal.calls and modal.calls[-1][0] == "about"
 
 
+def _bug_dialog(win, monkeypatch, cfg=None, sender=None):
+    from PySide6.QtWidgets import QMessageBox
+    from cvflow.ui import bug_report_dialog as mod
+    monkeypatch.setattr(mod.QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    sent = []
+    dlg = mod.BugReportDialog(win, load_config=lambda: cfg,
+                              sender=sender or (lambda report, c: sent.append(report)))
+    return dlg, sent
+
+
+def _wait(app, cond, ms=3000):
+    end = time.monotonic() + ms / 1000
+    while not cond() and time.monotonic() < end:
+        pump(app, 10)
+    return cond()
+
+
+def test_ui_help_has_report_bug_which_opens_the_dialog(win, app, monkeypatch):
+    from cvflow.ui import bug_report_dialog as mod
+    opened = []
+    monkeypatch.setattr(mod.BugReportDialog, "exec", lambda self: opened.append(self) or 0)
+    menu_action(win, "帮助(&H)", "提交 Bug…").trigger(); pump(app)
+    assert len(opened) == 1 and opened[0].windowTitle() == "提交 Bug"
+
+
+def test_ui_bug_report_sends_in_one_click(win, app, monkeypatch):
+    from cvflow.bug_report import SmtpConfig
+    cfg = SmtpConfig(host="smtp.test")
+    dlg, sent = _bug_dialog(win, monkeypatch, cfg)
+    assert "callme@tanxinji.com" in " ".join(l.text() for l in dlg.findChildren(type(dlg.status)))
+    dlg.btn_send.click(); pump(app)                                   # 没写描述：不发
+    assert not sent and "问题描述" in dlg.status.text()
+    dlg.description.setPlainText("点运行就卡死")
+    dlg.contact.setText("me@example.com")
+    dlg.cb_log.setChecked(False)
+    dlg.btn_send.click()
+    assert _wait(app, lambda: dlg.result() == QDialog.DialogCode.Accepted)
+    (report,) = sent
+    assert report.description == "点运行就卡死" and report.contact == "me@example.com"
+    assert report.include_system and not report.include_log and report.attachments() == {}
+
+
+def test_ui_bug_report_failure_keeps_the_text_and_says_why(win, app, monkeypatch):
+    import smtplib
+    from cvflow.bug_report import SmtpConfig
+
+    def fail(report, cfg):
+        raise smtplib.SMTPAuthenticationError(535, b"bad")
+
+    dlg, _ = _bug_dialog(win, monkeypatch, SmtpConfig(host="smtp.test"), sender=fail)
+    dlg.description.setPlainText("保存方案报错")
+    dlg.btn_send.click()
+    assert _wait(app, lambda: "发送失败" in dlg.status.text())
+    assert "授权码" in dlg.status.text() and dlg.btn_send.isEnabled() and dlg.btn_save.isEnabled()
+    assert dlg.description.toPlainText() == "保存方案报错" and dlg.result() != QDialog.DialogCode.Accepted
+
+
+def test_ui_bug_report_without_config_can_only_save(win, app, monkeypatch, tmp_path):
+    from cvflow.ui import bug_report_dialog as mod
+    dlg, _ = _bug_dialog(win, monkeypatch, cfg=None)
+    assert not dlg.btn_send.isEnabled() and "另存为文件" in dlg.status.text()
+    target = tmp_path / "bug.zip"
+    monkeypatch.setattr(mod.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+    dlg.description.setPlainText("离线机器上的问题")
+    dlg.btn_save.click(); pump(app)
+    assert target.is_file() and str(target) in dlg.status.text()
+
+
+def test_ui_bug_report_preview_shows_what_will_be_sent(win, app, monkeypatch):
+    dlg, _ = _bug_dialog(win, monkeypatch)
+    dlg.description.setPlainText("预览里要看得到这句")
+    dlg.btn_preview.setChecked(True); pump(app)
+    text = dlg.preview.toPlainText()
+    assert "预览里要看得到这句" in text and "软件和系统信息" in text and "log.txt" in text
+    dlg.cb_system.setChecked(False); dlg.cb_log.setChecked(False); pump(app)
+    text = dlg.preview.toPlainText()
+    assert "软件和系统信息" not in text and "log.txt" not in text
+
+
 # =============================================================== 参数面板重建的稳定性（回归）
 def _dl_node(win, app):
     """放一个深度学习节点并选中，它的"输入个数"会改变端口数量，触发面板与图元重建。"""

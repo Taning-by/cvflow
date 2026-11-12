@@ -23,3 +23,6 @@ examples/solutions/_ex_*
 # 项目自带的便携版 Python（install.sh --bootstrap-python / install.ps1 -BootstrapPython）
 .python/
 .python.tmp/
+
+# 提交 bug 用的发信邮箱配置（含 SMTP 授权码），只放进安装包，不进仓库
+bug_report.json

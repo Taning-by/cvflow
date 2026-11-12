@@ -1,0 +1,8 @@
+{
+  "host": "smtp.163.com",
+  "port": 465,
+  "security": "ssl",
+  "username": "your-sender@163.com",
+  "password": "SMTP 授权码（不是登录密码）",
+  "to": "callme@tanxinji.com"
+}
