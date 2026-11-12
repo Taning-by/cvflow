@@ -12,9 +12,11 @@ import numpy as np
 
 from .base import Camera, CameraError
 
+# OpenCV 的 Bayer 命名和 GenICam 错开一个像素：GenICam 的 BayerRG（左上角 RGGB）
+# 在 OpenCV 里叫 BayerBG，直接同名套用会红蓝反色。
 _BAYER = {
-    "BayerRG8": "COLOR_BayerRG2BGR", "BayerGR8": "COLOR_BayerGR2BGR",
-    "BayerGB8": "COLOR_BayerGB2BGR", "BayerBG8": "COLOR_BayerBG2BGR",
+    "BayerRG8": "COLOR_BayerBG2BGR", "BayerGR8": "COLOR_BayerGB2BGR",
+    "BayerGB8": "COLOR_BayerGR2BGR", "BayerBG8": "COLOR_BayerRG2BGR",
 }
 
 

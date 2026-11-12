@@ -149,7 +149,14 @@ def _open_runtime_search_path(extra: str = "") -> None:
 _PIX_MONO8 = 0x01080001
 _PIX_MONO10 = 0x01100003
 _PIX_MONO12 = 0x01100005
-_PIX_BAYER = {0x01080008: "GR", 0x01080009: "RG", 0x0108000A: "GB", 0x0108000B: "BG"}
+# 值是 OpenCV 的转换码名。OpenCV 的 Bayer 命名和 GenICam/MVS 错开一个像素：
+# GenICam 的 BayerRG（左上角 RGGB）在 OpenCV 里叫 BayerBG，直接同名套用会红蓝反色。
+_PIX_BAYER = {
+    0x01080008: "COLOR_BayerGB2BGR",   # BayerGR8
+    0x01080009: "COLOR_BayerBG2BGR",   # BayerRG8
+    0x0108000A: "COLOR_BayerGR2BGR",   # BayerGB8
+    0x0108000B: "COLOR_BayerRG2BGR",   # BayerBG8
+}
 _PIX_RGB8 = 0x02180014
 _PIX_BGR8 = 0x02180015
 
@@ -409,7 +416,7 @@ def _convert(data: np.ndarray, w: int, h: int, pt: int) -> np.ndarray:
         return data[: w * h].reshape(h, w).copy()
     if pt in _PIX_BAYER:
         import cv2
-        code = getattr(cv2, f"COLOR_Bayer{_PIX_BAYER[pt]}2BGR")
+        code = getattr(cv2, _PIX_BAYER[pt])
         return cv2.cvtColor(data[: w * h].reshape(h, w), code)
     if pt == _PIX_RGB8:
         import cv2
