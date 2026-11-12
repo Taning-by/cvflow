@@ -433,7 +433,7 @@ pip install build && python -m build
 # 再把 cvflow 和它的全部依赖（含 CUDA 12 / cuDNN 9）按 Windows 的轮子下下来，约 2 GB
 pip download -d cvflow-offline \
     --platform win_amd64 --python-version 3.12 --only-binary=:all: \
-    "dist/cvflow-0.1.0-py3-none-any.whl[dev,gpu]"
+    "dist/cvflow-1.0.3-py3-none-any.whl[dev,gpu]"
 ```
 
 把 `cvflow-offline` 目录和仓库一起拷到产线机器，然后：

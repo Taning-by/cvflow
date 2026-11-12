@@ -16,7 +16,7 @@
 #define AppURL "https://github.com/Taning-by/cvflow"
 #define AppExe "CVFlow-GUI.exe"
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "1.0.3"
 #endif
 #ifndef SrcDir
   #define SrcDir "..\dist\CVFlow"

@@ -28,7 +28,7 @@ CVFlow 是一个用 Python 全栈实现的工业视觉软件雏形，对标 Visi
 给产线机器用的是安装程序，不需要装 Python：
 
 ```powershell
-CVFlow-Setup-0.1.0-x64.exe          # 双击，下一步到底
+CVFlow-Setup-1.0.3-x64.exe          # 双击，下一步到底
 ```
 
 一个安装包，**GPU 推理支持是可勾选的组件**：主程序约 530 MB（装完就能用，推理跑 CPU），
@@ -36,7 +36,7 @@ CVFlow-Setup-0.1.0-x64.exe          # 双击，下一步到底
 没有 NVIDIA 显卡的机器不勾即可，软件照常用。装完可选立即跑一次自检，当场知道 CUDA 行不行。
 
 程序装在 `C:\Program Files\CVFlow`，方案/日志/存图在 `%ProgramData%\CVFlow`（可写）。
-静默安装：`CVFlow-Setup-0.1.0-x64.exe /SILENT /DIR="C:\CVFlow"`。
+静默安装：`CVFlow-Setup-1.0.3-x64.exe /SILENT /DIR="C:\CVFlow"`。
 
 自己打包：见 [packaging/README.md](packaging/README.md)（PyInstaller + Inno Setup，一条命令）。
 

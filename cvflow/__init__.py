@@ -7,4 +7,4 @@ Layers (bottom to top):
   cvflow.comm      industrial communication (TCP/UDP/serial/Modbus) and trigger/send rules
   cvflow.ui        PySide6 desktop application (node editor, image view, parameter panel)
 """
-__version__ = "0.1.0"
+__version__ = "1.0.3"
