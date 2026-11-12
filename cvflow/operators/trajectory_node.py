@@ -35,8 +35,7 @@ class OnnxTrajectory(_OnnxBase):
     type_id = "dl.onnx_trajectory"
     category = "Deep Learning"
     label = "ONNX 轨迹 (关键点)"
-    description = ("输入上游裁好的固定 ROI 图，推理后输出 N 个有序轨迹点（原始帧像素坐标）、辅助点与可执行置信度。"
-                   "裁剪在采集节点或「裁剪 ROI」节点上做，本节点不再裁。")
+    description = "对上游裁好的 ROI 图推理，输出有序轨迹点（原图坐标）、辅助点和可执行置信度。"
     color = _COLOR
     per_input_outputs = [("points", DataType.LIST), ("valid", DataType.BOOL), ("score", DataType.FLOAT),
                          ("length", DataType.FLOAT), ("aux", DataType.LIST), ("start", DataType.POINT), ("end", DataType.POINT)]

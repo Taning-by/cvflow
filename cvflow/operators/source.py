@@ -39,7 +39,6 @@ class ImageFile(Node):
     category = "Source"
     label = "Image File"
     triggerable = True        # 画布上带触发图标：可以只触发这一路
-    description = "Load a single image from disk (cached until the file changes)."
     color = "#2e7d32"
     inputs = [trigger_input()]
     outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING),
@@ -85,7 +84,7 @@ class ImageFolder(Node):
     category = "Source"
     label = "Image Folder"
     triggerable = True        # 画布上带触发图标：可以只触发这一路
-    description = "Iterate over the images of a folder, one per run (simulated production)."
+    description = "按顺序读文件夹里的图像，每次运行读一张。"
     color = "#2e7d32"
     inputs = [trigger_input()]
     outputs = [Port("image", DataType.IMAGE), Port("path", DataType.STRING), Port("index", DataType.INT),
@@ -151,7 +150,6 @@ class CameraSource(Node):
     category = "Source"
     label = "Camera"
     triggerable = True        # 画布上带触发图标：可以只触发这一路
-    description = "Grab a frame from a named camera (folder simulator, OpenCV device/stream, GenICam)."
     color = "#2e7d32"
     inputs = [trigger_input()]
     outputs = [Port("image", DataType.IMAGE), Port("frame_id", DataType.INT),
@@ -162,31 +160,22 @@ class CameraSource(Node):
 
     params = [Param("camera", "cam0", "string", label="相机名", description="多个节点用同一个名字就是同一台相机"),
               Param("kind", "folder", "enum", choices=sorted(CAMERA_KINDS), label="相机类型",
-                    description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS "
-                                "mindvision=迈德威视（USB3/GigE，走厂商 SDK）genicam=GenTL 驱动。"
-                                "下面的参数会跟着这里变——选了哪种，就只留哪种用得上的"),
+                    description="folder=文件夹模拟 opencv=USB/视频流 hik=海康 MVS mindvision=迈德威视 genicam=GenTL 驱动"),
               Param("source", "", "string", label="来源",
                     description="文件夹路径 | 设备号/视频流地址 | 序列号/友好名/索引"),
               Param("backend", "auto", "enum", choices=["auto", "dshow", "msmf", "v4l2", "gstreamer", "ffmpeg"],
                     label="采集后端", visible_if="kind=opencv",
-                    description="Windows 默认走 MSMF，它只认 UVC 设备；"
-                                "厂商注册的 DirectShow 滤镜（如迈德威视的 MindVision.ax）要选 dshow"),
+                    description="Windows 默认 MSMF，只支持 UVC 设备。厂商 DirectShow 驱动（如迈德威视的 MindVision.ax）要选 dshow"),
               Param("user_set", "keep", "enum",
                     choices=["keep", "Default", "UserSet1", "UserSet2", "UserSet3"],
                     label="相机用户集", visible_if="kind=hik|genicam",
-                    description="打开相机时从相机 Flash 恢复一组参数。"
-                                "keep=不加载，沿用相机当前状态。加载在曝光/增益/触发之前，"
-                                "所以下面几项仍然生效"),
+                    description="打开相机时从相机 Flash 恢复一组参数，keep=不加载。之后仍按下面的曝光、增益、触发设置"),
               Param("param_group", "keep", "enum", choices=["keep", "A", "B", "C", "D"],
                     label="参数组", visible_if="kind=mindvision",
-                    description="打开相机时加载迈德威视「相机配置参数存档」里的某一组——就是厂商软件"
-                                "相机设置页底部那排 A/B/C/D，在那边点「保存」就存进对应组。"
-                                "keep=不加载，相机停在出厂参数上（彩色相机会整幅偏色）"),
+                    description="打开相机时加载迈德威视参数存档里的某一组（厂商软件设置页底部的 A/B/C/D）。keep=不加载，彩色相机可能偏色"),
               Param("param_file", "", "file", label="参数文件", visible_if="kind=mindvision",
                     filter="相机参数 (*.config *.ini);;所有文件 (*)",
-                    description="加载迈德威视厂商软件「保存当前配置参数到指定文件」导出的参数文件。"
-                                "白平衡/颜色矩阵/Gamma/饱和度/LUT 全在里面，比按组加载可靠——"
-                                "换台电脑也能用。和上面的参数组同时填就以文件为准"),
+                    description="加载迈德威视厂商软件导出的参数文件，含白平衡、颜色矩阵、Gamma 等。和参数组都填时以文件为准"),
               Param("trigger_mode", "keep", "enum", choices=["keep", "off", "software", "hardware"],
                     label="触发方式", visible_if=_REAL,
                     description="keep=沿用相机当前设置 off=自由采集 software=软触发 hardware=外部触发"),
@@ -198,22 +187,15 @@ class CameraSource(Node):
                     description="-1 表示沿用相机当前增益"),
               Param("wb_mode", "keep", "enum", choices=["keep", "auto", "once", "manual"],
                     label="白平衡", visible_if=_REAL,
-                    description="彩色相机不做白平衡会整幅偏色。keep=沿用相机当前值 auto=连续自动 "
-                                "once=打开相机时做一次（画面里要有白面或灰面）manual=用下面填的增益。"
-                                "黑白相机忽略此项"),
+                    description="keep=沿用相机当前值 auto=连续自动 once=打开时做一次（画面里要有白色或灰色区域） manual=用下面的增益。黑白相机忽略"),
               Param("wb_gain", "", "string", label="白平衡增益 R,G,B", advanced=True, visible_if=_REAL,
-                    description="白平衡选手动时生效，填三个倍数，如 1.0,1.0,1.6（1.0 = 不动）。"
-                                "厂商软件里显示的是 ×100 的刻度，照抄要先除以 100（160 → 1.6）"),
+                    description="手动白平衡的 R,G,B 倍数，如 1.0,1.0,1.6。厂商软件里显示的是 ×100 的值（160 → 1.6）"),
               Param("timeout_s", 2.0, "float", min=0.01, max=60, label="取图超时（秒）"),
               Param("grayscale", False, "bool", label="转灰度")] + roi_params() + [
               Param("cti", "", "file", label="GenTL 驱动 (.cti)", advanced=True, visible_if="kind=genicam"),
               Param("sdk_path", "", "dir", label="厂商 SDK 目录", advanced=True, visible_if=_VENDOR_SDK,
-                    description="厂商 SDK 的目录，装在非默认路径时才要填。"
-                                "迈德威视填 mvsdk.py 所在目录（一般是 Demo\\Python）；"
-                                "海康填 MvImport 目录（一般是 MVS\\Development\\Samples\\Python\\MvImport），"
-                                "或者填运行库目录（里面有 MvCameraControl.dll，"
-                                "一般是 Common Files\\MVS\\Runtime\\Win64_x64）。"
-                                "留空则按环境变量和常见安装路径找"),
+                    description="厂商 SDK 装在非默认位置时才填。迈德威视填 mvsdk.py 所在目录；"
+                                "海康填 MvImport 目录或 MvCameraControl.dll 所在目录。留空自动查找"),
               Param("features", {}, "json", label="相机特性 (JSON)", advanced=True,
                     visible_if="kind=genicam",
                     description="直接写 GenICam 特性名和值，在上面几项之后生效")]
@@ -279,7 +261,6 @@ class Constant(Node):
     type_id = "source.constant"
     category = "Source"
     label = "Constant"
-    description = "Emit a constant value."
     color = "#2e7d32"
     outputs = [Port("value", DataType.ANY)]
     params = [Param("kind", "float", "enum", choices=["float", "int", "string", "bool"]),
@@ -318,12 +299,10 @@ class TriggerNode(Node):
     label = "Trigger"
     triggerable = True        # 画布上带触发图标：点一下只跑这一路
     is_trigger_entry = True   # trigger 输出接了下游时，"它和它的下游"就是一路
-    description = ("Entry point of one path: wire 'trigger' into an acquisition node, then a PLC rule "
-                   "(action: trigger node) runs just that path. Request parameters come from Parse Message.")
+    description = "一条支路的入口。接到采集节点的 trigger 输入上，PLC 规则（动作：触发节点）就只跑这一路。"
     color = "#2e7d32"
     outputs = [Port(TRIGGER_PORT, DataType.ANY,
-                    description="接到「采集」类节点的 trigger 输入上，表示那一路由本节点触发"
-                                "（值恒为 True，只用来声明路径和执行顺序）")]
+                    description="接到采集节点的 trigger 输入，表示那一路由本节点触发")]
 
     def process(self, ctx, inputs):
         return {TRIGGER_PORT: True}

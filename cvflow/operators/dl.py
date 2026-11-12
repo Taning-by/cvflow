@@ -575,16 +575,13 @@ class _OnnxBase(Node):
 
     params = [Param("model_path", "", "file", filter="ONNX models (*.onnx)"),
               Param("input_count", 1, "int", min=1, max=MAX_INPUTS,
-                    description="图像输入的个数。多个输入会被合并成一个批次，一次推理完成"),
+                    description="图像输入的个数，多个输入合成一批推理"),
               Param("max_batch", 8, "int", min=1, max=64,
-                    description="一个批次最多几张图。模型的批次维必须是动态的才能大于 1"),
+                    description="一批最多几张图。模型的批次维是动态的才能大于 1"),
               Param("arrival", "sync", "enum", choices=["sync", "async"],
-                    description="输入到达方式。sync（默认）：整条流程一次触发，所有输入同时到达；"
-                                "async：每路相机各自被触发、各自跑到本节点汇合，凑够批次上限或"
-                                "等待窗口到期就推理，由其中一路继续往后跑"),
+                    description="sync：整条流程一次触发，各输入同时到达。async：各路相机分别触发，在本节点凑批推理，由其中一路继续往下跑"),
               Param("wait_ms", 0.0, "float", min=0, max=1000,
-                    description="等本节点其它输入到达的时间，只在 async 到达方式下生效。"
-                                "sync 下所有输入同时到达，等待只会白白增加节拍，按 0 处理"),
+                    description="async 下等其它输入的时间，sync 下不生效"),
               Param("width", 224, "int", min=1, max=8192), Param("height", 224, "int", min=1, max=8192),
               Param("letterbox", False, "bool", description="Keep aspect ratio, pad to size"),
               Param("color", "rgb", "enum", choices=["rgb", "bgr", "gray"]),
@@ -593,18 +590,14 @@ class _OnnxBase(Node):
               Param("std", "1,1,1", "string", description="Per-channel std (after scaling)"),
               Param("layout", "NCHW", "enum", choices=["NCHW", "NHWC"]),
               Param("provider", "auto", "enum", choices=["auto", "cpu", "cuda", "tensorrt"],
-                    description="推理后端。auto 按 TensorRT → CUDA → CPU 挑第一个能用的；"
-                                "想确认实际跑在哪里，看日志里的「使用推理后端」一行"),
+                    description="auto 按 TensorRT → CUDA → CPU 选第一个能用的，实际用的哪个看日志"),
               Param("device_id", 0, "int", min=0, max=15,
-                    description="用哪一块显卡（多卡时有意义）。编号从 0 开始，填了不存在的编号会直接报错"
-                                "（本机有几块卡看 cvflow gpu，或日志里的提示）。CPU 后端会忽略这个参数"),
+                    description="显卡编号，从 0 开始。CPU 后端忽略"),
               Param("session_scope", "auto", "enum", choices=["auto", "shared", "exclusive"], advanced=True,
-                    description="权重加载几份。shared=全软件共用一份；exclusive=按权重共享组/节点各加载一份，"
-                                "GPU 上可以用各自的流并行，代价是显存成倍；"
-                                "auto（默认）在 CPU 上共享、在 GPU 上按权重共享组/节点各一份"),
+                    description="权重加载几份。shared：全软件一份。exclusive：每个节点（或权重共享组）一份，"
+                                "GPU 上可并行，显存成倍。auto：CPU 上 shared，GPU 上 exclusive"),
               Param("weight_group", "", "string", advanced=True,
-                    description="填相同名字的节点共用同一份权重（省显存，实测代价 0~6%）。"
-                                "只影响权重，不影响排队：每个节点的合批始终只在自己的多路输入之间进行")]
+                    description="名字相同的节点共用一份权重，省显存")]
 
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
@@ -625,7 +618,7 @@ class _OnnxBase(Node):
         """
         count = max(1, min(MAX_INPUTS, int(count)))
         ins = [Port(_input_port_name(i), DataType.IMAGE, optional=every_input_optional or i > 0,
-                    description="第一个输入" if i == 0 else f"第 {i + 1} 个输入，未连接时该路输出为空")
+                    description="" if i == 0 else "未连接时这一路输出为空")
                for i in range(count)]
         outs = [Port(_output_port_name(base, i), dtype) for i in range(count) for base, dtype in cls.per_input_outputs]
         outs += [Port("infer_ms", DataType.FLOAT, description="本次推理耗时，整批共用"),
@@ -1065,7 +1058,7 @@ class OnnxInference(_OnnxBase):
     type_id = "dl.onnx"
     category = "Deep Learning"
     label = "ONNX Inference"
-    description = "Run any ONNX model; outputs the raw tensors for downstream post-processing (e.g. a script node)."
+    description = "运行任意 ONNX 模型，输出原始张量。"
     color = _COLOR
     per_input_outputs = [("outputs", DataType.LIST), ("output0", DataType.TENSOR)]
     inputs, outputs = Node.inputs, Node.outputs      # 占位，下面用 build_ports 覆盖
@@ -1079,7 +1072,7 @@ class OnnxClassifier(_OnnxBase):
     type_id = "dl.onnx_classifier"
     category = "Deep Learning"
     label = "ONNX Classifier"
-    description = "Image classification: softmax over the first output, labels from a text file."
+    description = "图像分类：对第一个输出做 softmax，标签取自文本文件。"
     color = _COLOR
     per_input_outputs = [("class_id", DataType.INT), ("label", DataType.STRING),
                          ("score", DataType.FLOAT), ("probs", DataType.LIST)]
@@ -1105,7 +1098,7 @@ class OnnxDetector(_OnnxBase):
     type_id = "dl.onnx_detector"
     category = "Deep Learning"
     label = "ONNX Detector (YOLO)"
-    description = "YOLOv5/v8/v11-style detector: decodes [1,84,N] or [1,N,85] outputs, applies NMS."
+    description = "YOLOv5/v8/v11 检测：解码 [1,84,N] 或 [1,N,85] 输出并做 NMS。"
     color = _COLOR
     per_input_outputs = [("detections", DataType.LIST), ("count", DataType.INT),
                          ("boxes", DataType.LIST), ("best_label", DataType.STRING)]
@@ -1275,15 +1268,12 @@ class PythonScript(Node):
     type_id = "script.python"
     category = "Script"
     label = "Python Script"
-    description = "Run user Python code as a node (the escape hatch for custom DL/RL logic)."
     color = "#ef6c00"
     inputs, outputs = Node.inputs, Node.outputs      # 占位，类定义之后用 build_ports 覆盖
     params = [Param("input_count", 4, "int", min=0, max=SCRIPT_MAX_PORTS, label="输入个数",
-                    description="除 image 外的通用输入个数，端口名依次为 in1、in2……，可以接任意类型"
-                                "（包括图像）。调小时，接在被去掉的端口上的连线会断开"),
+                    description="除 image 外的输入个数，端口名 in1、in2……，可以接任意类型。调小时，多出端口上的连线会断开"),
               Param("output_count", 4, "int", min=0, max=SCRIPT_MAX_PORTS, label="输出个数",
-                    description="除 image 外的通用输出个数，端口名依次为 out1、out2……。"
-                                "调小时，接在被去掉的端口上的连线会断开"),
+                    description="除 image 外的输出个数，端口名 out1、out2……。调小时，多出端口上的连线会断开"),
               Param("code", _SCRIPT_TEMPLATE, "code")]
 
     def __init__(self, *a, **k):

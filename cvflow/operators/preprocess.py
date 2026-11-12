@@ -20,7 +20,7 @@ class ColorConvert(Node):
     type_id = "preprocess.color"
     category = "Preprocess"
     label = "Color Convert"
-    description = "Convert colour space; 'channel' picks one plane of the result."
+    description = "颜色空间转换，channel 可以取出单个通道。"
     color = _COLOR
     inputs, outputs = _IMG_IN, _IMG_OUT
     params = [Param("mode", "gray", "enum", choices=["gray", "bgr", "hsv", "hls", "lab", "rgb"]),
@@ -75,7 +75,7 @@ class Threshold(Node):
     type_id = "preprocess.threshold"
     category = "Preprocess"
     label = "Threshold"
-    description = "Binarise a grayscale image (colour input is converted first)."
+    description = "灰度图二值化，彩色图先转灰度。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE),
               Port("thresh", DataType.INT, optional=True, description="Overrides the 'thresh' parameter when linked")]
@@ -172,12 +172,11 @@ class Crop(Node):
     type_id = "preprocess.crop"
     category = "Preprocess"
     label = "Crop ROI"
-    description = ("Crop a fixed-size ROI (same as the acquisition nodes' fixed ROI): set width/height, "
-                   "drag the box into place. A linked 'roi' overrides both position and size.")
+    description = "裁出固定尺寸的 ROI。接了 roi 输入时，位置和尺寸以输入为准。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE),
               Port("roi", DataType.RECT, optional=True,
-                   description="上游算出来的框（例如模板匹配的 rect）：接上后位置和尺寸都以它为准，参数里的不再用")]
+                   description="上游给出的框（如模板匹配的 rect）。接上后忽略参数里的框")]
     outputs = [Port("image", DataType.IMAGE),
                Port("offset", DataType.POINT, description="裁出的图左上角在原始帧里的位置"),
                Port("roi", DataType.RECT, description="输出的图对应原始帧的哪一块")]
@@ -228,7 +227,7 @@ class Enhance(Node):
     type_id = "preprocess.enhance"
     category = "Preprocess"
     label = "Enhance"
-    description = "Contrast / brightness, histogram equalisation or CLAHE."
+    description = "对比度/亮度调整、直方图均衡或 CLAHE。"
     color = _COLOR
     inputs, outputs = _IMG_IN, _IMG_OUT
     params = [Param("method", "linear", "enum", choices=["linear", "equalize", "clahe", "normalize"]),
@@ -283,7 +282,7 @@ class Bitwise(Node):
     type_id = "preprocess.bitwise"
     category = "Preprocess"
     label = "Bitwise"
-    description = "Combine two binary/gray images (b is ignored for 'not')."
+    description = "两张二值/灰度图做位运算（not 只用 a）。"
     color = _COLOR
     inputs = [Port("a", DataType.IMAGE), Port("b", DataType.IMAGE, optional=True)]
     outputs = _IMG_OUT

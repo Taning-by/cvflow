@@ -23,7 +23,7 @@ class Publish(Node):
     type_id = "output.publish"
     category = "Output"
     label = "Publish Result"
-    description = "Name values so communication templates and the result panel can use them ({out.name})."
+    description = "给值起名，通信模板和结果面板里用 {out.名字} 引用。"
     color = _COLOR
     inputs = [Port(n, DataType.ANY, optional=True) for n in "abcd"]
     params = [Param("name_a", "a", "string"), Param("name_b", "b", "string"),
@@ -42,7 +42,7 @@ class RenderOverlays(Node):
     type_id = "output.render"
     category = "Output"
     label = "Render Overlays"
-    description = "Draw all overlays produced so far in this run onto the image (for saving / display)."
+    description = "把本次运行到目前为止的叠加层画到图上。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE),
               Port("after", DataType.ANY, optional=True, description="Link any judge output to force running after it")]
@@ -74,12 +74,11 @@ class SaveImage(Node):
     type_id = "output.save_image"
     category = "Output"
     label = "Save Image"
-    description = ("Save the image to disk. File name = prefix + linked name + suffix; the suffix is the capture "
-                   "time and/or a running index. Optionally only NG/OK runs; place it after the Judge nodes.")
+    description = "把图像存到磁盘，可以只存 OK 或 NG。要放在判定节点之后。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE),
               Port("name", DataType.STRING, optional=True,
-                   description="自定义的文件名主体（例如条码、产品号）：接上后放在前缀和时间/序号后缀之间"),
+                   description="自定义文件名主体（如条码），放在前缀和后缀之间"),
               Port("after", DataType.ANY, optional=True, description="Link a judge output to force running after it")]
     outputs = [Port("path", DataType.STRING, description="实际写出的文件路径；按条件没存时为空"),
                Port("index", DataType.INT, description="本次用掉的序号；没存图或命名方式不含序号时为 0")]
@@ -92,14 +91,13 @@ class SaveImage(Node):
                     description="文件名后缀：time=采集时间　index=序号　time_index=时间_序号　"
                                 "none=不加后缀（同名会覆盖，一般只在接了 name 输入时用）"),
               Param("time_format", "%Y%m%d_%H%M%S_%3f", "string", label="时间格式", advanced=True,
-                    description="strftime 写法，%3f 是毫秒、%f 是微秒。默认写出来像 20261018_093012_345。"
-                                "时间取的是这帧图像的采集时间"),
+                    description="strftime 格式，%3f 为毫秒。默认如 20261018_093012_345，用的是图像的采集时间"),
               Param("index_start", 1, "int", min=0, max=1_000_000_000, label="起始序号",
                     description="改了它就从这个数重新数"),
               Param("index_digits", 4, "int", min=1, max=12, label="序号位数", advanced=True,
                     description="不够的位数前面补 0（4 位：0001）；超过位数照实写"),
               Param("index_max", 0, "int", min=0, max=1_000_000_000, label="序号上限", advanced=True,
-                    description="0 表示不限。到了上限就回到起始序号循环覆盖旧图，磁盘不会被存满"),
+                    description="0 为不限。到上限后回到起始序号，循环覆盖旧图"),
               Param("jpeg_quality", 92, "int", min=1, max=100, advanced=True)]
 
     def on_param_changed(self, name, value):
@@ -182,9 +180,7 @@ class CommSend(Node):
     type_id = "output.comm_send"
     category = "Output"
     label = "Send Message (legacy)"
-    description = ("Send text to a communication device. Kept for existing solutions - the "
-                   "Communication category's 'Comm Send' supersedes it (HEX, reply to the "
-                   "requesting client, templates).")
+    description = "旧节点，留给已有方案用。新方案请用通信分类里的「发送报文」。"
     color = _COLOR
     inputs = [Port("text", DataType.STRING)]
     outputs = [Port("sent", DataType.BOOL)]
@@ -206,9 +202,7 @@ class ModbusWrite(Node):
     type_id = "output.modbus_write"
     category = "Output"
     label = "Modbus Write (by address)"
-    description = ("Write a value into holding register(s) by raw address. Kept for existing "
-                   "solutions - 'Write Data Point' writes by data point name instead, which "
-                   "carries the type, byte order and scaling with it.")
+    description = "旧节点，留给已有方案用。新方案请用「写数据点」。"
     color = _COLOR
     inputs = [Port("value", DataType.ANY)]
     outputs = [Port("ok", DataType.BOOL)]

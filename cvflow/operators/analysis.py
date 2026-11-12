@@ -27,7 +27,7 @@ class BlobAnalysis(Node):
     type_id = "analysis.blob"
     category = "Analysis"
     label = "Blob Analysis"
-    description = "Connected components with area/size filters. Accepts gray/colour images (built-in binarisation) or binary masks."
+    description = "连通域分析，按面积和尺寸过滤。输入可以是灰度、彩色或二值图。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE, description="Gray, colour or binary image")]
     outputs = [Port("count", DataType.INT), Port("blobs", DataType.LIST), Port("largest_area", DataType.FLOAT),
@@ -156,7 +156,7 @@ class TemplateMatch(Node):
     type_id = "analysis.template_match"
     category = "Analysis"
     label = "Template Match"
-    description = "Normalised cross-correlation template matching (translation only) over the whole input image."
+    description = "归一化互相关模板匹配，只找平移。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE), Port("template", DataType.IMAGE, optional=True)]
     outputs = [Port("found", DataType.BOOL), Port("score", DataType.FLOAT), Port("center", DataType.POINT),
@@ -236,10 +236,9 @@ class EdgeCaliper(Node):
     type_id = "analysis.caliper"
     category = "Analysis"
     label = "Edge Caliper"
-    description = ("Project the whole input image to a 1-D profile and locate edges with sub-pixel accuracy "
-                   "(put a Crop ROI node in front to pick the strip). Scan direction 'horizontal' finds vertical edges (x positions).")
+    description = "沿扫描方向找边缘，亚像素精度。horizontal 找竖直边缘，输出 x 坐标。"
     color = _COLOR
-    inputs = [Port("image", DataType.IMAGE, description="要量的那一条：在前面接「裁剪 ROI」节点裁出来")]
+    inputs = [Port("image", DataType.IMAGE, description="要量局部时先接「裁剪 ROI」")]
     outputs = [Port("edges", DataType.LIST), Port("count", DataType.INT), Port("first", DataType.FLOAT),
                Port("last", DataType.FLOAT), Port("width", DataType.FLOAT), Port("profile", DataType.LIST)]
     params = [Param("direction", "horizontal", "enum", choices=["horizontal", "vertical"]),
@@ -309,7 +308,7 @@ class CircleFind(Node):
     type_id = "analysis.circle"
     category = "Analysis"
     label = "Find Circle"
-    description = "Hough circle detection, or least-squares fit on the largest contour of a binary image."
+    description = "Hough 圆检测，或对二值图最大轮廓做最小二乘拟合。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE)]
     outputs = [Port("found", DataType.BOOL), Port("circle", DataType.CIRCLE), Port("cx", DataType.FLOAT),
@@ -356,7 +355,7 @@ class IntensityStats(Node):
     type_id = "analysis.intensity"
     category = "Analysis"
     label = "Intensity Stats"
-    description = "Mean / std / min / max and fill ratio of the whole input image (crop first to measure a region)."
+    description = "统计均值、标准差、最小值、最大值和填充率。"
     color = _COLOR
     inputs = [Port("image", DataType.IMAGE)]
     outputs = [Port("mean", DataType.FLOAT), Port("std", DataType.FLOAT), Port("min", DataType.FLOAT),

@@ -34,17 +34,14 @@ def roi_params(w: int = 628, h: int = 768, toggle: bool = True) -> list[Param]:
     ps: list[Param] = []
     if toggle:
         ps.append(Param("roi_enabled", False, "bool", label="固定 ROI 裁剪",
-                        description="打开后本节点直接输出裁好的小图（尺寸就是下面的 ROI 宽/高），"
-                                    "下游深度学习节点拿到的就是定尺寸输入。关掉则输出整张原图。"
-                                    "裁剪位置会记在图像上，下游把坐标换算回原图时自动带上"))
+                        description="打开后输出裁好的 ROI 小图，关掉输出整张原图。下游换算回原图坐标时会自动加上裁剪位置"))
     ps += [
         Param("roi_w", w, "int", min=8, max=20000, label="ROI 宽",
-              description="要和模型的输入宽度一致（看导出的 sidecar json 里的 width）"),
+              description="要等于模型的输入宽度（sidecar json 里的 width）"),
         Param("roi_h", h, "int", min=8, max=20000, label="ROI 高",
-              description="要和模型的输入高度一致（看导出的 sidecar json 里的 height）"),
+              description="要等于模型的输入高度（sidecar json 里的 height）"),
         Param("roi", None, "rect", label="ROI 位置", locked_size="roi_w,roi_h",
-              description="在图像上拖这个框定位置，尺寸只能用上面的宽/高改。不设就取画面正中。"
-                          "多工位时每个工位各填各的（训练侧 make_rois.py 会把每个工位的位置算好）"),
+              description="在图上拖框定位置，尺寸由上面的宽/高决定。不设则取画面中央"),
     ]
     return ps
 

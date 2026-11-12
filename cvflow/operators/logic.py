@@ -28,7 +28,7 @@ class Judge(Node):
     type_id = "logic.judge"
     category = "Logic"
     label = "Judge"
-    description = "Compare a value against limits; the result decides OK/NG for the whole run."
+    description = "把值和上下限比较，结果决定本次运行 OK/NG。"
     color = _COLOR
     is_judge = True
     inputs = [Port("value", DataType.ANY)]
@@ -63,7 +63,7 @@ class Expression(Node):
     type_id = "logic.expression"
     category = "Logic"
     label = "Expression"
-    description = "Evaluate a Python expression over inputs a..d (math functions available)."
+    description = "对输入 a..d 求一个 Python 表达式，可用 math 函数。"
     color = _COLOR
     inputs = [Port(n, DataType.ANY, optional=True) for n in "abcd"]
     outputs = [Port("value", DataType.ANY)]
@@ -108,7 +108,7 @@ class Format(Node):
     type_id = "logic.format"
     category = "Logic"
     label = "Format Text"
-    description = "Build a string from a template, e.g. 'RESULT,{a},{b:.2f}'."
+    description = "按模板拼字符串，如 'RESULT,{a},{b:.2f}'。"
     color = _COLOR
     inputs = [Port(n, DataType.ANY, optional=True) for n in "abcd"]
     outputs = [Port("text", DataType.STRING)]
@@ -126,7 +126,7 @@ class Gate(Node):
     type_id = "logic.gate"
     category = "Logic"
     label = "Gate"
-    description = "Pass 'value' through only when 'condition' holds; otherwise downstream nodes are skipped."
+    description = "condition 为真时透传 value，否则跳过下游。"
     color = _COLOR
     inputs = [Port("condition", DataType.ANY), Port("value", DataType.ANY, optional=True)]
     outputs = [Port("value", DataType.ANY)]
@@ -159,7 +159,7 @@ class Counter(Node):
     type_id = "logic.counter"
     category = "Logic"
     label = "Counter"
-    description = "Counts runs (persisted in node state); optionally counts only when 'count_if' is true."
+    description = "统计运行次数。接了 count_if 时只在它为真时计数。"
     color = _COLOR
     inputs = [Port("count_if", DataType.ANY, optional=True)]
     outputs = [Port("count", DataType.INT)]

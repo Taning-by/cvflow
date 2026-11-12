@@ -52,8 +52,7 @@ class CommReceive(Node):
     category = "Communication"
     label = "Comm Receive"
     triggerable = True
-    description = ("Take one message from a device's inbox (filled by the background listener). "
-                   "Set timeout 0 to use only what already arrived.")
+    description = "从设备收件箱取一条报文。"
     color = _COLOR
     outputs = [Port("text", DataType.STRING), Port("data", DataType.ANY, label="bytes"),
                Port("peer", DataType.STRING), Port("device", DataType.STRING),
@@ -99,12 +98,12 @@ class CommSend(Node):
     category = "Communication"
     label = "Comm Send"
     runs_last = True          # 汇报结论：等判定与叠加层齐了再执行
-    description = "Send text or HEX to a device; can reply to the client that triggered this run."
+    description = "向设备发送文本或 HEX，可以回复触发本次运行的客户端。"
     color = _COLOR
     inputs = [Port("text", DataType.ANY, optional=True),
               Port("after", DataType.ANY, optional=True, description="连任意输出以强制在它之后执行")]
     outputs = [Port("sent", DataType.BOOL)]
-    params = [Param("device", "", "choice", options="comm.devices", description="通信设备"),
+    params = [Param("device", "", "choice", options="comm.devices"),
               Param("mode", "text", "enum", choices=["text", "hex"],
                     description="text 按文本编码发送；hex 把输入当十六进制字符串"),
               Param("template", "", "string",
@@ -152,19 +151,16 @@ class ParseMessage(Node):
     type_id = "comm.parse"
     category = "Communication"
     label = "Parse Message"
-    description = ("Split a message into named fields with a parse rule; with source=trigger and no rule "
-                   "it hands out this request's frozen parameters (request id, parsed fields).")
+    description = "按解析规则把报文拆成字段。"
     color = _COLOR
     inputs = [Port("text", DataType.ANY, optional=True)]
     outputs = [Port("fields", DataType.DICT), Port("value", DataType.ANY),
                Port("ok", DataType.BOOL), Port("error", DataType.STRING)]
     params = [Param("rule", "", "choice", options="comm.parse_rules",
-                    description="解析规则（通信面板里配置）。来源是「触发」、只想取本次请求已经"
-                                "解析好的参数时留空即可"),
+                    description="通信面板里配置的解析规则。来源为 trigger 时可以留空，直接用请求里已解析好的参数"),
               Param("field", "", "string", description="要单独输出到 value 端口的字段名"),
               Param("source", "trigger", "enum", choices=["trigger", "input"],
-                    description="trigger 取触发本次运行的那条请求（留空规则＝直接用接受请求时"
-                                "冻结的参数，含请求编号）；input 解析输入端口的文本"),
+                    description="trigger：解析触发本次运行的请求；input：解析输入端口的文本"),
               Param("on_error", "error", "enum", choices=["error", "empty"],
                     description="解析失败 / 本次不是通信触发：报错（判为异常）/ 输出空并置 ok=False")]
 
@@ -220,7 +216,7 @@ class FormatResult(Node):
     category = "Communication"
     label = "Format Result"
     runs_last = True          # 汇报结论：等判定与叠加层齐了再执行
-    description = "Render the run's results into text / JSON / binary with a format rule."
+    description = "按格式化规则把本次结果组成文本、JSON 或二进制。"
     color = _COLOR
     inputs = [Port("after", DataType.ANY, optional=True)]
     outputs = [Port("text", DataType.STRING), Port("data", DataType.ANY, label="bytes")]
@@ -277,13 +273,13 @@ class ReadDataPoint(Node):
     type_id = "comm.read_point"
     category = "Communication"
     label = "Read Data Point"
-    description = "Read a named data point (Modbus / MC / S7) configured on the device."
+    description = "读取设备上的数据点。"
     color = _COLOR
     inputs = [Port("after", DataType.ANY, optional=True)]
     outputs = [Port("value", DataType.ANY), Port("valid", DataType.BOOL),
                Port("count", DataType.INT, label="几个值"), Port("error", DataType.STRING)]
-    params = [Param("device", "", "choice", options="comm.register_devices", description="支持数据点的设备"),
-              Param("point", "", "choice", options="comm.points", description="数据点"),
+    params = [Param("device", "", "choice", options="comm.register_devices"),
+              Param("point", "", "choice", options="comm.points"),
               Param("mode", "cached", "enum", choices=["cached", "fresh"],
                     description="cached 用轮询到的最新值（不额外发请求）；fresh 立刻读一次"),
               Param("on_error", "error", "enum", choices=["error", "invalid"],
@@ -327,14 +323,13 @@ class WriteDataPoint(Node):
     category = "Communication"
     label = "Write Data Point"
     runs_last = True          # 汇报结论：等判定与叠加层齐了再执行
-    description = ("Write a value — or an array of values — into a named data point "
-                   "(Modbus / MC / S7).")
+    description = "写数据点，可以写数组。"
     color = _COLOR
     inputs = [Port("value", DataType.ANY)]
     outputs = [Port("ok", DataType.BOOL), Port("count", DataType.INT, label="写了几个"),
                Port("error", DataType.STRING)]
-    params = [Param("device", "", "choice", options="comm.register_devices", description="支持数据点的设备"),
-              Param("point", "", "choice", options="comm.points", description="数据点"),
+    params = [Param("device", "", "choice", options="comm.register_devices"),
+              Param("point", "", "choice", options="comm.points"),
               Param("scale", 1.0, "float", description="写之前先乘这个系数（数组里每个值都乘）"),
               Param("on_length", "error", "enum", choices=["error", "fit"],
                     description="数组长度和数据点「数量」不符时：报错 / 自动补齐"
@@ -397,7 +392,7 @@ class CommStatus(Node):
     type_id = "comm.status"
     category = "Communication"
     label = "Comm Status"
-    description = "Query a device's (or handshake's) live state: connected, peers, counters."
+    description = "查询设备或握手的连接状态和收发计数。"
     color = _COLOR
     outputs = [Port("connected", DataType.BOOL), Port("peers", DataType.INT),
                Port("info", DataType.DICT), Port("text", DataType.STRING)]
@@ -405,7 +400,7 @@ class CommStatus(Node):
               Param("handshake", "", "choice", options="comm.handshakes",
                     description="检测握手；填了就一并输出它的状态"),
               Param("require_connected", False, "bool",
-                    description="未连接时报错（配合判定节点可以让流程直接判 NG）")]
+                    description="未连接时报错")]
 
     def process(self, ctx, inputs):
         mgr = _manager()
