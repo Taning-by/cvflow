@@ -12,10 +12,10 @@ import json
 import math
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
-                               QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+                               QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea,
+                               QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from ..core.graph import Graph
 from ..core.node import Node, NodeStatus, Param
@@ -44,7 +44,9 @@ def _decimals(p: Param, value: float | None = None) -> int:
     """小数位按步长取，默认 2 位；上限不超过 1 的（置信度之类）给 3 位。
 
     最后还要保证当前值显示得出来：像 1/255 这种缩放系数按 2 位会被显示成 0.00，
-    用户一改就把参数毁了，所以按数量级把位数补够。
+    用户一改就把参数毁了，所以按数量级把位数补够（约 4 位有效数字）。
+    默认值也要算进来：缩放系数被误改成 1 或 0 之后，控件按当前值只剩 2 位，
+    想改回 0.0039 只能输到 0.00——默认值能写得进去，才改得回来。
     """
     decimals = 2
     if p.step:
@@ -55,9 +57,13 @@ def _decimals(p: Param, value: float | None = None) -> int:
                 break
     elif p.max is not None and abs(float(p.max)) <= 1:
         decimals = 3
-    v = abs(float(value or 0.0))
-    if v and v < 10 ** -decimals:
-        decimals = min(8, int(math.ceil(-math.log10(v))) + 1)
+    for x in (value, p.default):
+        try:
+            v = abs(float(x or 0.0))
+        except (TypeError, ValueError):
+            continue
+        if v and v < 10 ** -decimals:
+            decimals = max(decimals, min(8, int(math.ceil(-math.log10(v))) + 3))
     return decimals
 
 
@@ -118,6 +124,31 @@ class _Section(QWidget):
             self.body_layout.addLayout(w)
 
 
+class _WheelGuard(QObject):
+    """滚轮只改"已经点进去"的输入框。
+
+    滚动参数面板时鼠标经过数字框 / 下拉框 / 滑块，Qt 默认会把滚轮吃掉去改值——缩放系数之类
+    就这样被悄悄改坏。没焦点时把滚轮事件标成 ignore，Qt 会把它继续交给父控件，面板照常滚动。
+    控件的焦点策略同时改成 StrongFocus（默认 WheelFocus 会被滚轮直接抢到焦点）。
+    """
+
+    TYPES = (QAbstractSpinBox, QComboBox, QSlider)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return False
+
+    def guard(self, root: QWidget) -> None:
+        widgets = [root] if isinstance(root, self.TYPES) else []
+        for w in widgets + root.findChildren(QWidget):
+            if isinstance(w, self.TYPES) and not w.property("_wheel_guarded"):
+                w.setFocusPolicy(Qt.StrongFocus)
+                w.installEventFilter(self)
+                w.setProperty("_wheel_guarded", True)
+
+
 class ParamPanel(QScrollArea):
     param_changed = Signal(str, str, object)      # node_id, param name, value
     node_renamed = Signal(str, str)
@@ -141,6 +172,7 @@ class ParamPanel(QScrollArea):
         self._layout.setContentsMargins(M["gap_l"], M["gap_l"], M["gap_l"], M["gap_l"])
         self._widgets: dict[str, Any] = {}
         self._show_advanced = False
+        self._wheel_guard = _WheelGuard(self)
         self.set_node(None, None)
 
     # ---- 外部接口 ----
@@ -252,6 +284,7 @@ class ParamPanel(QScrollArea):
             st.setObjectName("muted")
             st_sec.add(st)
         self._layout.addStretch(1)
+        self._wheel_guard.guard(self._container)
         self._container.setEnabled(not self._locked)
 
     def _placeholder(self) -> QWidget:

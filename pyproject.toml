@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cvflow"
-version = "1.0.3"
+version = "1.0.4"
 description = "Open, flow-based industrial machine vision platform with pluggable Python algorithm nodes and PLC communication"
 readme = "README.md"
 requires-python = ">=3.10"

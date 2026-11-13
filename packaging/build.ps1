@@ -14,7 +14,7 @@
 
 .EXAMPLE
     .\packaging\build.ps1
-    完整构建：装构建依赖 → PyInstaller → Inno Setup，产出 dist\CVFlow-Setup-1.0.3-x64.exe
+    完整构建：装构建依赖 → PyInstaller → Inno Setup，产出 dist\CVFlow-Setup-1.0.4-x64.exe
 
 .EXAMPLE
     .\packaging\build.ps1 -SkipGpu
@@ -43,7 +43,7 @@ param(
     [string] $Iscc = "",                    # Inno Setup 的 ISCC.exe 路径（自动找不到时手工指定）
     [switch] $Clean,                        # 先清掉 build/ 和 dist/
     [string] $Python = "",                  # 用哪个 Python，默认优先用项目里的 .venv
-    [string] $Version = "1.0.3"
+    [string] $Version = "1.0.4"
 )
 
 # Windows PowerShell 5.1 的坑：$ErrorActionPreference = "Stop" 时，**原生命令**（python、pip、

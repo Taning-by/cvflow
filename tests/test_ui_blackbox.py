@@ -468,6 +468,43 @@ def test_ui_params_edit_spinbox_combo_checkbox_rename(win, app):
     assert "已禁用" in win.results_panel.tree.findItems("孔洞", Qt.MatchExactly, 0)[0].text(1)
 
 
+def test_ui_params_small_float_can_be_typed_back_after_misedit(win, app):
+    """缩放系数默认 1/255：被误改成 1 之后重新选中节点，输入框也得能输回 0.0039 这类小数，
+    不能只剩两位小数、一输就成 0.00。"""
+    node = win.scene.add_node("dl.onnx_trajectory", QPointF(0, 0)); pump(app)
+    win.scene.select_node(node.id); pump(app)
+    spin(win.param_panel, "缩放系数").setValue(1.0); pump(app)
+    assert node.get("scale") == 1.0
+    win.scene.select_node(node_by_name(win, "孔").id); pump(app)
+    win.scene.select_node(node.id); pump(app)                       # 重建控件，按当前值 1.0 定小数位
+    sb = spin(win.param_panel, "缩放系数")
+    sb.lineEdit().selectAll()
+    QTest.keyClicks(sb.lineEdit(), "0.003922")
+    QTest.keyClick(sb.lineEdit(), Qt.Key_Return); pump(app)
+    assert node.get("scale") == pytest.approx(0.003922)
+
+
+def test_ui_params_wheel_does_not_change_unfocused_field(win, app):
+    """滚动参数面板时鼠标划过数字框 / 下拉框，没点进去就不许改值；点进去之后滚轮照常可用。"""
+    from PySide6.QtGui import QWheelEvent
+    win.scene.select_node(node_by_name(win, "孔").id); pump(app)
+    panel = win.param_panel
+
+    def wheel(w):
+        pos = QPointF(w.width() / 2, w.height() / 2)
+        ev = QWheelEvent(pos, QPointF(w.mapToGlobal(pos.toPoint())), QPoint(0, 0), QPoint(0, 120),
+                         Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        QApplication.sendEvent(w, ev); pump(app)
+
+    sb, combo = spin(panel, "最小面积"), param_widget(panel, "排序")
+    win.scene.setFocus(); pump(app)
+    before = (sb.value(), combo.currentIndex(), node_by_name(win, "孔").get("min_area"), node_by_name(win, "孔").get("sort"))
+    wheel(sb); wheel(combo)
+    assert (sb.value(), combo.currentIndex(), node_by_name(win, "孔").get("min_area"),
+            node_by_name(win, "孔").get("sort")) == before
+    assert sb.focusPolicy() == Qt.StrongFocus and combo.focusPolicy() == Qt.StrongFocus
+
+
 def test_ui_params_advanced_toggle_and_json_code_apply(win, app):
     win.scene.select_node(node_by_name(win, "阈值").id); pump(app)
     panel = win.param_panel

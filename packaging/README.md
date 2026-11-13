@@ -27,7 +27,7 @@ onnxruntime 的 CUDA 后端是**单独一个 DLL**，运行时才去加载。不
   接着封装即可，**不必重新冻结**——那一步要十几分钟）
 
 ```powershell
-.\packaging\build.ps1                    # 完整构建，产出 dist\CVFlow-Setup-1.0.3-x64.exe
+.\packaging\build.ps1                    # 完整构建，产出 dist\CVFlow-Setup-1.0.4-x64.exe
 .\packaging\build.ps1 -SkipGpu           # 只打基础部分（约 530 MB），CI 用这个验证链路
 .\packaging\build.ps1 -TrimCudnn         # GPU 组件去掉 cudnn_adv64_9.dll（258 MB，RNN/注意力才用）
 .\packaging\build.ps1 -FreezeOnly        # 只做 PyInstaller，不封安装包（调试打包问题）
@@ -66,8 +66,8 @@ C:\Program Files\CVFlow\          程序（只读）
 静默安装（产线批量部署）：
 
 ```powershell
-CVFlow-Setup-1.0.3-x64.exe /SILENT /DIR="C:\CVFlow"
-CVFlow-Setup-1.0.3-x64.exe /SILENT /COMPONENTS="main,examples"    # 不要 GPU 组件
+CVFlow-Setup-1.0.4-x64.exe /SILENT /DIR="C:\CVFlow"
+CVFlow-Setup-1.0.4-x64.exe /SILENT /COMPONENTS="main,examples"    # 不要 GPU 组件
 ```
 
 ## 两个 exe 的名字不能只差大小写
