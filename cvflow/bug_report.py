@@ -16,6 +16,7 @@ import logging
 import os
 import platform
 import smtplib
+import socket
 import ssl
 import sys
 import threading
@@ -214,14 +215,199 @@ class BugReport:
         return path
 
 
+# ---------------------------------------------------------------- 连到邮件服务器
+#: 系统 DNS 查不到时改问这几个公共 DNS（阿里、腾讯、114），直接用 IP 发 UDP，不依赖本机 DNS 设置
+PUBLIC_DNS = ("223.5.5.5", "119.29.29.29", "114.114.114.114")
+CONNECT_TIMEOUT_S = 10.0
+
+
+class ConnectError(OSError):
+    """几条路都连不上。消息里逐条写了每条路是怎么失败的，给人看、也给开发者排查。"""
+
+
+def _system_proxy(host: str) -> str | None:
+    """浏览器用的那个代理（Windows 读注册表里的"代理服务器"设置，其它系统读 *_proxy 环境变量）。
+
+    客户电脑"能上网"却查不到邮件服务器的域名，多半就是浏览器走了公司代理、本机自己并不能直连外网。
+    只认 http 代理；自动配置脚本（PAC）读不到，这种情况只能退回直连。
+    """
+    import ipaddress
+    import urllib.request
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_link_local:
+            return None
+    except ValueError:
+        if host.lower() == "localhost":
+            return None
+    try:
+        if urllib.request.proxy_bypass(host):
+            return None
+        proxies = urllib.request.getproxies()
+    except Exception:  # noqa: BLE001 - 注册表读不出来就当没有代理
+        return None
+    url = proxies.get("https") or proxies.get("http")
+    if not url:
+        return None
+    if "://" not in url:
+        url = "http://" + url
+    return url if url.lower().startswith("http://") else None
+
+
+def _connect_via_proxy(proxy_url: str, host: str, port: int, timeout: float) -> socket.socket:
+    """经 http 代理的 CONNECT 隧道连到 host:port，返回的套接字和直连的一样用。"""
+    import base64
+    from urllib.parse import unquote, urlsplit
+    u = urlsplit(proxy_url)
+    sock = socket.create_connection((u.hostname, u.port or 8080), timeout)
+    try:
+        req = f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+        if u.username:
+            cred = f"{unquote(u.username)}:{unquote(u.password or '')}".encode()
+            req += "Proxy-Authorization: Basic " + base64.b64encode(cred).decode() + "\r\n"
+        sock.sendall((req + "\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:      # 逐字节读到头结束，不多读一个字节——后面就是邮件服务器的数据了
+            ch = sock.recv(1)
+            if not ch:
+                raise OSError("代理没回应就断开了")
+            head += ch
+            if len(head) > 16384:
+                raise OSError("代理的回应太长")
+        status = head.split(b"\r\n", 1)[0].decode("latin-1").strip()
+        parts = status.split(None, 2)
+        if len(parts) < 2 or parts[1] != "200":
+            hint = "（代理要求登录）" if len(parts) > 1 and parts[1] == "407" else ""
+            raise OSError(f"代理拒绝转发到 {host}:{port}：{status}{hint}")
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+
+
+def _dns_query(host: str, server: str, timeout: float) -> list[str]:
+    """向指定 DNS 服务器查 host 的 A 记录（UDP 53），返回 IP 列表。"""
+    qid = os.urandom(2)
+    qname = b"".join(bytes([len(p)]) + p.encode("idna") for p in host.rstrip(".").split(".")) + b"\0"
+    packet = qid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + qname + b"\x00\x01\x00\x01"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(timeout)
+        s.sendto(packet, (server, 53))
+        while True:
+            data, _ = s.recvfrom(4096)
+            if data[:2] == qid:
+                return _parse_dns_a(data)
+
+
+def _parse_dns_a(data: bytes) -> list[str]:
+    """从 DNS 回应里取出所有 A 记录（CNAME 之类的跳过）。"""
+    def skip_name(i: int) -> int:
+        while True:
+            n = data[i]
+            if n == 0:
+                return i + 1
+            if n & 0xC0 == 0xC0:              # 压缩指针，两个字节
+                return i + 2
+            i += 1 + n
+
+    if len(data) < 12 or data[3] & 0x0F:      # rcode 非 0：查无此名之类
+        return []
+    qd, an = int.from_bytes(data[4:6], "big"), int.from_bytes(data[6:8], "big")
+    i = 12
+    for _ in range(qd):
+        i = skip_name(i) + 4
+    ips = []
+    for _ in range(an):
+        i = skip_name(i)
+        rtype, rlen = int.from_bytes(data[i:i + 2], "big"), int.from_bytes(data[i + 8:i + 10], "big")
+        i += 10
+        if rtype == 1 and rlen == 4:
+            ips.append(".".join(str(b) for b in data[i:i + 4]))
+        i += rlen
+    return ips
+
+
+def _resolve_public(host: str, timeout: float = 3.0) -> list[str]:
+    errors = []
+    for server in PUBLIC_DNS:
+        try:
+            ips = _dns_query(host, server, timeout)
+            if ips:
+                return ips
+            errors.append(f"{server} 查无结果")
+        except (OSError, IndexError) as e:
+            errors.append(f"{server} {e or type(e).__name__}")
+    raise OSError("；".join(errors))
+
+
+def open_socket(host: str, port: int, timeout: float = CONNECT_TIMEOUT_S) -> socket.socket:
+    """连到邮件服务器。依次试：直连 → 系统代理 → （本机 DNS 查不到时）用公共 DNS 查到的 IP 直连。
+
+    直连排第一：原来能发的电脑走的还是原来那条路。都不行就抛 ``ConnectError``，消息里写清每条路的
+    失败原因（"直连：本机查不到地址"、"经系统代理：拒绝转发"……），一看就知道是没外网、DNS 坏了还是代理拦了。
+    """
+    tried = []
+    dns_failed = False
+    try:
+        return socket.create_connection((host, port), timeout)
+    except socket.gaierror as e:
+        dns_failed = True
+        tried.append(f"直连：本机查不到 {host} 的地址（{e}）")
+    except OSError as e:
+        tried.append(f"直连：{e}")
+    proxy = _system_proxy(host)
+    if proxy:
+        try:
+            sock = _connect_via_proxy(proxy, host, port, timeout)
+            log.info("直连 %s 不通，经系统代理 %s 连上了", host, proxy)
+            return sock
+        except OSError as e:
+            tried.append(f"经系统代理 {proxy}：{e}")
+    else:
+        tried.append("系统没有设置代理")
+    if dns_failed:
+        try:
+            ips = _resolve_public(host)
+        except OSError as e:
+            tried.append(f"公共 DNS 也查不到：{e}")
+            ips = []
+        for ip in ips:
+            try:
+                sock = socket.create_connection((ip, port), timeout)
+                log.info("本机 DNS 查不到 %s，改用公共 DNS 查到的 %s 连上了", host, ip)
+                return sock
+            except OSError as e:
+                tried.append(f"公共 DNS 查到 {ip}，连接失败：{e}")
+    raise ConnectError("；".join(tried))
+
+
+def _open_for_smtp(host, port, timeout) -> socket.socket:
+    t = float(timeout) if isinstance(timeout, (int, float)) else CONNECT_TIMEOUT_S
+    sock = open_socket(host, port, min(t, CONNECT_TIMEOUT_S))
+    sock.settimeout(t)
+    return sock
+
+
+class _Smtp(smtplib.SMTP):
+    def _get_socket(self, host, port, timeout):
+        return _open_for_smtp(host, port, timeout)
+
+
+class _SmtpSsl(smtplib.SMTP_SSL):
+    def _get_socket(self, host, port, timeout):
+        sock = _open_for_smtp(host, port, timeout)
+        # 不管走的代理还是 IP，证书都按域名校验
+        return self.context.wrap_socket(sock, server_hostname=self._host)
+
+
 def send(report: BugReport, cfg: SmtpConfig) -> None:
     """发出去；失败抛 OSError / smtplib.SMTPException，消息给人看。"""
     msg = report.to_message(cfg)
     ctx = ssl.create_default_context()
     if cfg.security == "ssl":
-        server: smtplib.SMTP = smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=cfg.timeout_s, context=ctx)
+        server: smtplib.SMTP = _SmtpSsl(cfg.host, cfg.port, timeout=cfg.timeout_s, context=ctx)
     else:
-        server = smtplib.SMTP(cfg.host, cfg.port, timeout=cfg.timeout_s)
+        server = _Smtp(cfg.host, cfg.port, timeout=cfg.timeout_s)
     try:
         if cfg.security == "starttls":
             server.starttls(context=ctx)

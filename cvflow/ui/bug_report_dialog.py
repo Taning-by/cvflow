@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import smtplib
+import socket
+import ssl
 import threading
 import time
 from pathlib import Path
@@ -21,8 +23,15 @@ def describe_send_error(e: BaseException, cfg: SmtpConfig) -> str:
         return "发信邮箱登录失败（授权码不对或已失效）"
     if isinstance(e, smtplib.SMTPException):
         return f"邮件服务器拒绝了：{e}"
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return (f"已连上 {cfg.host}，但证书校验没通过（{e.verify_message}）。"
+                "常见原因：电脑时间不对，或杀毒软件 / 公司网关在拦截加密连接")
+    if isinstance(e, bug_report.ConnectError):
+        return f"连不上邮件服务器 {cfg.host}:{cfg.port}。{e}"
+    if isinstance(e, socket.timeout):
+        return f"和邮件服务器 {cfg.host}:{cfg.port} 通信超时：{e}"
     if isinstance(e, OSError):
-        return f"连不上邮件服务器 {cfg.host}:{cfg.port}（这台电脑可能没有外网）：{e}"
+        return f"和邮件服务器 {cfg.host}:{cfg.port} 通信出错：{e}"
     return f"{type(e).__name__}: {e}"
 
 

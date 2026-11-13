@@ -129,3 +129,123 @@ def test_example_config_is_valid_and_real_config_is_ignored_by_git():
     example = json.loads((root / "packaging" / "bug_report.example.json").read_text(encoding="utf-8"))
     assert br.SmtpConfig.from_dict(example).to == "callme@tanxinji.com"
     assert "bug_report.json" in (root / ".gitignore").read_text(encoding="utf-8").split()
+
+
+# ---------------------------------------------------------------- 连不上时的几条退路
+@pytest.fixture
+def no_proxy_env(monkeypatch):
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY",
+              "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(k, raising=False)
+    return monkeypatch
+
+
+class FakeProxy:
+    """http 代理：收下 CONNECT 请求记在 ``requests`` 里；``reply`` 是 200 就把隧道接到 ``upstream_port``。"""
+
+    def __init__(self, upstream_port: int = 0, reply: str = "HTTP/1.1 200 Connection established") -> None:
+        self.requests: list[str] = []
+        self.upstream_port, self.reply = upstream_port, reply
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.url = f"http://127.0.0.1:{self.sock.getsockname()[1]}"
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        conn, _ = self.sock.accept()
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += conn.recv(1)
+        self.requests.append(head.decode())
+        conn.sendall(self.reply.encode() + b"\r\n\r\n")
+        if not self.reply.split()[1] == "200":
+            conn.close()
+            return
+        up = socket.create_connection(("127.0.0.1", self.upstream_port))
+
+        def pipe(a, b):
+            for chunk in iter(lambda: a.recv(4096), b""):
+                b.sendall(chunk)
+            b.close()
+        threading.Thread(target=pipe, args=(up, conn), daemon=True).start()
+        pipe(conn, up)
+
+
+def _unresolvable(monkeypatch, *hosts):
+    """让这几个域名在"本机 DNS"里查不到（真去查的话，开了代理软件的机器什么域名都能解析出假 IP）。"""
+    real = socket.create_connection
+
+    def create_connection(addr, *a, **k):
+        if addr[0] in hosts:
+            raise socket.gaierror(11001, "getaddrinfo failed")
+        return real(addr, *a, **k)
+    monkeypatch.setattr(socket, "create_connection", create_connection)
+
+
+def test_send_goes_through_the_system_proxy_when_one_is_set(no_proxy_env):
+    """浏览器走代理上网的电脑：本机查不到邮件服务器的域名，照样经代理发出去。"""
+    server = FakeSmtp()
+    proxy = FakeProxy(server.port)
+    no_proxy_env.setenv("https_proxy", proxy.url)
+    _unresolvable(no_proxy_env, "smtp.behind-proxy.test")
+    no_proxy_env.setattr(br, "_resolve_public", lambda host: pytest.fail("经代理能通就不该再查公共 DNS"))
+    cfg = server.config()
+    cfg.host = "smtp.behind-proxy.test"
+    br.send(br.BugReport.collect("经代理发"), cfg)
+    assert proxy.requests[0].startswith(f"CONNECT smtp.behind-proxy.test:{server.port} HTTP/1.1")
+    assert len(server.received) == 1
+
+
+def test_direct_connection_comes_first_even_with_a_proxy_set(no_proxy_env):
+    """原来能直连的电脑不受影响：设了代理也先直连，代理一次都不碰。"""
+    server = FakeSmtp()
+    proxy = FakeProxy(server.port)
+    no_proxy_env.setenv("https_proxy", proxy.url)
+    br.send(br.BugReport.collect("直连"), server.config())
+    assert len(server.received) == 1 and proxy.requests == []
+
+
+def test_proxy_refusal_and_dns_failure_are_both_spelled_out(no_proxy_env, monkeypatch):
+    proxy = FakeProxy(reply="HTTP/1.1 407 Proxy Authentication Required")
+    no_proxy_env.setenv("https_proxy", proxy.url)
+    monkeypatch.setattr(br, "_resolve_public", lambda host: (_ for _ in ()).throw(OSError("223.5.5.5 timed out")))
+    _unresolvable(monkeypatch, "smtp.163.com")
+    with pytest.raises(br.ConnectError) as ei:
+        br.send(br.BugReport.collect("x"), br.SmtpConfig(host="smtp.163.com", timeout_s=5))
+    msg = str(ei.value)
+    assert "代理要求登录" in msg and "本机查不到 smtp.163.com" in msg and "公共 DNS 也查不到" in msg
+
+    from cvflow.ui.bug_report_dialog import describe_send_error
+    assert describe_send_error(ei.value, br.SmtpConfig(host="smtp.163.com")).startswith("连不上邮件服务器 smtp.163.com:465。")
+
+
+def test_when_local_dns_fails_the_ip_from_public_dns_is_used(no_proxy_env, monkeypatch):
+    """能上网但网卡 DNS 配坏了：改问公共 DNS，拿到 IP 直连。"""
+    server = FakeSmtp()
+    _unresolvable(monkeypatch, "smtp.broken-dns.test")
+    asked = []
+    monkeypatch.setattr(br, "_resolve_public", lambda host: asked.append(host) or ["127.0.0.1"])
+    cfg = server.config()
+    cfg.host = "smtp.broken-dns.test"
+    br.send(br.BugReport.collect("公共 DNS"), cfg)
+    assert asked == ["smtp.broken-dns.test"] and len(server.received) == 1
+
+
+def test_dns_answer_with_cname_and_compressed_names_is_parsed():
+    q = b"\x04smtp\x03163\x03com\x00"
+    resp = (b"\x12\x34\x81\x80\x00\x01\x00\x02\x00\x00\x00\x00" + q + b"\x00\x01\x00\x01"
+            + b"\xc0\x0c\x00\x05\x00\x01\x00\x00\x00\x3c\x00\x06\x03abc\xc0\x11"           # CNAME，跳过
+            + b"\xc0\x2d\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes([220, 181, 12, 16]))
+    assert br._parse_dns_a(resp) == ["220.181.12.16"]
+    nx = b"\x12\x34\x81\x83\x00\x01\x00\x00\x00\x00\x00\x00" + q + b"\x00\x01\x00\x01"
+    assert br._parse_dns_a(nx) == []
+
+
+def test_certificate_failure_is_not_reported_as_no_network():
+    import ssl
+    from cvflow.ui.bug_report_dialog import describe_send_error
+    e = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    e.verify_message = "unable to get local issuer certificate"
+    msg = describe_send_error(e, br.SmtpConfig(host="smtp.163.com"))
+    assert "证书" in msg and "杀毒软件" in msg and "没有外网" not in msg
